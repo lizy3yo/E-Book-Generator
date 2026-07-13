@@ -1,7 +1,6 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { globalState } from '$lib/state.svelte';
-	import type { Book, Chapter } from '$lib/types';
+	import type { Book } from '$lib/types';
 
 	let activeSection = $state<'cover' | number>('cover'); // 'cover' or chapter index (0-based)
 	let fontSize = $state(18); // in px
@@ -287,6 +286,339 @@
 		link.download = `${activeBook.title.toLowerCase().replace(/\s+/g, '_')}_ebook.html`;
 		link.click();
 	}
+
+	// ── PDF Export ──────────────────────────────────────────────────────────────
+	let isPdfExporting = $state(false);
+
+	async function handleExportPdf() {
+		if (!activeBook || isPdfExporting) return;
+		isPdfExporting = true;
+
+		try {
+			// Dynamically import to keep the initial bundle lean
+			const [{ default: jsPDF }, { default: html2canvas }] = await Promise.all([
+				import('jspdf'),
+				import('html2canvas')
+			]);
+
+			// A4 dimensions in mm (industry standard)
+			const PAGE_W_MM  = 210;
+			const PAGE_H_MM  = 297;
+			// Inner margins (mm)
+			const MARGIN_MM  = 18;
+			const CONTENT_W  = PAGE_W_MM - MARGIN_MM * 2;
+
+			const pdf = new jsPDF({
+				orientation: 'portrait',
+				unit: 'mm',
+				format: 'a4',
+				compress: true
+			});
+
+			// ── Build the full HTML (same as HTML export but with print-safe tweaks) ──
+			const coverSettings = activeBook.coverSettings;
+			const coverBgStyle  = coverSettings.bgImageUrl
+				? `background-image: url('${coverSettings.bgImageUrl}'); background-size: cover; background-position: center;`
+				: 'background: linear-gradient(135deg,#FAF7F2 0%,#EDE5D5 100%);';
+
+			let chaptersHtml = '';
+			activeBook.chapters.forEach(chap => {
+				const illustHtml = chap.illustrationUrl
+					? `<div class="illustration"><img src="${chap.illustrationUrl}" alt="${chap.title}" crossorigin="anonymous" /></div>`
+					: '';
+				chaptersHtml += `
+					<section class="chapter-section">
+						<div class="chapter-number-label">Chapter ${chap.order}</div>
+						<h1 class="chapter-title">${chap.title}</h1>
+						${illustHtml}
+						<div class="chapter-body">${parseMarkdown(chap.content)}</div>
+					</section>
+				`;
+			});
+
+			const tocRows = activeBook.chapters
+				.map(c => `<div class="toc-row"><span>Chapter ${c.order}: ${c.title}</span><span class="toc-dots"></span></div>`)
+				.join('');
+
+			const fullHtml = `<!doctype html><html><head>
+<meta charset="utf-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Lora:ital,wght@0,400;0,600;1,400&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; }
+
+  body {
+    margin: 0; padding: 0;
+    background: #FFFFFF;
+    color: #1A1612;
+    font-family: 'Lora', Georgia, serif;
+    font-size: 13px;
+    line-height: 1.85;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Cover ── */
+  .cover-page {
+    width: 210mm; height: 297mm;
+    position: relative;
+    display: flex; flex-direction: column;
+    padding: 18mm;
+    ${coverBgStyle}
+    text-align: ${coverSettings.alignment};
+    page-break-after: always;
+    overflow: hidden;
+  }
+  .cover-overlay {
+    position: absolute; inset: 0;
+    background: rgba(26,21,16,${coverSettings.overlayOpacity});
+  }
+  .cover-inner {
+    position: relative; z-index: 2;
+    height: 100%;
+    display: flex; flex-direction: column;
+    justify-content: ${
+      coverSettings.textPosition === 'top'    ? 'flex-start' :
+      coverSettings.textPosition === 'bottom' ? 'flex-end'   : 'center'
+    };
+    gap: 1.5rem;
+  }
+  .cover-title {
+    font-size: ${coverSettings.titleSize}px;
+    font-weight: 700;
+    color: ${coverSettings.titleColor};
+    line-height: 1.2;
+    margin: 0 0 8px;
+    font-family: ${coverSettings.titleFont === 'Inter' ? "'Inter', sans-serif" : "'Lora', Georgia, serif"};
+  }
+  .cover-subtitle {
+    font-size: ${coverSettings.subtitleSize}px;
+    color: ${coverSettings.subtitleColor};
+    font-family: 'Inter', sans-serif;
+    font-weight: 500;
+    margin: 0;
+  }
+  .cover-author {
+    font-size: ${coverSettings.authorSize}px;
+    font-style: italic;
+    color: ${coverSettings.authorColor};
+    margin: 0;
+  }
+
+  /* ── Content wrapper ── */
+  .content-wrap {
+    width: 174mm; /* 210 - 2×18 */
+    margin: 0 auto;
+    padding: 14mm 0;
+  }
+
+  /* ── TOC ── */
+  .toc-section {
+    page-break-after: always;
+    margin-bottom: 14mm;
+  }
+  .toc-section h1 {
+    font-size: 22px;
+    font-weight: 600;
+    border-bottom: 1.5px solid #D9CFC2;
+    padding-bottom: 8px;
+    margin-bottom: 18px;
+    letter-spacing: 0.02em;
+  }
+  .toc-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 5px 0;
+    border-bottom: 1px dotted #E0D8CC;
+    font-size: 12.5px;
+    font-family: 'Inter', sans-serif;
+  }
+
+  /* ── Chapter ── */
+  .chapter-section {
+    page-break-before: always;
+    padding-bottom: 14mm;
+  }
+  .chapter-number-label {
+    font-family: 'Inter', sans-serif;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    color: #8E7453;
+    margin-bottom: 6px;
+  }
+  .chapter-title {
+    font-size: 24px;
+    font-weight: 700;
+    line-height: 1.25;
+    margin: 0 0 22px;
+    color: #1A1612;
+  }
+  .illustration {
+    margin: 18px 0;
+    text-align: center;
+  }
+  .illustration img {
+    max-width: 100%;
+    max-height: 260px;
+    border-radius: 3px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.09);
+  }
+  .chapter-body p {
+    margin: 0 0 14px;
+    text-indent: 1.4em;
+    hyphens: auto;
+  }
+  .chapter-body p:first-of-type { text-indent: 0; }
+  .chapter-body h2 { font-size: 17px; font-weight: 600; margin: 22px 0 10px; }
+  .chapter-body h3 { font-size: 14px; font-weight: 600; margin: 18px 0 8px; }
+  .chapter-body blockquote {
+    border-left: 3px solid #8E7453;
+    margin: 18px 0;
+    padding-left: 16px;
+    font-style: italic;
+    color: #6A6055;
+  }
+  .chapter-body ul { margin: 12px 0; padding-left: 22px; }
+  .chapter-body li { margin-bottom: 6px; text-indent: 0; }
+  .chapter-body strong { font-weight: 600; }
+  .chapter-body em { font-style: italic; }
+
+  /* ── Footer ── */
+  .pdf-footer {
+    position: fixed; bottom: 10mm; left: 0; right: 0;
+    text-align: center;
+    font-family: 'Inter', sans-serif;
+    font-size: 9px;
+    color: #AEA89E;
+    letter-spacing: 0.04em;
+  }
+</style>
+</head><body>
+
+<!-- Cover -->
+<div class="cover-page">
+  <div class="cover-overlay"></div>
+  <div class="cover-inner">
+    <div>
+      <h1 class="cover-title">${activeBook.title}</h1>
+      <p class="cover-subtitle">${activeBook.subtitle}</p>
+    </div>
+    <p class="cover-author">${activeBook.author}</p>
+  </div>
+</div>
+
+<!-- TOC + Chapters -->
+<div class="content-wrap">
+  <section class="toc-section">
+    <h1>Contents</h1>
+    ${tocRows}
+  </section>
+  ${chaptersHtml}
+</div>
+
+<div class="pdf-footer">${activeBook.title} &nbsp;·&nbsp; ${activeBook.author}</div>
+
+</body></html>`;
+
+			// ── Render via hidden off-screen iframe ──────────────────────────────────
+			const iframe = document.createElement('iframe');
+			iframe.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:794px;border:none;visibility:hidden;';
+			document.body.appendChild(iframe);
+
+			await new Promise<void>((resolve) => {
+				iframe.onload = () => resolve();
+				iframe.srcdoc = fullHtml;
+			});
+
+			// Give fonts/images a moment to settle
+			await new Promise(r => setTimeout(r, 1200));
+
+			const iDoc = iframe.contentDocument!;
+			const body = iDoc.body;
+
+			// ── Determine sections to render as pages ────────────────────────────────
+			// A4 pixel height at 96dpi ≈ 1123px; we use the cover + each section
+			const A4_PX_H = 1122; // 297mm at 96dpi
+
+			// Collect renderable sections
+			const sections: Element[] = [
+				iDoc.querySelector('.cover-page')!,
+				iDoc.querySelector('.toc-section')!,
+				...Array.from(iDoc.querySelectorAll('.chapter-section'))
+			].filter(Boolean);
+
+			let isFirstPage = true;
+
+			for (const section of sections) {
+				const canvas = await html2canvas(section as HTMLElement, {
+					scale: 2,           // 2× for crisp 150+ DPI output
+					useCORS: true,
+					allowTaint: false,
+					backgroundColor: '#FFFFFF',
+					logging: false,
+					windowWidth: 794
+				});
+
+				const imgData   = canvas.toDataURL('image/jpeg', 0.92);
+				const imgW      = canvas.width;
+				const imgH      = canvas.height;
+
+				// Scale image to fit A4 width inside margins
+				const pdfImgW   = CONTENT_W;
+				const pdfImgH   = (imgH / imgW) * pdfImgW;
+
+				// Paginate: if image taller than one page, split across pages
+				let yOffset = 0;
+				const pageContentH = PAGE_H_MM - MARGIN_MM * 2;
+
+				while (yOffset < pdfImgH) {
+					if (!isFirstPage) pdf.addPage();
+					isFirstPage = false;
+
+					// Clip slice of the canvas image to this page
+					const sliceH    = Math.min(pageContentH, pdfImgH - yOffset);
+					const srcY      = (yOffset / pdfImgH) * imgH;
+					const srcSliceH = (sliceH / pdfImgH) * imgH;
+
+					// Create a slice canvas
+					const sliceCanvas  = document.createElement('canvas');
+					sliceCanvas.width  = imgW;
+					sliceCanvas.height = srcSliceH;
+					const ctx = sliceCanvas.getContext('2d')!;
+					ctx.drawImage(canvas, 0, srcY, imgW, srcSliceH, 0, 0, imgW, srcSliceH);
+
+					const sliceData = sliceCanvas.toDataURL('image/jpeg', 0.92);
+					pdf.addImage(sliceData, 'JPEG', MARGIN_MM, MARGIN_MM, pdfImgW, sliceH, undefined, 'FAST');
+
+					// Page number footer
+					pdf.setFont('helvetica', 'normal');
+					pdf.setFontSize(8);
+					pdf.setTextColor(180, 170, 158);
+					pdf.text(
+						`${activeBook.title}  ·  ${activeBook.author}`,
+						PAGE_W_MM / 2,
+						PAGE_H_MM - 8,
+						{ align: 'center' }
+					);
+
+					yOffset += pageContentH;
+				}
+			}
+
+			// ── Save ─────────────────────────────────────────────────────────────────
+			const filename = `${activeBook.title.toLowerCase().replace(/\s+/g, '_')}_ebook.pdf`;
+			pdf.save(filename);
+
+			document.body.removeChild(iframe);
+
+		} catch (err) {
+			console.error('PDF export failed:', err);
+			alert('PDF export encountered an error. Please try again.');
+		} finally {
+			isPdfExporting = false;
+		}
+	}
 </script>
 
 <svelte:head>
@@ -341,10 +673,22 @@
 					</button>
 					
 					<button 
-						class="btn btn-primary btn-small font-serif" 
+						class="btn btn-secondary btn-small font-serif" 
 						onclick={handleCompileHtml}
 					>
-						💾 Export Styled HTML
+						💾 Export HTML
+					</button>
+
+					<button 
+						class="btn btn-primary btn-small font-serif pdf-export-btn" 
+						onclick={handleExportPdf}
+						disabled={isPdfExporting}
+					>
+						{#if isPdfExporting}
+							<span class="pdf-spinner"></span> Generating PDF…
+						{:else}
+							📄 Export PDF
+						{/if}
 					</button>
 				</div>
 			</aside>
@@ -865,5 +1209,33 @@
 	.chapter-text-body :global(li) {
 		margin-bottom: 0.5rem;
 		text-indent: 0;
+	}
+
+	/* PDF export button */
+	.pdf-export-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.45rem;
+	}
+
+	.pdf-export-btn:disabled {
+		opacity: 0.65;
+		cursor: not-allowed;
+	}
+
+	.pdf-spinner {
+		display: inline-block;
+		width: 12px;
+		height: 12px;
+		border: 2px solid rgba(255,255,255,0.35);
+		border-top-color: #fff;
+		border-radius: 50%;
+		animation: pdf-spin 0.7s linear infinite;
+		flex-shrink: 0;
+	}
+
+	@keyframes pdf-spin {
+		to { transform: rotate(360deg); }
 	}
 </style>

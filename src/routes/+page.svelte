@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { globalState } from '$lib/state.svelte';
 	import type { Book, Chapter, StepLog } from '$lib/types';
+	import { BookMarked, Zap, Paintbrush, BookOpen, Trash2, Loader, CheckCircle2, XCircle, Info } from '@lucide/svelte';
 
 	// Form inputs
 	let title = $state('');
@@ -317,7 +318,7 @@
 					onclick={() => { if (!isGenerating || globalState.activeBookId === b.id) globalState.setActiveBook(b.id); }}
 					onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (!isGenerating || globalState.activeBookId === b.id) globalState.setActiveBook(b.id); } }}
 				>
-					<div class="book-row-icon">📘</div>
+					<div class="book-row-icon"><BookMarked size={18} /></div>
 					<div class="book-row-meta">
 						<span class="book-row-title font-serif">{b.title}</span>
 						<span class="book-row-status {b.status}">
@@ -338,7 +339,7 @@
 						disabled={isGenerating}
 						title="Delete book"
 					>
-						×
+						<Trash2 size={14} />
 					</button>
 				</div>
 			{/each}
@@ -485,16 +486,16 @@
 								onclick={() => runAutomatedPipeline(active)}
 								disabled={isGenerating}
 							>
-								⚡ Start Automation Pipeline
+								<Zap size={15} /> Start Automation Pipeline
 							</button>
 						{:else if active.status === 'completed'}
 							<div class="completed-actions">
-								<a href="/cover" class="btn btn-secondary">🎨 Design Cover</a>
-								<a href="/reader" class="btn btn-primary">📖 Read Ebook</a>
+								<a href="/cover" class="btn btn-secondary"><Paintbrush size={15} /> Design Cover</a>
+								<a href="/reader" class="btn btn-primary"><BookOpen size={15} /> Read Ebook</a>
 							</div>
 						{:else}
 							<div class="generating-badge pulse">
-								<span class="spinner"></span>
+								<Loader size={15} class="spin" />
 								<span>Generating...</span>
 							</div>
 						{/if}
@@ -571,7 +572,7 @@
 						<!-- Config Tip Alert -->
 						{#if globalState.apiKeys.useMockMode}
 							<div class="alert-tip font-serif">
-								<p><strong>💡 Running in Mock Mode:</strong> SvelteKit is simulating API outputs. You can wire real APIs by adding your Anthropic, Exa, and Kie.ai keys in the <a href="/settings">Settings panel</a>.</p>
+								<p><Info size={13} class="alert-tip-icon" /> <strong>Running in Mock Mode:</strong> SvelteKit is simulating API outputs. You can wire real APIs by adding your Anthropic, Exa, and Kie.ai keys in the <a href="/settings">Settings panel</a>.</p>
 							</div>
 						{/if}
 					</div>
@@ -676,6 +677,9 @@
 
 	.book-row-icon {
 		font-size: 1.25rem;
+		display: flex;
+		align-items: center;
+		color: var(--accent);
 	}
 
 	.book-row-meta {
@@ -709,7 +713,6 @@
 		background: transparent;
 		border: none;
 		color: var(--text-muted);
-		font-size: 1.2rem;
 		cursor: pointer;
 		display: none;
 		position: absolute;
@@ -718,12 +721,13 @@
 		transform: translateY(-50%);
 		width: 24px;
 		height: 24px;
-		line-height: 24px;
-		text-align: center;
+		align-items: center;
+		justify-content: center;
+		padding: 0;
 	}
 
 	.book-row:hover .btn-delete {
-		display: block;
+		display: flex;
 	}
 
 	.btn-delete:hover {
@@ -1084,5 +1088,21 @@
 	.alert-tip a {
 		text-decoration: underline;
 		font-weight: 600;
+	}
+
+	:global(.alert-tip-icon) {
+		display: inline-block;
+		vertical-align: middle;
+		margin-right: 0.25rem;
+		color: var(--accent);
+	}
+
+	:global(.spin) {
+		animation: spin 1.2s linear infinite;
+	}
+
+	@keyframes spin {
+		from { transform: rotate(0deg); }
+		to   { transform: rotate(360deg); }
 	}
 </style>

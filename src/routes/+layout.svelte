@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import '../index.css';
 	import { globalState } from '$lib/state.svelte';
+	import { BookOpen, PenLine, Palette, Sun, Moon, Settings } from '@lucide/svelte';
 
 	let { children } = $props();
 	let currentTheme = $state('light');
@@ -26,31 +27,31 @@
 	<!-- Top Elegant Header Bar -->
 	<header class="app-header">
 		<div class="logo">
-			<span class="book-icon">📖</span>
+			<BookOpen size={22} />
 			<h1>Ebook Automator</h1>
 		</div>
 		
 		<nav class="nav-links">
 			<a href="/" class="nav-item">
-				<span class="nav-icon">✍️</span> Write
+				<PenLine size={16} /> Write
 			</a>
 			<a href="/cover" class="nav-item">
-				<span class="nav-icon">🎨</span> Cover Studio
+				<Palette size={16} /> Cover Studio
 			</a>
 			<a href="/reader" class="nav-item">
-				<span class="nav-icon">📖</span> Reader
+				<BookOpen size={16} /> Reader
 			</a>
 			<a href="/settings" class="nav-item">
-				<span class="nav-icon">⚙️</span> Settings
+				<Settings size={16} /> Settings
 			</a>
 		</nav>
 
 		<div class="actions">
 			<button class="theme-toggle" onclick={toggleTheme} aria-label="Toggle paper theme">
 				{#if currentTheme === 'light'}
-					🌙 Night Mode
+					<Moon size={15} /> Night Mode
 				{:else}
-					☀️ Day Mode
+					<Sun size={15} /> Day Mode
 				{/if}
 			</button>
 		</div>
@@ -94,16 +95,12 @@
 		display: flex;
 		align-items: center;
 		gap: 0.75rem;
+		color: var(--text-main);
 	}
-
 	.logo h1 {
 		font-size: 1.35rem;
 		font-family: var(--font-serif);
 		letter-spacing: -0.5px;
-	}
-
-	.book-icon {
-		font-size: 1.5rem;
 	}
 
 	.nav-links {
@@ -145,6 +142,9 @@
 		font-size: 0.85rem;
 		font-weight: 500;
 		transition: var(--transition);
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
 	}
 
 	.theme-toggle:hover {

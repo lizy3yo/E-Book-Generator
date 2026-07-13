@@ -1,4 +1,5 @@
 import type { Book, ApiKeys, StepLog, Chapter, CoverSettings } from './types';
+import { supabase } from './supabase';
 
 class GlobalState {
 	books = $state<Book[]>([]);
@@ -13,22 +14,19 @@ class GlobalState {
 	initialized = $state(false);
 
 	constructor() {
-		// Only run in client context
 		if (typeof window !== 'undefined') {
-			this.loadFromStorage();
+			this.init();
 		}
 	}
 
-	loadFromStorage() {
+	// ─── Initialisation ──────────────────────────────────────────────────────────
+
+	async init() {
+		// Load API keys from localStorage (never stored in Supabase)
 		try {
 			const savedKeys = localStorage.getItem('ebook_api_keys');
 			if (savedKeys) {
 				this.apiKeys = { ...this.apiKeys, ...JSON.parse(savedKeys) };
-			}
-
-			const savedBooks = localStorage.getItem('ebook_books');
-			if (savedBooks) {
-				this.books = JSON.parse(savedBooks);
 			}
 
 			const savedActiveBookId = localStorage.getItem('ebook_active_book_id');
@@ -36,11 +34,40 @@ class GlobalState {
 				this.activeBookId = savedActiveBookId;
 			}
 		} catch (e) {
-			console.error('Failed to load from localStorage', e);
-		} finally {
-			this.initialized = true;
+			console.error('Failed to load settings from localStorage:', e);
+		}
+
+		// Load books from Supabase; fall back to localStorage cache on error
+		await this.loadBooksFromSupabase();
+
+		this.initialized = true;
+	}
+
+	private async loadBooksFromSupabase() {
+		try {
+			const { data, error } = await supabase
+				.from('books')
+				.select('data')
+				.order('created_at', { ascending: false });
+
+			if (error) throw error;
+
+			this.books = (data ?? []).map((row: { data: Book }) => row.data);
+
+			// Refresh local cache
+			localStorage.setItem('ebook_books', JSON.stringify(this.books));
+		} catch (e) {
+			console.warn('Supabase unavailable, loading from local cache:', e);
+			try {
+				const cached = localStorage.getItem('ebook_books');
+				if (cached) this.books = JSON.parse(cached);
+			} catch {
+				this.books = [];
+			}
 		}
 	}
+
+	// ─── Persistence ─────────────────────────────────────────────────────────────
 
 	saveKeys(keys: ApiKeys) {
 		this.apiKeys = keys;
@@ -49,11 +76,42 @@ class GlobalState {
 		}
 	}
 
-	saveBooks() {
-		if (typeof window !== 'undefined') {
-			localStorage.setItem('ebook_books', JSON.stringify(this.books));
+	/** Upsert a single book to Supabase and refresh the local cache. */
+	private async persistBook(book: Book) {
+		try {
+			const { error } = await supabase
+				.from('books')
+				.upsert(
+					{ id: book.id, data: book },
+					{ onConflict: 'id' }
+				);
+
+			if (error) throw error;
+		} catch (e) {
+			console.error('Failed to persist book to Supabase:', e);
 		}
+
+		// Always keep localStorage in sync as a local cache
+		localStorage.setItem('ebook_books', JSON.stringify(this.books));
 	}
+
+	/** Remove a single book from Supabase. */
+	private async removeBookFromDB(id: string) {
+		try {
+			const { error } = await supabase
+				.from('books')
+				.delete()
+				.eq('id', id);
+
+			if (error) throw error;
+		} catch (e) {
+			console.error('Failed to delete book from Supabase:', e);
+		}
+
+		localStorage.setItem('ebook_books', JSON.stringify(this.books));
+	}
+
+	// ─── Active Book ─────────────────────────────────────────────────────────────
 
 	setActiveBook(id: string | null) {
 		this.activeBookId = id;
@@ -62,6 +120,8 @@ class GlobalState {
 			else localStorage.removeItem('ebook_active_book_id');
 		}
 	}
+
+	// ─── CRUD ────────────────────────────────────────────────────────────────────
 
 	createBook(params: {
 		title: string;
@@ -123,7 +183,7 @@ class GlobalState {
 
 		this.books = [newBook, ...this.books];
 		this.setActiveBook(newBook.id);
-		this.saveBooks();
+		this.persistBook(newBook);
 		return newBook;
 	}
 
@@ -132,63 +192,68 @@ class GlobalState {
 		if (this.activeBookId === id) {
 			this.setActiveBook(this.books.length > 0 ? this.books[0].id : null);
 		}
-		this.saveBooks();
+		this.removeBookFromDB(id);
 	}
+
+	// ─── Mutations (all persist to Supabase) ─────────────────────────────────────
 
 	addLog(bookId: string, log: Omit<StepLog, 'id' | 'timestamp'>) {
 		const bookIndex = this.books.findIndex(b => b.id === bookId);
-		if (bookIndex !== -1) {
-			const newLog: StepLog = {
-				...log,
-				id: crypto.randomUUID(),
-				timestamp: new Date().toLocaleTimeString()
-			};
-			this.books[bookIndex].logs = [...this.books[bookIndex].logs, newLog];
-			this.books[bookIndex].currentStep = log.message;
-			this.books[bookIndex].updatedAt = new Date().toISOString();
-			this.saveBooks();
-		}
+		if (bookIndex === -1) return;
+
+		const newLog: StepLog = {
+			...log,
+			id: crypto.randomUUID(),
+			timestamp: new Date().toLocaleTimeString()
+		};
+
+		this.books[bookIndex].logs = [...this.books[bookIndex].logs, newLog];
+		this.books[bookIndex].currentStep = log.message;
+		this.books[bookIndex].updatedAt = new Date().toISOString();
+		this.persistBook(this.books[bookIndex]);
 	}
 
 	updateBookStatus(bookId: string, status: Book['status']) {
 		const bookIndex = this.books.findIndex(b => b.id === bookId);
-		if (bookIndex !== -1) {
-			this.books[bookIndex].status = status;
-			this.books[bookIndex].updatedAt = new Date().toISOString();
-			this.saveBooks();
-		}
+		if (bookIndex === -1) return;
+
+		this.books[bookIndex].status = status;
+		this.books[bookIndex].updatedAt = new Date().toISOString();
+		this.persistBook(this.books[bookIndex]);
 	}
 
 	updateBookChapters(bookId: string, chapters: Chapter[]) {
 		const bookIndex = this.books.findIndex(b => b.id === bookId);
-		if (bookIndex !== -1) {
-			this.books[bookIndex].chapters = chapters;
-			this.books[bookIndex].updatedAt = new Date().toISOString();
-			this.saveBooks();
-		}
+		if (bookIndex === -1) return;
+
+		this.books[bookIndex].chapters = chapters;
+		this.books[bookIndex].updatedAt = new Date().toISOString();
+		this.persistBook(this.books[bookIndex]);
 	}
 
 	updateChapterContent(bookId: string, chapterId: string, content: string, status: Chapter['status']) {
 		const bookIndex = this.books.findIndex(b => b.id === bookId);
-		if (bookIndex !== -1) {
-			const chapIndex = this.books[bookIndex].chapters.findIndex(c => c.id === chapterId);
-			if (chapIndex !== -1) {
-				this.books[bookIndex].chapters[chapIndex].content = content;
-				this.books[bookIndex].chapters[chapIndex].status = status;
-				this.books[bookIndex].updatedAt = new Date().toISOString();
-				this.saveBooks();
-			}
-		}
+		if (bookIndex === -1) return;
+
+		const chapIndex = this.books[bookIndex].chapters.findIndex(c => c.id === chapterId);
+		if (chapIndex === -1) return;
+
+		this.books[bookIndex].chapters[chapIndex].content = content;
+		this.books[bookIndex].chapters[chapIndex].status = status;
+		this.books[bookIndex].updatedAt = new Date().toISOString();
+		this.persistBook(this.books[bookIndex]);
 	}
 
 	updateCoverSettings(bookId: string, coverSettings: CoverSettings) {
 		const bookIndex = this.books.findIndex(b => b.id === bookId);
-		if (bookIndex !== -1) {
-			this.books[bookIndex].coverSettings = coverSettings;
-			this.books[bookIndex].updatedAt = new Date().toISOString();
-			this.saveBooks();
-		}
+		if (bookIndex === -1) return;
+
+		this.books[bookIndex].coverSettings = coverSettings;
+		this.books[bookIndex].updatedAt = new Date().toISOString();
+		this.persistBook(this.books[bookIndex]);
 	}
+
+	// ─── Derived ─────────────────────────────────────────────────────────────────
 
 	get activeBook(): Book | undefined {
 		return this.books.find(b => b.id === this.activeBookId);
