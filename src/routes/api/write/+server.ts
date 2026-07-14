@@ -82,48 +82,136 @@ export const POST: RequestHandler = async ({ request }) => {
 		let systemPrompt = '';
 		let userPrompt = '';
 
+		// ── Tone → concrete writing instruction map ────────────────────────────
+		const toneInstructions: Record<string, string> = {
+			'Authoritative & Educational':
+				'Write with authority and expertise. Use clear, confident declarative sentences. Teach the reader systematically — define concepts before expanding on them, use evidence to support every claim, and maintain a professional, credible voice throughout.',
+			'Conversational & Accessible':
+				'Write as if speaking directly to the reader. Use contractions, short paragraphs, rhetorical questions, and relatable analogies. Avoid jargon unless immediately explained. The goal is warmth and clarity — every reader should feel the content is written for them personally.',
+			'Practical & Action-Oriented':
+				'Lead with value. Every section should give the reader something concrete to do, apply, or implement. Use bullet points, numbered steps, and callout boxes. Cut exposition in favour of usable frameworks and real-world application.',
+			'Academic & Research-Driven':
+				'Maintain scholarly rigour. Ground every assertion in evidence, cite sources in-text, use precise disciplinary vocabulary, and structure arguments formally (claim → evidence → analysis). Avoid colloquialisms. The tone should reflect peer-reviewed publishing standards.',
+			'Journalistic & Investigative':
+				'Open with a hook — a striking fact, anecdote, or question. Use the inverted pyramid: most important information first. Weave in interviews, statistics, and case evidence. Maintain objectivity while building a compelling narrative.',
+			'Narrative & Storytelling':
+				'Tell a story. Use scene-setting, characters (real or composite), sensory detail, and narrative arc. Alternate between close-up moments and wider perspective. Each chapter should feel like a chapter of a novel — drawing the reader forward with tension, resolution, and meaning.',
+			'Inspirational & Motivational':
+				'Write with energy and belief. Use second-person ("you") to speak directly to the reader\'s potential. Include transformational stories, powerful metaphors, and forward-looking calls to action. Every page should leave the reader feeling capable and motivated.',
+			'Reflective & Philosophical':
+				'Write with depth and measured contemplation. Pose big questions, sit with ambiguity, and explore ideas from multiple angles before arriving at insight. Use literary references, paradoxes, and nuanced language. Avoid rushing to conclusions.',
+			'Technical & Precise':
+				'Prioritise accuracy and specificity above all else. Use technical vocabulary correctly, define all domain terms on first use, structure content with numbered sections, and include code samples, diagrams, or data tables where appropriate. Assume a technically literate audience.',
+			'Instructional & Step-by-Step':
+				'Structure every section as a clear, reproducible procedure. Number all steps. State prerequisites upfront. Highlight warnings, tips, and expected outcomes. The reader should be able to follow the content and achieve a defined result without ambiguity.'
+		};
+
+		// ── Structure → chapter architecture instruction map ──────────────────
+		const structureInstructions: Record<string, string> = {
+			'Standard Chapters':
+				'Organise the book as: an opening chapter establishing context and promise, body chapters each developing one major idea with evidence and examples, and a closing chapter that synthesises key takeaways and points forward.',
+			'Problem–Solution Framework':
+				'Each chapter follows a Problem → Analysis → Resolution arc. Open by articulating a specific challenge the reader faces, develop a deep analysis of root causes, then present a clear, actionable resolution. The book as a whole moves from diagnosis to transformation.',
+			'Step-by-Step Blueprint':
+				'Structure the book as a sequential programme. Each chapter is a phase or stage in a larger process. Open each chapter with the phase goal, walk through concrete steps with examples, and close with a summary and transition to the next phase.',
+			'Pillar Framework':
+				'Identify 3–8 core pillars or principles that define the subject. Dedicate one chapter to each pillar. Open with a thesis statement for the pillar, explore it thoroughly, then show how it interconnects with the other pillars.',
+			'Story Narrative':
+				'Structure the book as a continuous narrative arc. Use a protagonist (the author, a subject, or the reader themselves) moving through challenge, growth, and resolution. Each chapter is a scene or sequence that advances the story while delivering insight.',
+			'Academic Thesis':
+				'Follow formal academic structure: Abstract → Introduction & Research Question → Literature Review → Methodology → Findings & Analysis → Discussion → Conclusion & Implications. Maintain citations, hedged language, and disciplinary conventions throughout.',
+			'Interview & Case Study':
+				'Anchor each chapter in one or more real-world case studies or expert interviews. Open with the story, extract principles and lessons, then broaden to universal application. Use primary voices (quotes, dialogue) to ground the analysis in lived reality.'
+		};
+
+		const toneGuide     = toneInstructions[tone]     ?? `Write in a ${tone} voice.`;
+		const structureGuide = structureInstructions[structure] ?? `Follow a ${structure} format.`;
+
 		if (action === 'outline') {
-			systemPrompt = 'You are a professional acquisitions editor and structuring assistant. Create a detailed outline for a book. Respond ONLY with a valid JSON array of chapters, where each chapter is an object: {"title": "Chapter Title", "order": 1, "summary": "Detailed summary of what the chapter covers"}. Do not add markdown wrapping or chat pleasantries.';
-			userPrompt = `Please create an outline for a book titled "${bookTitle}".
-Genre: ${genre}
-Tone: ${tone}
-Target Length: ${length}
-Structure: ${structure}
-Grounding Research Notes: ${researchNotes || 'None'}
+			systemPrompt = `You are a senior acquisitions editor at a major publishing house with 20 years of experience structuring bestselling non-fiction ebooks.
+Your task is to produce a publication-ready chapter outline.
+Respond ONLY with a valid JSON array — no markdown fences, no commentary.
+Each element: {"title": "string", "order": number, "summary": "string (2–3 sentences describing what the chapter covers and what the reader will gain)"}`;
 
-Return ONLY a JSON array.`;
+			userPrompt = `Create a detailed chapter outline for the following ebook:
+
+Title: "${bookTitle}"
+Genre / Subject: ${genre}
+Target Length: ${length === 'short' ? '3 chapters (~10–15k words total)' : length === 'medium' ? '5 chapters (~25–35k words total)' : '8 chapters (~50–60k words total)'}
+Writing Tone: ${tone}
+  → ${toneGuide}
+Book Structure: ${structure}
+  → ${structureGuide}
+
+Grounding Research & Author Notes:
+${researchNotes || 'None provided.'}
+
+Requirements:
+- Chapter titles must be compelling and specific, not generic.
+- Summaries must describe concrete content, not vague promises.
+- The arc across chapters must feel intentional and complete.
+
+Return ONLY a valid JSON array.`;
+
 		} else if (action === 'write-chapter') {
-			systemPrompt = `You are a best-selling author. Write a highly detailed, professional, and engaging book chapter. 
-Use a minimalist, elegant book style with Markdown formatting (use headings, quotes, lists where appropriate). 
-Integrate the provided research notes seamlessly to ground your writing and avoid hallucinations. 
-Do not include chat greeting/signature. Start directly with the writing.`;
-			userPrompt = `Book Title: "${bookTitle}"
-Chapter Title: "${chapterTitle}"
-Chapter Number: ${chapterOrder}
-Chapter Summary: ${chapterSummary}
+			systemPrompt = `You are a professional ebook author writing for a commercial publishing house.
+
+TONE DIRECTIVE — ${tone}:
+${toneGuide}
+
+FORMATTING RULES:
+- Use Markdown: ## for section headings, ### for sub-sections, > for block quotes, ** for bold key terms, * for italics.
+- Open each section with a strong topic sentence.
+- Use real examples, data points, and named case studies where possible.
+- End the chapter with a concise "Key Takeaways" or transition paragraph that points to the next chapter.
+- Do NOT include a chapter number header — start directly with the first section heading.
+- Do NOT include sign-offs, pleasantries, or meta-commentary about the writing.
+- Aim for substantial depth: each chapter should read as a complete, standalone piece of professional writing.`;
+
+			userPrompt = `Write the complete content for the following ebook chapter:
+
+Book Title: "${bookTitle}"
+Genre: ${genre}
+Book Structure: ${structure}
+
+Chapter ${chapterOrder}: "${chapterTitle}"
+Chapter Brief: ${chapterSummary}
+
 Tone: ${tone}
-Semantic Research Notes to integrate:
-${researchNotes || 'None'}
+Tone guidance: ${toneGuide}
 
-Please write the complete chapter content. Try to make it thorough, detailed, and professional (aim for a substantial narrative length).`;
+Grounding Research & Author Notes (integrate seamlessly — do not list these as sources, weave them into the narrative):
+${researchNotes || 'None provided.'}
+
+Write the full chapter now. Be thorough, substantive, and publication-ready.`;
+
 		} else if (action === 'verify-chapter') {
-			systemPrompt = `You are a critical copy-editor and fact-checker. 
-Review the provided chapter content for structural consistency, logical flow, contradictions, and factual correctness based on research grounding. 
-Provide a brief fact-checking report and then output the polished, corrected chapter content. 
-Structure your response like this:
----REPORT---
-[Your fact-checking/consistency report here]
----CONTENT---
-[The polished chapter content here]`;
-			userPrompt = `Book Title: "${bookTitle}"
-Chapter Title: "${chapterTitle}"
-Grounding Research Notes:
-${researchNotes || 'None'}
+			systemPrompt = `You are a professional copy-editor and fact-checker at a publishing house.
+Your job is to review a drafted ebook chapter for:
+1. Factual accuracy against the provided research notes
+2. Internal consistency and logical flow
+3. Tone adherence — the chapter should match the declared tone
+4. Structural completeness — does it fulfil the chapter brief?
+5. Grammar, clarity, and prose quality
 
-Here is the draft chapter content:
+Return your response in EXACTLY this format with no deviation:
+---REPORT---
+[Concise bullet-point report: flag any factual issues, tone deviations, structural gaps, or prose weaknesses. If all clear, state so.]
+---CONTENT---
+[The fully polished, corrected chapter content in Markdown]`;
+
+			userPrompt = `Book Title: "${bookTitle}"
+Chapter: "${chapterTitle}"
+Declared Tone: ${tone}
+Tone guidance: ${toneGuide}
+
+Grounding Research & Author Notes:
+${researchNotes || 'None provided.'}
+
+Draft chapter to review:
 ${chapterContent}
 
-Please review, self-correct, and return the report and the content.`;
+Review, correct, and return in the required format.`;
 		}
 
 		// Make HTTP request to Anthropic

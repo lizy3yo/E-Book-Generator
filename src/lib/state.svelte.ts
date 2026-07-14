@@ -1,4 +1,4 @@
-import type { Book, ApiKeys, StepLog, Chapter, CoverSettings } from './types';
+import type { Book, ApiKeys, StepLog, Chapter, CoverSettings, CoverOption, PipelineStage } from './types';
 import { supabase } from './supabase';
 
 class GlobalState {
@@ -134,6 +134,8 @@ class GlobalState {
 		useUltraRealistic: boolean;
 		researchDepth: 'basic' | 'deep';
 		selfCorrectionLevel: 'standard' | 'rigorous';
+		userContext: string;
+		coverReferencePrompt: string;
 	}): Book {
 		const newBook: Book = {
 			id: crypto.randomUUID(),
@@ -147,6 +149,11 @@ class GlobalState {
 			useUltraRealistic: params.useUltraRealistic,
 			researchDepth: params.researchDepth,
 			selfCorrectionLevel: params.selfCorrectionLevel,
+			userContext: params.userContext,
+			coverReferencePrompt: params.coverReferencePrompt,
+			pipelineStage: 1,
+			coverOptions: [],
+			selectedCoverIndex: null,
 			status: 'idle',
 			currentStep: 'Idle',
 			coverSettings: {
@@ -249,6 +256,92 @@ class GlobalState {
 		if (bookIndex === -1) return;
 
 		this.books[bookIndex].coverSettings = coverSettings;
+		this.books[bookIndex].updatedAt = new Date().toISOString();
+		this.persistBook(this.books[bookIndex]);
+	}
+
+	setPipelineStage(bookId: string, stage: PipelineStage) {
+		const bookIndex = this.books.findIndex(b => b.id === bookId);
+		if (bookIndex === -1) return;
+
+		this.books[bookIndex].pipelineStage = stage;
+		this.books[bookIndex].updatedAt = new Date().toISOString();
+		this.persistBook(this.books[bookIndex]);
+	}
+
+	setCoverOptions(bookId: string, options: CoverOption[]) {
+		const bookIndex = this.books.findIndex(b => b.id === bookId);
+		if (bookIndex === -1) return;
+
+		this.books[bookIndex].coverOptions = options;
+		this.books[bookIndex].updatedAt = new Date().toISOString();
+		this.persistBook(this.books[bookIndex]);
+	}
+
+	selectCoverOption(bookId: string, index: number) {
+		const bookIndex = this.books.findIndex(b => b.id === bookId);
+		if (bookIndex === -1) return;
+
+		const option = this.books[bookIndex].coverOptions[index];
+		if (!option) return;
+
+		this.books[bookIndex].selectedCoverIndex = index;
+		// Apply chosen cover image to coverSettings
+		this.books[bookIndex].coverSettings = {
+			...this.books[bookIndex].coverSettings,
+			bgImageUrl: option.imageUrl,
+			bgImagePrompt: option.prompt
+		};
+		this.books[bookIndex].updatedAt = new Date().toISOString();
+		this.persistBook(this.books[bookIndex]);
+	}
+
+	/** Replace a single cover option (used when regenerating one specific option). */
+	replaceCoverOption(bookId: string, index: number, option: CoverOption) {
+		const bookIndex = this.books.findIndex(b => b.id === bookId);
+		if (bookIndex === -1) return;
+
+		const opts = [...this.books[bookIndex].coverOptions];
+		opts[index] = option;
+		this.books[bookIndex].coverOptions = opts;
+		this.books[bookIndex].updatedAt = new Date().toISOString();
+		this.persistBook(this.books[bookIndex]);
+	}
+
+	/** Update the cover reference / visual direction creative brief. */
+	updateCoverReferencePrompt(bookId: string, prompt: string) {
+		const bookIndex = this.books.findIndex(b => b.id === bookId);
+		if (bookIndex === -1) return;
+
+		this.books[bookIndex].coverReferencePrompt = prompt;
+		this.books[bookIndex].updatedAt = new Date().toISOString();
+		this.persistBook(this.books[bookIndex]);
+	}
+
+	/** Regenerate a single chapter's content + illustration without touching other chapters. */
+	async regenerateChapter(
+		bookId: string,
+		chapterId: string,
+		fetchFn: (chapterId: string) => Promise<{ content: string; illustrationUrl: string | null }>
+	) {
+		const bookIndex = this.books.findIndex(b => b.id === bookId);
+		if (bookIndex === -1) return;
+
+		const chapIndex = this.books[bookIndex].chapters.findIndex(c => c.id === chapterId);
+		if (chapIndex === -1) return;
+
+		this.books[bookIndex].chapters[chapIndex].status = 'writing';
+		this.persistBook(this.books[bookIndex]);
+
+		try {
+			const result = await fetchFn(chapterId);
+			this.books[bookIndex].chapters[chapIndex].content = result.content;
+			this.books[bookIndex].chapters[chapIndex].illustrationUrl = result.illustrationUrl;
+			this.books[bookIndex].chapters[chapIndex].status = 'completed';
+		} catch {
+			this.books[bookIndex].chapters[chapIndex].status = 'failed';
+		}
+
 		this.books[bookIndex].updatedAt = new Date().toISOString();
 		this.persistBook(this.books[bookIndex]);
 	}

@@ -48,6 +48,22 @@
 		}
 	});
 
+	// ── Cover variants (generated in the wizard Stage 2) ──────────────────
+	let coverOptions = $derived(globalState.activeBook?.coverOptions ?? []);
+	let selectedCoverIndex = $derived(globalState.activeBook?.selectedCoverIndex ?? null);
+
+	/**
+	 * Switch the active design to a different variant.
+	 * Applies the chosen option's image + prompt to coverSettings,
+	 * then redraws the canvas so the change is immediately visible.
+	 */
+	function activateVariant(index: number) {
+		if (!globalState.activeBookId) return;
+		globalState.selectCoverOption(globalState.activeBookId, index);
+		// bgImage cache must be cleared so redrawCanvas picks up the new URL
+		bgImage = null;
+	}
+
 	function updateSetting<K extends keyof CoverSettings>(key: K, value: CoverSettings[K]) {
 		if (globalState.activeBook) {
 			const updated = { ...globalState.activeBook.coverSettings, [key]: value };
@@ -565,6 +581,44 @@
 
 			<!-- Right: Canvas Book Cover Preview -->
 			<div class="preview-column">
+
+				<!-- ── Design Variants ─────────────────────────────────────────── -->
+				{#if coverOptions.length > 0}
+					<div class="variants-panel card">
+						<div class="variants-header">
+							<h3 class="font-serif">Design Variants</h3>
+							<span class="variants-hint font-serif">Generated during setup — click to switch active design</span>
+						</div>
+						<div class="variants-grid">
+							{#each coverOptions as opt, idx}
+								<!-- svelte-ignore a11y_click_events_have_key_events -->
+								<!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
+								<div
+									class="variant-thumb {selectedCoverIndex === idx ? 'active' : ''}"
+									role="button"
+									tabindex="0"
+									onclick={() => activateVariant(idx)}
+									onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activateVariant(idx); } }}
+									title="Switch to: {opt.style}"
+								>
+									<div class="variant-img-wrap">
+										{#if opt.imageUrl}
+											<img src={opt.imageUrl} alt={opt.style} />
+										{:else}
+											<div class="variant-empty">—</div>
+										{/if}
+										{#if selectedCoverIndex === idx}
+											<div class="variant-active-badge" aria-label="Active design">✓</div>
+										{/if}
+									</div>
+									<span class="variant-label font-serif">{opt.style}</span>
+								</div>
+							{/each}
+						</div>
+					</div>
+				{/if}
+
+				<!-- Canvas Book Cover Preview -->
 				<div class="canvas-wrapper card">
 					<canvas 
 						bind:this={canvas} 
@@ -789,6 +843,9 @@
 	.preview-column {
 		position: sticky;
 		top: 85px;
+		display: flex;
+		flex-direction: column;
+		gap: 1.5rem;
 	}
 
 	@media (max-width: 900px) {
@@ -803,6 +860,120 @@
 		align-items: center;
 		gap: 1.5rem;
 		padding: 2rem;
+	}
+
+	/* ── Design Variants panel ─────────────────────────────────────────── */
+	.variants-panel {
+		padding: 1.25rem 1.5rem;
+	}
+
+	.variants-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		margin-bottom: 1rem;
+		gap: 0.75rem;
+		flex-wrap: wrap;
+	}
+
+	.variants-header h3 {
+		font-size: 1rem;
+		font-weight: 600;
+		margin: 0;
+	}
+
+	.variants-hint {
+		font-size: 0.75rem;
+		color: var(--text-muted);
+		font-style: italic;
+	}
+
+	.variants-grid {
+		display: grid;
+		grid-template-columns: repeat(3, 1fr);
+		gap: 0.75rem;
+	}
+
+	.variant-thumb {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+		cursor: pointer;
+		border-radius: var(--radius-sm);
+		padding: 0.35rem;
+		border: 2px solid transparent;
+		transition: border-color 0.18s ease, box-shadow 0.18s ease;
+	}
+
+	.variant-thumb:hover {
+		border-color: var(--border-focus);
+	}
+
+	.variant-thumb.active {
+		border-color: var(--accent);
+		box-shadow: 0 0 0 1px var(--accent);
+	}
+
+	.variant-img-wrap {
+		position: relative;
+		width: 100%;
+		aspect-ratio: 2 / 3;
+		border-radius: 2px;
+		overflow: hidden;
+		background-color: var(--bg-inset);
+	}
+
+	.variant-img-wrap img {
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+		display: block;
+		transition: transform 0.2s ease;
+	}
+
+	.variant-thumb:hover .variant-img-wrap img {
+		transform: scale(1.03);
+	}
+
+	.variant-empty {
+		width: 100%;
+		height: 100%;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--text-muted);
+		font-size: 1.25rem;
+	}
+
+	.variant-active-badge {
+		position: absolute;
+		top: 5px;
+		right: 5px;
+		width: 20px;
+		height: 20px;
+		border-radius: 50%;
+		background-color: var(--accent);
+		color: #fff;
+		font-size: 0.7rem;
+		font-weight: 700;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+	}
+
+	.variant-label {
+		font-size: 0.72rem;
+		font-weight: 600;
+		color: var(--text-muted);
+		text-align: center;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.variant-thumb.active .variant-label {
+		color: var(--accent);
 	}
 
 	.cover-canvas {
