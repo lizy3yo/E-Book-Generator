@@ -52,20 +52,73 @@ class GlobalState {
 
 			if (error) throw error;
 
-			this.books = (data ?? []).map((row: { data: Book }) => row.data);
+			this.books = (data ?? [])
+				.map((row: { data: Book }) => row.data)
+				.map(this.sanitiseBook);
 
-			// Refresh local cache
+			// Refresh local cache with clean data
 			localStorage.setItem('ebook_books', JSON.stringify(this.books));
 		} catch (e) {
 			console.warn('Supabase unavailable, loading from local cache:', e);
 			try {
 				const cached = localStorage.getItem('ebook_books');
-				if (cached) this.books = JSON.parse(cached);
+				if (cached) this.books = (JSON.parse(cached) as Book[]).map(this.sanitiseBook);
 			} catch {
 				this.books = [];
 			}
 		}
 	}
+
+	/**
+	 * Strip debug / mock artifacts that may have been written into chapter
+	 * content during earlier development sessions.  Runs on every load so
+	 * stale data is cleaned transparently without manual intervention.
+	 *
+	 * Patterns removed:
+	 *   • *[Mock …]* italic wrappers left by old mock API responses
+	 *   • --- \n*[Edited passage — review and merge manually]*\n… fallback blocks
+	 *   • Bare [Mock …] text (without italic markers, after entity rendering)
+	 *   • Leading / trailing blank lines left behind after removal
+	 */
+	private sanitiseBook = (book: Book): Book => {
+		const cleanedChapters = book.chapters.map((chapter) => {
+			if (!chapter.content) return chapter;
+
+			let content = chapter.content;
+
+			// Remove the splicePage fallback block:
+			// "---\n*[Edited passage — review and merge manually]*\n\n<new content>"
+			// The new content following it should be kept, so we strip only the header.
+			content = content.replace(
+				/\n*---\n\*\[Edited passage[^\]]*\]\*\n*/g,
+				'\n\n'
+			);
+
+			// Remove old italic mock markers: *[Mock …]* (any variant)
+			content = content.replace(/\*\[Mock[^\]]*\]\*/g, '');
+
+			// Remove bare [Mock …] text (rendered version without asterisks)
+			content = content.replace(/\[Mock[^\]]*\]/g, '');
+
+			// Collapse 3+ consecutive blank lines down to 2
+			content = content.replace(/\n{3,}/g, '\n\n').trim();
+
+			if (content === chapter.content) return chapter;
+
+			return { ...chapter, content };
+		});
+
+		// Only create a new book object if something actually changed
+		const changed = cleanedChapters.some((c, i) => c !== book.chapters[i]);
+		if (!changed) return book;
+
+		const cleanedBook: Book = { ...book, chapters: cleanedChapters };
+
+		// Persist the clean version asynchronously — fire and forget
+		this.persistBook(cleanedBook);
+
+		return cleanedBook;
+	};
 
 	// ─── Persistence ─────────────────────────────────────────────────────────────
 
@@ -245,10 +298,40 @@ class GlobalState {
 		const chapIndex = this.books[bookIndex].chapters.findIndex(c => c.id === chapterId);
 		if (chapIndex === -1) return;
 
-		this.books[bookIndex].chapters[chapIndex].content = content;
-		this.books[bookIndex].chapters[chapIndex].status = status;
-		this.books[bookIndex].updatedAt = new Date().toISOString();
-		this.persistBook(this.books[bookIndex]);
+		// Replace the chapter object immutably so Svelte 5's fine-grained reactivity
+		// detects the change and re-runs all derived values and effects that depend
+		// on activeBook.chapters. Deep-mutation (chapters[i].content = …) does not
+		// reliably invalidate $derived selectors that return the same object reference.
+		const updatedChapters = this.books[bookIndex].chapters.map((c, i) =>
+			i === chapIndex ? { ...c, content, status } : c
+		);
+		const updatedBook: Book = {
+			...this.books[bookIndex],
+			chapters: updatedChapters,
+			updatedAt: new Date().toISOString()
+		};
+		// Replace the top-level array so the $state proxy fires a root-level change
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
+	}
+
+	updateChapterIllustration(bookId: string, chapterId: string, illustrationUrl: string) {
+		const bookIndex = this.books.findIndex(b => b.id === bookId);
+		if (bookIndex === -1) return;
+
+		const chapIndex = this.books[bookIndex].chapters.findIndex(c => c.id === chapterId);
+		if (chapIndex === -1) return;
+
+		const updatedChapters = this.books[bookIndex].chapters.map((c, i) =>
+			i === chapIndex ? { ...c, illustrationUrl } : c
+		);
+		const updatedBook: Book = {
+			...this.books[bookIndex],
+			chapters: updatedChapters,
+			updatedAt: new Date().toISOString()
+		};
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
 	}
 
 	updateCoverSettings(bookId: string, coverSettings: CoverSettings) {
