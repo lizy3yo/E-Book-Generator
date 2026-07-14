@@ -879,46 +879,51 @@ em { font-style: italic; }
 								--header-flex-align: {headerFlexAlign};
 							"
 						>
-							<!-- Book page wrap: running header + paper card + page number -->
+							<!-- Book page wrap — centres the sheet in the scroll viewport -->
 							<div class="book-page-wrap">
 
-								<!-- Running header (recto: odd pages show book title; verso: even pages show chapter) -->
-								<div class="running-header" aria-hidden="true">
-									<span class="running-header__book">{activeBook.title}</span>
-									<span class="running-header__chapter">Chapter {chap.order} — {chap.title}</span>
-								</div>
-
-								<!-- Raised paper card -->
+								<!-- US Letter sheet: 8.5 × 11 in — header, body, and footer all live inside -->
 								<div class="book-page-card style-{coverStyle.toLowerCase().replace(/\s+/g, '-')}" style="font-size: {fontSize}px;">
 
-									{#if pageIdx === 0}
-										<!-- Only show the chapter header on the first page of the chapter -->
-										<div class="chapter-header">
-											<span class="chapter-label">Chapter {chap.order}</span>
-											<h2 class="chapter-title">{chap.title}</h2>
-											<hr class="chapter-rule" />
-										</div>
-									{/if}
+									<!-- Running header — top of page, inside the margin -->
+									<header class="running-header" aria-hidden="true">
+										<span class="running-header__book">{activeBook.title}</span>
+										<span class="running-header__chapter">Chapter {chap.order} — {chap.title}</span>
+									</header>
 
-									{#if pageIdx === 0 && chap.illustrationUrl}
-										<div class="chapter-illust">
-											<img src={chap.illustrationUrl} alt="Illustration – {chap.title}" />
-										</div>
-									{/if}
+									<!-- Body content area — scrolls between header and footer -->
+									<div class="page-body">
 
-									<div class="chapter-body" class:has-drop-cap={pageIdx === 0}>
-										{#each pageBlocks as block}
-											{@html block}
-										{/each}
+										{#if pageIdx === 0}
+											<!-- Only show the chapter header on the first page of the chapter -->
+											<div class="chapter-header">
+												<span class="chapter-label">Chapter {chap.order}</span>
+												<h2 class="chapter-title">{chap.title}</h2>
+												<hr class="chapter-rule" />
+											</div>
+										{/if}
+
+										{#if pageIdx === 0 && chap.illustrationUrl}
+											<div class="chapter-illust">
+												<img src={chap.illustrationUrl} alt="Illustration – {chap.title}" />
+											</div>
+										{/if}
+
+										<div class="chapter-body" class:has-drop-cap={pageIdx === 0}>
+											{#each pageBlocks as block}
+												{@html block}
+											{/each}
+										</div>
+
 									</div>
 
-								</div>
+									<!-- Running footer — page number centred at the bottom of the sheet -->
+									<footer class="page-footer" aria-label="Page {calculateOverallPageNumber(chapIdx, pageIdx)}">
+										<span class="page-footer__rule"></span>
+										<span class="page-footer__num">{calculateOverallPageNumber(chapIdx, pageIdx)}</span>
+										<span class="page-footer__rule"></span>
+									</footer>
 
-								<!-- Page number footer (cumulative across all pages in the book) -->
-								<div class="page-number-footer" aria-label="Page number">
-									<span class="page-number-footer__line"></span>
-									<span class="page-number-footer__num">{calculateOverallPageNumber(chapIdx, pageIdx)}</span>
-									<span class="page-number-footer__line"></span>
 								</div>
 
 							</div>
@@ -1273,64 +1278,38 @@ em { font-style: italic; }
 	/* ── Book-page layout ───────────────────────────────────────────────────── */
 
 	/*
-	 * Outer wrap — provides the page-background gutter around each sheet.
-	 * Centres the 8.5in card horizontally; scroll area handles overflow-x.
+	 * Outer wrap — provides the viewport gutter around each sheet.
+	 * The card itself is centred; the scroll area handles horizontal overflow.
 	 */
 	.book-page-wrap {
 		width: 100%;
-		margin: 0 auto;
-		padding: 3rem 2rem 4rem;
+		padding: 3.5rem 2rem;
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		gap: 0;
 		box-sizing: border-box;
 	}
 
-	/* Running header — mimics the live text at the top of a typeset book page */
-	.running-header {
-		width: min(8.5in, 100%);
-		margin: 0 auto;
-		display: flex;
-		justify-content: space-between;
-		align-items: baseline;
-		padding: 0 0 0.6rem;
-		border-bottom: 1px solid var(--chapter-accent-color, var(--r-border));
-		opacity: 0.45;
-		margin-bottom: 0.75rem;
-		gap: 1rem;
-		box-sizing: border-box;
-	}
-
-	.running-header__book {
-		font-family: var(--font-sans);
-		font-size: 0.65rem;
-		text-transform: uppercase;
-		letter-spacing: 2.5px;
-		color: var(--chapter-accent-color, var(--r-muted));
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-
-	.running-header__chapter {
-		font-family: var(--font-serif);
-		font-size: 0.65rem;
-		font-style: italic;
-		color: var(--chapter-accent-color, var(--r-muted));
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		text-align: right;
-	}
-
-	/* The raised paper card — US Letter: 8.5 × 11 in (ANSI A) */
+	/*
+	 * US Letter sheet — 8.5 × 11 in (ANSI A), the industry standard for
+	 * trade paperbacks and self-published ebooks printed to PDF.
+	 *
+	 * Inner layout is a flex column:
+	 *   ┌──────────────────────────────────────────┐
+	 *   │  running-header   (fixed, ~0.4in)         │
+	 *   │──────────────────────────────────────────│
+	 *   │                                           │
+	 *   │  page-body        (flex: 1, scrollable)   │
+	 *   │                                           │
+	 *   │──────────────────────────────────────────│
+	 *   │  page-footer      (fixed, ~0.35in)        │
+	 *   └──────────────────────────────────────────┘
+	 *
+	 * Outer padding mirrors Chicago Manual of Style margins:
+	 *   top: 1 in  |  bottom: 1 in
+	 *   gutter (left): 1.5 in  |  fore-edge (right): 1.25 in
+	 */
 	.book-page-card {
-		/*
-		 * width: min(8.5in, 100%) — fills up to exactly 8.5in if viewport
-		 * allows, gracefully shrinks on smaller screens.
-		 * fixed height: 11in — splits paragraphs/elements across pages to match real typesetting
-		 */
 		width: min(8.5in, 100%);
 		height: 11in;
 		margin: 0 auto;
@@ -1341,7 +1320,14 @@ em { font-style: italic; }
 			0 1px 4px rgba(36,34,32,0.06),
 			0 6px 20px rgba(36,34,32,0.08),
 			0 18px 40px rgba(36,34,32,0.06);
+
+		/* Outer page margins */
 		padding: 1in 1.25in 1in 1.5in;
+
+		/* Three-zone flex column */
+		display: flex;
+		flex-direction: column;
+
 		color: var(--r-text);
 		line-height: 1.85;
 		transition: color 0.25s, background-color 0.25s, box-shadow 0.25s;
@@ -1350,13 +1336,11 @@ em { font-style: italic; }
 		overflow: hidden;
 	}
 
-	/* Spine binding edge accent line — mimics a perfect-bound inner margin */
+	/* Spine binding accent — mimics a perfect-bound inner margin */
 	.book-page-card::before {
 		content: '';
 		position: absolute;
-		left: 0;
-		top: 0;
-		bottom: 0;
+		left: 0; top: 0; bottom: 0;
 		width: 3px;
 		background: linear-gradient(
 			to bottom,
@@ -1369,41 +1353,94 @@ em { font-style: italic; }
 		border-radius: 2px 0 0 2px;
 	}
 
-	/* Page-number footer */
-	.page-number-footer {
-		width: min(8.5in, 100%);
-		margin: 0.75rem auto 0;
+	/* ── Running header ─────────────────────────────────────────────────────── */
+	/*
+	 * Sits at the top of the page inside the outer margin.
+	 * Book title on the left (recto convention), chapter on the right.
+	 */
+	.running-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		padding-bottom: 0.45rem;
+		margin-bottom: 0.6rem;
+		border-bottom: 0.5px solid var(--chapter-accent-color, var(--r-border));
+		flex-shrink: 0;
+		gap: 1rem;
+	}
+
+	.running-header__book {
+		font-family: var(--font-sans);
+		font-size: 0.6rem;
+		text-transform: uppercase;
+		letter-spacing: 2.5px;
+		font-weight: 600;
+		color: var(--chapter-accent-color, var(--r-muted));
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		opacity: 0.7;
+	}
+
+	.running-header__chapter {
+		font-family: var(--font-serif);
+		font-size: 0.6rem;
+		font-style: italic;
+		color: var(--chapter-accent-color, var(--r-muted));
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		text-align: right;
+		opacity: 0.7;
+	}
+
+	/* ── Page body ──────────────────────────────────────────────────────────── */
+	/* Fills all space between the running header and the footer */
+	.page-body {
+		flex: 1;
+		overflow: hidden;
+		min-height: 0;
+	}
+
+	/* ── Running footer / page number ───────────────────────────────────────── */
+	/*
+	 * Centred folio (page number) with a thin rule above it — the most
+	 * common convention in professionally typeset books.
+	 */
+	.page-footer {
 		display: flex;
 		align-items: center;
 		justify-content: center;
 		gap: 1rem;
-		padding: 0.6rem 0 0;
-		border-top: 1px solid var(--chapter-accent-color, var(--r-border));
-		opacity: 0.4;
-		box-sizing: border-box;
+		padding-top: 0.45rem;
+		margin-top: 0.6rem;
+		border-top: 0.5px solid var(--chapter-accent-color, var(--r-border));
+		flex-shrink: 0;
 	}
 
-	.page-number-footer__line {
+	.page-footer__rule {
 		flex: 1;
 		height: 1px;
-		background: transparent;
+		/* intentionally transparent — the border-top on .page-footer carries the full rule */
 	}
 
-	.page-number-footer__num {
+	.page-footer__num {
 		font-family: var(--font-serif);
-		font-size: 0.7rem;
+		font-size: 0.65rem;
 		color: var(--chapter-accent-color, var(--r-muted));
 		letter-spacing: 1.5px;
+		opacity: 0.7;
 	}
 
 	/*
-	 * Below 1100px: viewport is narrower than sidebar (280px) + 8.5in card (816px)
-	 * + gutters. Let the card go fluid so it never overflows the scroll area.
+	 * Fluid below 1100px: viewport is narrower than sidebar (280px) + 8.5in card.
+	 * Card stays fluid so it never overflows the scroll area.
 	 */
 	@media (max-width: 1100px) {
 		.book-page-card {
 			width: 100%;
 			min-height: 11in;
+			height: auto;
 			padding: 1in 1.25in 1in 1.5in;
 		}
 	}
@@ -1411,6 +1448,7 @@ em { font-style: italic; }
 		.book-page-card {
 			width: 100%;
 			min-height: auto;
+			height: auto;
 			padding: 2.5rem 1.5rem 2.5rem 2rem;
 			border-radius: 0;
 		}
