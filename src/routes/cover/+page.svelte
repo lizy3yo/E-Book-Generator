@@ -138,6 +138,12 @@
 			ctx.drawImage(bgImage, sx, sy, sWidth, sHeight, 0, 0, width, height);
 		}
 
+		// Skip drawing overlays, borders, and typography if using a pre-baked template
+		const isBakedInTemplate = coverOptions.some(opt => opt.imageUrl && opt.imageUrl === settings.bgImageUrl);
+		if (isBakedInTemplate) {
+			return;
+		}
+
 		// 2. Draw color overlay
 		if (settings.overlayOpacity > 0) {
 			ctx.fillStyle = `rgba(26, 21, 16, ${settings.overlayOpacity})`;

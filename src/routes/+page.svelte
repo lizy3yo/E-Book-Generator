@@ -908,27 +908,35 @@
 										? `background-image: url('${cover.bgImageUrl}'); background-size: cover; background-position: center;`
 										: 'background: linear-gradient(160deg,#2C2C2C 0%,#1A1A1A 100%);'}
 								">
-									<div class="preview-cover-overlay" style="background:rgba(26,21,16,{cover.overlayOpacity ?? 0.15});"></div>
-									<div class="preview-cover-content" style="text-align:{cover.alignment ?? 'center'};">
-										<div>
-											<div class="preview-cover-title" style="color:{cover.titleColor};font-size:{Math.round((cover.titleSize ?? 36) * 0.42)}px;">{active.title}</div>
-											{#if active.subtitle}
-												<div class="preview-cover-subtitle" style="color:{cover.subtitleColor};font-size:{Math.round((cover.subtitleSize ?? 18) * 0.42)}px;">{active.subtitle}</div>
-											{/if}
+									<div class="preview-cover-overlay" style="background:rgba(26,21,16,{active.coverOptions?.some(opt => opt.imageUrl && opt.imageUrl === cover.bgImageUrl) ? 0 : (cover.overlayOpacity ?? 0.15)});"></div>
+									{#if !active.coverOptions?.some(opt => opt.imageUrl && opt.imageUrl === cover.bgImageUrl)}
+										<div class="preview-cover-content" style="text-align:{cover.alignment ?? 'center'};">
+											<div>
+												<div class="preview-cover-title" style="color:{cover.titleColor};font-size:{Math.round((cover.titleSize ?? 36) * 0.42)}px;">{active.title}</div>
+												{#if active.subtitle}
+													<div class="preview-cover-subtitle" style="color:{cover.subtitleColor};font-size:{Math.round((cover.subtitleSize ?? 18) * 0.42)}px;">{active.subtitle}</div>
+												{/if}
+											</div>
+											<div class="preview-cover-author" style="color:{cover.authorColor};font-size:{Math.round((cover.authorSize ?? 20) * 0.42)}px;">{active.author}</div>
 										</div>
-										<div class="preview-cover-author" style="color:{cover.authorColor};font-size:{Math.round((cover.authorSize ?? 20) * 0.42)}px;">{active.author}</div>
-									</div>
+									{/if}
 									<div class="preview-page-label">Cover</div>
 								</div>
 
 								<!-- Page 2: Title page -->
 								<div class="preview-page preview-interior">
 									<div class="preview-title-page">
-										<div class="preview-tp-genre">{active.genre}</div>
-										<div class="preview-tp-title">{active.title}</div>
-										{#if active.subtitle}<div class="preview-tp-subtitle">{active.subtitle}</div>{/if}
-										<div class="preview-tp-rule"></div>
-										<div class="preview-tp-author">{active.author}</div>
+										<!-- Top decorative bar -->
+										<div class="preview-tp-topbar"></div>
+										<div class="preview-tp-inner">
+											<div class="preview-tp-genre">{active.genre.toUpperCase()}</div>
+											<div class="preview-tp-title">{active.title}</div>
+											{#if active.subtitle}<div class="preview-tp-subtitle">{active.subtitle}</div>{/if}
+											<div class="preview-tp-ornament">⸻</div>
+											<div class="preview-tp-author">{active.author}</div>
+										</div>
+										<!-- Bottom publisher line -->
+										<div class="preview-tp-bottombar"></div>
 									</div>
 									<div class="preview-page-label">Title Page</div>
 								</div>
@@ -1456,47 +1464,75 @@
 		height: 100%;
 		display: flex;
 		flex-direction: column;
-		justify-content: center;
-		align-items: center;
+		justify-content: space-between;
+		align-items: stretch;
 		text-align: center;
-		padding: 24px 18px;
-		gap: 4px;
+		padding: 0;
+		background: #FAF8F4;
+	}
+	.preview-tp-topbar {
+		height: 5px;
+		background: linear-gradient(90deg, #8E7453 0%, #C4A97A 50%, #8E7453 100%);
+		flex-shrink: 0;
+	}
+	.preview-tp-inner {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 5px;
+		padding: 18px 16px;
 	}
 	.preview-tp-genre {
 		font-family: 'Inter', sans-serif;
-		font-size: 6.5px;
-		font-weight: 600;
+		font-size: 5.5px;
+		font-weight: 700;
 		text-transform: uppercase;
-		letter-spacing: 0.12em;
+		letter-spacing: 0.18em;
 		color: #8E7453;
-		margin-bottom: 8px;
+		border: 0.75px solid #C4A97A;
+		padding: 1.5px 5px;
+		border-radius: 1px;
+		margin-bottom: 6px;
 	}
 	.preview-tp-title {
 		font-family: 'Lora', Georgia, serif;
-		font-size: 13px;
+		font-size: 14px;
 		font-weight: 700;
-		color: #1A1612;
-		line-height: 1.25;
-		margin-bottom: 4px;
+		color: #1A1208;
+		line-height: 1.2;
+		margin-bottom: 2px;
+		letter-spacing: -0.01em;
 	}
 	.preview-tp-subtitle {
 		font-family: 'Inter', sans-serif;
-		font-size: 7.5px;
+		font-size: 7px;
 		color: #6E6860;
-		line-height: 1.4;
+		line-height: 1.45;
 		max-width: 150px;
+		font-style: italic;
 	}
-	.preview-tp-rule {
-		width: 32px;
-		height: 1px;
-		background: #8E7453;
-		margin: 10px auto;
+	.preview-tp-ornament {
+		font-family: Georgia, serif;
+		font-size: 10px;
+		color: #8E7453;
+		opacity: 0.7;
+		margin: 6px 0;
+		letter-spacing: -1px;
 	}
 	.preview-tp-author {
 		font-family: 'Lora', Georgia, serif;
-		font-size: 8px;
+		font-size: 7.5px;
 		font-style: italic;
-		color: #6E6860;
+		color: #4A4238;
+		letter-spacing: 0.04em;
+	}
+	.preview-tp-bottombar {
+		height: 22px;
+		border-top: 0.75px solid #DDD5C8;
+		background: #F2EDE5;
+		flex-shrink: 0;
 	}
 
 	/* ── Table of Contents page ──────────────────────────────────────────── */
