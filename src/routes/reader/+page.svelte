@@ -112,24 +112,72 @@
 		});
 	}
 
-	// ── Build HTML for export ──────────────────────────────────────────────────
-	function buildFullHtml(): string {
+	// Helper to convert remote URLs to base64 Data URLs for offline/CORS-safe canvas drawing
+	async function getAsDataUrl(url: string): Promise<string> {
+		if (!url) return '';
+		if (url.startsWith('data:')) return url;
+		try {
+			const res = await fetch(url);
+			if (!res.ok) throw new Error(`Fetch failed with status ${res.status}`);
+			const blob = await res.blob();
+			return new Promise((resolve, reject) => {
+				const reader = new FileReader();
+				reader.onloadend = () => resolve(reader.result as string);
+				reader.onerror = reject;
+				reader.readAsDataURL(blob);
+			});
+		} catch (err) {
+			console.warn(`Could not convert ${url} to data URL (CORS or network error). Image will be omitted from PDF.`);
+			return ''; // Return empty — callers check hasOwnProperty to distinguish 'failed' from 'not tried'
+		}
+	}
+
+	// ── Build HTML for export (self-contained — does not depend on $state pagination) ──
+	function buildFullHtml(dataUrls: Record<string, string> = {}): string {
 		if (!activeBook) return '';
 		const cs = activeBook.coverSettings;
-		const isBaked = activeBook.coverOptions?.some((o) => o.imageUrl && o.imageUrl === cs.bgImageUrl);
-		const opt = (activeBook.selectedCoverIndex !== null && activeBook.coverOptions?.[activeBook.selectedCoverIndex])
+
+		const opt = (activeBook.selectedCoverIndex !== null
+			&& activeBook.coverOptions?.[activeBook.selectedCoverIndex])
 			? activeBook.coverOptions[activeBook.selectedCoverIndex]
 			: null;
-		const coverStyle = opt?.style || 'Warm Editorial';
+		const coverStyle  = opt?.style || 'Warm Editorial';
 		const coverStyleClass = `style-${coverStyle.toLowerCase().replace(/\s+/g, '-')}`;
+		const isBaked = activeBook.coverOptions?.some(
+			(o) => o.imageUrl && o.imageUrl === cs.bgImageUrl
+		);
 
-		const coverBg = cs.bgImageUrl
-			? `background-image:url('${cs.bgImageUrl}');background-size:cover;background-position:center;`
+		// ─ Design tokens ─
+		const titleFont     = cs.titleFont || 'Lora';
+		const titleFontCss  = titleFont === 'Inter'   ? "'Inter',sans-serif"
+						 : titleFont === 'Georgia' ? 'Georgia,serif'
+						 : titleFont === 'Arial'   ? 'Arial,sans-serif'
+						                           : "'Lora',Georgia,serif";
+		const bodyFontCss   = (titleFont === 'Inter' || titleFont === 'Arial')
+			? "'Inter',sans-serif" : "'Lora',Georgia,serif";
+		const accent        = cs.authorColor  || '#8E7453';
+		const titleColor    = cs.titleColor   || '#1A1612';
+		const alignment     = cs.alignment    || 'left';
+		const ruleW  = alignment === 'center' ? '60px' : alignment === 'right' ? '120px' : '100%';
+		const ruleML = alignment === 'center' ? 'auto' : alignment === 'right' ? 'auto' : '0';
+		const ruleMR = alignment === 'center' ? 'auto' : alignment === 'right' ? '0'    : 'auto';
+		const flexAlign = alignment === 'center' ? 'center'
+			          : alignment === 'right'  ? 'flex-end' : 'flex-start';
+		const ornament = coverStyle === 'Dark Minimalist' ? '✦'
+			         : coverStyle === 'Bold Graphic' ? '◆' : '❦';
+
+		// ─ Cover page background image ─
+		// Use the base64 data URL if successfully fetched; fall back to gradient if fetch failed (empty string) or no image.
+		const rawBg = cs.bgImageUrl || '';
+		const bgImg = rawBg && Object.prototype.hasOwnProperty.call(dataUrls, rawBg)
+			? dataUrls[rawBg]   // base64 string, or '' if fetch failed
+			: rawBg;            // not attempted — use remote URL as-is
+		const coverBg = bgImg
+			? `background-image:url('${bgImg}');background-size:cover;background-position:center;`
 			: 'background:linear-gradient(135deg,#FAF7F2 0%,#EDE5D5 100%);';
-		const coverOverlay = isBaked ? 0 : cs.overlayOpacity;
-		const coverInner = isBaked
-			? ''
-			: `<div class="cover-inner">
+		const overlayOpacity = isBaked ? 0 : (cs.overlayOpacity ?? 0);
+		const coverBody = isBaked ? '' : `
+			<div class="cover-inner">
 				<div>
 					<h1 class="cover-title">${activeBook.title}</h1>
 					<p class="cover-subtitle">${activeBook.subtitle ?? ''}</p>
@@ -137,256 +185,415 @@
 				<p class="cover-author">${activeBook.author ?? ''}</p>
 			</div>`;
 
+		// ─ TOC ─
 		const tocRows = activeBook.chapters
-			.map((c) => `<div class="toc-row"><span>Chapter ${c.order}: ${c.title}</span></div>`)
+			.map((c) => `<div class="toc-row">Chapter ${c.order} — ${c.title}</div>`)
 			.join('');
 
-		const designOrnament = coverStyle === 'Dark Minimalist' ? '✦' : coverStyle === 'Bold Graphic' ? '◆' : '❦';
-		const titleFontName = cs.titleFont === 'Inter' ? "'Inter',sans-serif" : cs.titleFont === 'Georgia' ? "Georgia,serif" : cs.titleFont === 'Arial' ? "Arial,sans-serif" : "'Lora',Georgia,serif";
-		const bodyFontName = cs.titleFont === 'Inter' || cs.titleFont === 'Arial' ? "'Inter',sans-serif" : "'Lora',Georgia,serif";
-		const designAccentColor = cs.authorColor || '#8E7453';
-		const designTitleColor = cs.titleColor || '#1A1612';
+		// ─ Chapters: re-paginate synchronously from raw markdown ─
+		const PAGE_W_PX  = 816;  // 8.5in @ 96dpi
+		const PAGE_H_PX  = 1056; // 11in  @ 96dpi
+		const PAD_TOP    = 96;   // 1in
+		const PAD_BOTTOM = 96;   // 1in
+		const PAD_LEFT   = 144;  // 1.5in (spine)
+		const PAD_RIGHT  = 120;  // 1.25in
+		const HDR_H      = 40;   // running header + margin
+		const FTR_H      = 40;   // running footer + margin
+		const BODY_H = PAGE_H_PX - PAD_TOP - PAD_BOTTOM - HDR_H - FTR_H;
+		const BODY_W = PAGE_W_PX - PAD_LEFT - PAD_RIGHT;
 
-		const ruleWidth = cs.alignment === 'center' ? '60px' : cs.alignment === 'right' ? '120px' : '100%';
-		const ruleMarginLeft = cs.alignment === 'center' ? 'auto' : cs.alignment === 'right' ? 'auto' : '0';
-		const ruleMarginRight = cs.alignment === 'center' ? 'auto' : cs.alignment === 'right' ? '0' : 'auto';
-		const headerFlexAlign = cs.alignment === 'center' ? 'center' : cs.alignment === 'right' ? 'flex-end' : 'flex-start';
+		let chapHtml = '';
+		let pageCounter = 1;
 
-		let chaptersHtml = '';
-		activeBook.chapters.forEach((c, chapIdx) => {
-			const illust = c.illustrationUrl
-				? `<div class="illustration"><img src="${c.illustrationUrl}" alt="${c.title}" crossorigin="anonymous" /></div>`
+		activeBook.chapters.forEach((c) => {
+			if (c.status !== 'completed' || !c.content) return;
+
+			const fullMd   = parseMarkdown(c.content);
+			const rawIllust = c.illustrationUrl || '';
+			const mappedIllust = rawIllust && Object.prototype.hasOwnProperty.call(dataUrls, rawIllust)
+				? dataUrls[rawIllust]  // base64 or '' if fetch failed
+				: rawIllust;           // not attempted
+			const illustHtml = mappedIllust
+				? `<div class="illustration"><img src="${mappedIllust}" alt="${c.title}" /></div>`
 				: '';
 
-			const chapPages = paginatedChapters[c.id] || [['']];
+			const tmp = document.createElement('div');
+			tmp.innerHTML = fullMd;
+			const blocks = Array.from(tmp.children).map((el) => el.outerHTML);
 
-			chapPages.forEach((pageBlocks, pageIdx) => {
-				const isFirstPage = pageIdx === 0;
-				const headerHtml = isFirstPage
-					? `<div class="chapter-header">
-							<span class="chapter-number-label">Chapter ${c.order}</span>
-							<h1 class="chapter-title">${c.title}</h1>
-							<hr class="chapter-rule" />
-					   </div>
-					   ${illust}`
-					: '';
+			type Page = { blocks: string[]; isFirst: boolean };
+			const pages: Page[] = [];
+			let cur: string[] = [];
+			let curH = 0;
+			const firstPageReserve = 160 + (mappedIllust ? 280 : 0);
+			let budget = BODY_H - firstPageReserve;
 
-				const bodyContent = pageBlocks.join('\n');
-				const pageNum = calculateOverallPageNumber(chapIdx, pageIdx);
+			const measurer = document.createElement('div');
+			measurer.style.cssText =
+				`position:absolute;visibility:hidden;width:${BODY_W}px;` +
+				`font-size:13px;line-height:1.85;font-family:${bodyFontCss};`;
+			document.body.appendChild(measurer);
 
-				const separator = (chapIdx === activeBook.chapters.length - 1 && pageIdx === chapPages.length - 1)
-					? ''
-					: `<div class="chapter-separator"><div class="sep-line"></div><span class="sep-ornament">${designOrnament}</span><div class="sep-line"></div></div>`;
+			for (const blk of blocks) {
+				measurer.innerHTML = blk;
+				const h = measurer.offsetHeight + 20;
+				if (curH + h > budget && cur.length > 0) {
+					pages.push({ blocks: cur, isFirst: pages.length === 0 });
+					cur = []; curH = 0; budget = BODY_H;
+				}
+				cur.push(blk); curH += h;
+			}
+			if (cur.length) pages.push({ blocks: cur, isFirst: pages.length === 0 });
+			document.body.removeChild(measurer);
 
-				chaptersHtml += `
+			pages.forEach(({ blocks: pBlocks, isFirst }) => {
+				const chapHeader = isFirst ? `
+					<div class="chapter-header">
+						<span class="chapter-label">Chapter ${c.order}</span>
+						<h2 class="chapter-title">${c.title}</h2>
+						<hr class="chapter-rule">
+					</div>${illustHtml}` : '';
+
+				chapHtml += `
 					<section class="chapter-section ${coverStyleClass}">
-						<div class="page-running-header">
-							<span class="running-title">${activeBook.title}</span>
-							<span class="running-sep">|</span>
-							<span class="running-section">Chapter ${c.order}</span>
+						<div class="running-header">
+							<span class="rh-book">${activeBook.title}</span>
+							<span class="rh-chap">Chapter ${c.order} — ${c.title}</span>
 						</div>
-						<div class="chapter-content-flow">
-							${headerHtml}
-							<div class="chapter-body ${isFirstPage ? 'has-drop-cap' : ''}">${bodyContent}</div>
+						<div class="chapter-content ${isFirst ? 'has-drop-cap' : ''}">
+							${chapHeader}
+							${pBlocks.join('\n')}
 						</div>
-						<div class="page-running-footer">
-							<span class="page-number">— ${pageNum} —</span>
+						<div class="running-footer">
+							<span class="page-num">${pageCounter++}</span>
 						</div>
-						${separator}
 					</section>`;
 			});
 		});
 
-		return `<!doctype html><html><head>
+		return `<!doctype html>
+<html lang="en">
+<head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${activeBook.title}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Lora:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=Lora:ital,wght@0,400;0,600;1,400&display=swap');
-*,*::before,*::after{box-sizing:border-box;}
-body{margin:0;padding:0;background:#fff;color:#1A1612;font-family:${bodyFontName};font-size:13px;line-height:1.85;-webkit-font-smoothing:antialiased;}
-.cover-page{width:210mm;height:297mm;position:relative;display:flex;flex-direction:column;padding:18mm;${coverBg}text-align:${cs.alignment};page-break-after:always;overflow:hidden;}
-.cover-overlay{position:absolute;inset:0;background:rgba(26,21,16,${coverOverlay});}
-.cover-inner{position:relative;z-index:2;height:100%;display:flex;flex-direction:column;justify-content:${cs.textPosition === 'top' ? 'flex-start' : cs.textPosition === 'bottom' ? 'flex-end' : 'center'};gap:1.5rem;}
-.cover-title{font-size:${cs.titleSize}px;font-weight:700;color:${cs.titleColor};line-height:1.2;margin:0 0 8px;font-family:${titleFontName};}
-.cover-subtitle{font-size:${cs.subtitleSize}px;color:${cs.subtitleColor};font-family:'Inter',sans-serif;font-weight:500;margin:0;}
-.cover-author{font-size:${cs.authorSize}px;font-style:italic;color:${cs.authorColor};margin:0;}
-.content-wrap{width:174mm;margin:0 auto;padding:14mm 0;}
-.toc-section{page-break-after:always;margin-bottom:14mm;}
-.toc-section h1{font-size:22px;font-weight:600;border-bottom:1.5px solid #D9CFC2;padding-bottom:8px;margin-bottom:18px;}
-.toc-row{padding:5px 0;border-bottom:1px dotted #E0D8CC;font-size:12.5px;font-family:'Inter',sans-serif;}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+body, .chapter-section, .cover-page, .toc-page {
+  font-family: ${bodyFontCss};
+  font-size: 12pt;
+  line-height: 1.85;
+  color: #1A1612;
+  background: #fff;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+@page { size: 8.5in 11in; margin: 0; }
+.cover-page {
+  width: 8.5in;
+  height: 11in;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 1.25in 1.25in;
+  ${coverBg}
+  text-align: ${alignment};
+  overflow: hidden;
+  page-break-after: always;
+}
+.cover-overlay {
+  position: absolute; inset: 0;
+  background: rgba(26,21,16,${overlayOpacity});
+}
+.cover-inner {
+  position: relative; z-index: 2;
+  height: 100%;
+  display: flex; flex-direction: column;
+  justify-content: ${cs.textPosition === 'top' ? 'flex-start' : cs.textPosition === 'bottom' ? 'flex-end' : 'center'};
+  gap: 1.5rem;
+}
+.cover-title  { font-family: ${titleFontCss}; font-size: ${cs.titleSize ?? 36}px; font-weight: 700; color: ${cs.titleColor ?? '#fff'}; line-height: 1.2; }
+.cover-subtitle { font-family: 'Inter',sans-serif; font-size: ${cs.subtitleSize ?? 18}px; color: ${cs.subtitleColor ?? '#ccc'}; font-weight: 500; }
+.cover-author   { font-style: italic; font-size: ${cs.authorSize ?? 16}px; color: ${cs.authorColor ?? '#aaa'}; }
 
-.chapter-section{page-break-before:always;padding:1in 1.25in 1in 1.5in;display:flex;flex-direction:column;width:8.5in;height:11in;min-height:11in;justify-content:space-between;box-sizing:border-box;background:#fff;}
-.page-running-header {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	font-family: 'Inter', sans-serif;
-	font-size: 9px;
-	text-transform: uppercase;
-	letter-spacing: 1.5px;
-	color: #6A6055;
-	border-bottom: 1px solid #E0D8CC;
-	padding-bottom: 6px;
-	margin-bottom: 30px;
+.toc-page {
+  width: 8.5in;
+  min-height: 11in;
+  padding: 1in 1.5in 1in 1.5in;
+  page-break-after: always;
+  box-sizing: border-box;
 }
-.running-sep {
-	opacity: 0.4;
-	margin: 0 6px;
-}
-.chapter-content-flow {
-	flex: 1;
-}
-.page-running-footer {
-	display: flex;
-	justify-content: center;
-	margin-top: 35px;
-	padding-top: 6px;
-	border-top: 1px dashed #E0D8CC;
-}
-.page-number {
-	font-family: 'Inter', sans-serif;
-	font-size: 10px;
-	color: #6A6055;
-	letter-spacing: 1px;
-}
+.toc-page h1 { font-family: ${titleFontCss}; font-size: 22pt; font-weight: 700; color: ${titleColor}; border-bottom: 1.5pt solid ${accent}; padding-bottom: 10px; margin-bottom: 24px; }
+.toc-row { padding: 7px 0; border-bottom: 1pt dotted #D9CFC2; font-size: 11pt; }
 
-.chapter-header{margin-bottom:2.5rem;text-align:${cs.alignment};display:flex;flex-direction:column;align-items:${headerFlexAlign};}
-.chapter-number-label{font-family:'Inter',sans-serif;font-size:10.5px;text-transform:uppercase;letter-spacing:3px;color:${designAccentColor};margin-bottom:6px;}
-.chapter-title{font-family:${titleFontName};font-size:24px;font-weight:700;line-height:1.25;margin:0 0 14px;color:${designTitleColor};}
-.chapter-rule{border:none;border-top:1.5px solid ${designAccentColor};margin:0;width:${ruleWidth};margin-left:${ruleMarginLeft};margin-right:${ruleMarginRight};}
-.illustration{margin:18px 0;text-align:center;}
-.illustration img{max-width:100%;max-height:260px;border-radius:3px;}
-.chapter-body{font-family:${bodyFontName};}
-.chapter-body p{margin:0 0 14px;text-indent:1.4em;hyphens:auto;}
-.chapter-body p:first-of-type{text-indent:0;}
-.chapter-body.has-drop-cap p:first-of-type::first-letter {
-	font-family: ${titleFontName};
-	font-size: 3.2em;
-	float: left;
-	line-height: 0.85;
-	margin-top: 0.1em;
-	margin-right: 0.15em;
-	font-weight: 700;
-	color: ${designAccentColor};
+.chapter-section {
+  width: 8.5in;
+  height: 11in;
+  padding: 1in 1.25in 1in 1.5in;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  page-break-before: always;
+  page-break-after: always;
+  box-sizing: border-box;
+  background: #fff;
+  overflow: hidden;
 }
-.chapter-body h2{font-size:17px;font-weight:600;margin:22px 0 10px;font-family:${titleFontName};color:${designTitleColor};}
-.chapter-body h3{font-size:14px;font-weight:600;margin:18px 0 8px;font-family:${titleFontName};color:${designTitleColor};}
-.chapter-body blockquote{border-left:3px solid ${designAccentColor};margin:18px 0;padding-left:16px;font-style:italic;color:#6A6055;}
-.chapter-body ul{margin:12px 0;padding-left:22px;}
-.chapter-body li{margin-bottom:6px;}
+.running-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-family: 'Inter',sans-serif;
+  font-size: 7.5pt;
+  text-transform: uppercase;
+  letter-spacing: 1.5pt;
+  color: #9A8E82;
+  border-bottom: 0.5pt solid #D9CFC2;
+  padding-bottom: 6pt;
+  margin-bottom: 0;
+  flex-shrink: 0;
+}
+.rh-book  { font-weight: 600; }
+.rh-chap  { font-style: italic; font-family: ${titleFontCss}; text-transform: none; letter-spacing: 0; }
+.chapter-content { flex: 1; overflow: hidden; padding-top: 0.5in; }
+.chapter-header { margin-bottom: 2rem; text-align: ${alignment}; display: flex; flex-direction: column; align-items: ${flexAlign}; }
+.chapter-label  { font-family: 'Inter',sans-serif; font-size: 8pt; text-transform: uppercase; letter-spacing: 3pt; color: ${accent}; margin-bottom: 6pt; }
+.chapter-title  { font-family: ${titleFontCss}; font-size: 20pt; font-weight: 700; line-height: 1.25; color: ${titleColor}; margin-bottom: 12pt; }
+.chapter-rule   { border: none; border-top: 1.5pt solid ${accent}; width: ${ruleW}; margin-left: ${ruleML}; margin-right: ${ruleMR}; }
+.illustration { margin: 16pt 0; text-align: center; }
+.illustration img { max-width: 100%; max-height: 240pt; border-radius: 3pt; }
+p { margin: 0 0 10pt; text-indent: 1.4em; hyphens: auto; }
+p:first-of-type { text-indent: 0; }
+.has-drop-cap p:first-of-type::first-letter {
+  font-family: ${titleFontCss};
+  font-size: 3.2em; float: left;
+  line-height: 0.85; margin-top: 0.1em; margin-right: 0.1em;
+  font-weight: 700; color: ${accent};
+}
+h2 { font-family: ${titleFontCss}; font-size: 15pt; font-weight: 600; color: ${titleColor}; margin: 18pt 0 8pt; }
+h3 { font-family: ${titleFontCss}; font-size: 12pt; font-weight: 600; color: ${titleColor}; margin: 14pt 0 6pt; }
+blockquote { border-left: 3pt solid ${accent}; margin: 14pt 0; padding-left: 14pt; font-style: italic; color: #6A6055; }
+ul, ol { margin: 10pt 0; padding-left: 20pt; }
+li { margin-bottom: 5pt; }
+strong { font-weight: 700; }
+em { font-style: italic; }
+.running-footer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding-top: 6pt;
+  border-top: 0.5pt solid #D9CFC2;
+  flex-shrink: 0;
+}
+.page-num { font-family: 'Inter',sans-serif; font-size: 8pt; color: #9A8E82; letter-spacing: 1pt; }
 
-/* Cover-specific chapter style pairs */
-.style-dark-minimalist .chapter-title {
-	font-weight: 300;
-	letter-spacing: 2px;
-	text-transform: uppercase;
-}
-.style-dark-minimalist .chapter-body blockquote {
-	border-left: 2px solid ${designAccentColor};
-	background-color: #FAF8F5;
-	padding: 12px 18px;
-	border-radius: 4px;
-}
+.style-dark-minimalist .chapter-title { font-weight: 300; letter-spacing: 2pt; text-transform: uppercase; }
+.style-bold-graphic    .chapter-title { font-weight: 800; text-transform: uppercase; letter-spacing: -0.5pt; }
+.style-bold-graphic    .chapter-label { background: ${accent}; color: #fff; padding: 2pt 6pt; border-radius: 2pt; }
+.style-bold-graphic    .chapter-rule  { border-top-width: 4pt; }
+.style-warm-editorial  .chapter-title { font-style: italic; }
 
-.style-bold-graphic .chapter-title {
-	font-weight: 800;
-	text-transform: uppercase;
-	letter-spacing: -0.5px;
+@media print {
+  body { background: #fff; }
+  .cover-page, .toc-page, .chapter-section { page-break-after: always; }
 }
-.style-bold-graphic .chapter-number-label {
-	font-weight: 800;
-	background: ${designAccentColor};
-	color: #fff !important;
-	display: inline-block;
-	padding: 2px 8px;
-	border-radius: 3px;
-	margin-bottom: 8px;
-}
-.style-bold-graphic .chapter-rule {
-	border-top: 4px solid ${designAccentColor};
-}
-
-.style-warm-editorial .chapter-title {
-	font-style: italic;
-}
-.style-warm-editorial .chapter-body p:first-of-type::first-letter {
-	font-style: italic;
-}
-
-/* Chapter separator styles */
-.chapter-separator {
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	gap: 1.5rem;
-	margin-top: 30px;
-	margin-bottom: 10px;
-	page-break-inside: avoid;
-}
-.sep-line {
-	flex: 1;
-	height: 1px;
-	background: ${designAccentColor};
-	opacity: 0.25;
-}
-.sep-ornament {
-	font-size: 1.2rem;
-	color: ${designAccentColor};
-	opacity: 0.75;
-	line-height: 1;
-}
-
-@page{size:8.5in 11in;margin:0;}
-@media print{body{background:#fff;}.cover-page{page-break-after:always;}.chapter-section{page-break-before:always;page-break-after:always;}}
-</style></head><body>
-<div class="cover-page"><div class="cover-overlay"></div>${coverInner}</div>
-<div class="content-wrap">
-<section class="toc-section"><h1>Contents</h1>${tocRows}</section>
-${chaptersHtml}
-</div>
-</body></html>`;
+</style>
+</head>
+<body>
+  <div class="cover-page">
+    <div class="cover-overlay"></div>
+    ${coverBody}
+  </div>
+  <div class="toc-page">
+    <h1>Contents</h1>
+    ${tocRows}
+  </div>
+  ${chapHtml}
+</body>
+</html>`;
 	}
 
-	function handleCompileHtml() {
+	// ── Export HTML ──────────────────────────────────────────────────────────
+	async function handleCompileHtml() {
 		if (!activeBook) return;
-		const html = buildFullHtml();
+
+		// Convert images to data URLs so the HTML file is self-contained
+		const imageUrls: string[] = [];
+		const cs = activeBook.coverSettings;
+		if (cs.bgImageUrl) imageUrls.push(cs.bgImageUrl);
+		activeBook.chapters.forEach((c) => {
+			if (c.illustrationUrl) imageUrls.push(c.illustrationUrl);
+		});
+		const dataUrls: Record<string, string> = {};
+		await Promise.all(imageUrls.map(async (url) => {
+			dataUrls[url] = await getAsDataUrl(url);
+		}));
+
+		const html = buildFullHtml(dataUrls);
 		const blob = new Blob([html], { type: 'text/html' });
-		const url = URL.createObjectURL(blob);
+		const blobUrl = URL.createObjectURL(blob);
 		const a = document.createElement('a');
-		a.href = url;
+		a.href = blobUrl;
 		a.download = `${activeBook.title.toLowerCase().replace(/\s+/g, '_')}_ebook.html`;
+		document.body.appendChild(a);
 		a.click();
-		URL.revokeObjectURL(url);
+		document.body.removeChild(a);
+		URL.revokeObjectURL(blobUrl);
 	}
 
-	// ── PDF Export via print window ────────────────────────────────────────────
+	// ── PDF Export — jsPDF + html2canvas (industry-standard, no html2pdf.js wrapper) ──
+	//
+	// html2pdf.js 0.14.0 internally calls jsPDF.getPageSize() which was removed in
+	// jsPDF 4.x, causing a silent TypeError that aborts the entire export chain.
+	// We bypass html2pdf.js entirely and drive jsPDF + html2canvas ourselves so we
+	// control every step and avoid the version incompatibility.
+	//
+	// Rendering approach:
+	//   • Write the full HTML document into a hidden <iframe> so it gets its own
+	//     CSS cascade, its own <head> (fonts, styles), and correct layout dimensions.
+	//   • Wait for the iframe's load event and font readiness before capturing.
+	//   • Query every page element (.cover-page, .toc-page, .chapter-section) and
+	//     capture each one individually with html2canvas at 2× DPI (print quality).
+	//   • Add each captured image as a full-bleed letter-size page in jsPDF.
+	//   • Output as Blob → object URL → programmatic <a> click.
 	async function handleExportPdf() {
 		if (!activeBook || isPdfExporting) return;
 		isPdfExporting = true;
-		try {
-			const html = buildFullHtml();
-			const printWin = window.open('', '_blank', 'width=900,height=700');
-			if (!printWin) {
-				alert('Pop-up blocked. Please allow pop-ups for this page to export PDF.');
-				isPdfExporting = false;
-				return;
-			}
-			printWin.document.open();
-			printWin.document.write(html);
-			printWin.document.close();
 
-			await new Promise<void>((resolve) => {
-				printWin.onload = () => resolve();
-				setTimeout(resolve, 2500);
+		let iframe: HTMLIFrameElement | null = null;
+
+		try {
+			// ── Step 1: Resolve all images to base64 data URLs ─────────────────
+			// html2canvas cannot load cross-origin images even with useCORS when
+			// the response lacks CORS headers (common for AI-generated image CDNs).
+			// Converting to data: URLs first makes capture 100% reliable.
+			const imageUrls: string[] = [];
+			const cs = activeBook.coverSettings;
+			if (cs.bgImageUrl) imageUrls.push(cs.bgImageUrl);
+			activeBook.chapters.forEach((c) => {
+				if (c.illustrationUrl) imageUrls.push(c.illustrationUrl);
 			});
 
-			printWin.focus();
-			printWin.print();
-			setTimeout(() => { try { printWin.close(); } catch (_) {} }, 4000);
+			const dataUrls: Record<string, string> = {};
+			await Promise.all(
+				imageUrls.map(async (url) => {
+					dataUrls[url] = await getAsDataUrl(url);
+				})
+			);
+
+			// ── Step 2: Build the self-contained HTML document ─────────────────
+			const fullHtml = buildFullHtml(dataUrls);
+
+			// ── Step 3: Mount a hidden iframe and write the document into it ───
+			// An iframe gives the document its own CSS scope — styles in the
+			// generated HTML are fully isolated from the host page.
+			iframe = document.createElement('iframe');
+			// Visually hidden but still rendered (visibility:hidden would prevent
+			// layout; left:-9999px keeps it off-screen while allowing offsetHeight).
+			iframe.style.cssText =
+				'position:fixed;left:-9999px;top:0;width:8.5in;height:11in;border:0;opacity:0;pointer-events:none;';
+			document.body.appendChild(iframe);
+
+			await new Promise<void>((resolve, reject) => {
+				iframe!.onload = () => resolve();
+				iframe!.onerror = () => reject(new Error('iframe failed to load'));
+				// srcdoc is the safest cross-browser way to inject a full HTML doc
+				iframe!.srcdoc = fullHtml;
+			});
+
+			const iDoc = iframe.contentDocument!;
+			const iWin = iframe.contentWindow!;
+
+			// ── Step 4: Wait for fonts inside the iframe ───────────────────────
+			if (iDoc.fonts) await iDoc.fonts.ready;
+			// Extra settle time for background-image paints and layout reflow
+			await new Promise((resolve) => setTimeout(resolve, 600));
+
+			// ── Step 5: Collect page elements ─────────────────────────────────
+			const pageEls = Array.from(
+				iDoc.querySelectorAll<HTMLElement>('.cover-page, .toc-page, .chapter-section')
+			);
+
+			if (pageEls.length === 0) {
+				throw new Error(
+					'No page elements found in the generated document. ' +
+					'Make sure at least one chapter has been written.'
+				);
+			}
+
+			console.log(`[PDF] Capturing ${pageEls.length} page(s)…`);
+
+			// ── Step 6: Load html2canvas ───────────────────────────────────────
+			const html2canvasModule = await import('html2canvas');
+			// @ts-ignore — ESM/CJS interop
+			const html2canvas = html2canvasModule.default ?? html2canvasModule;
+
+			// ── Step 7: Load jsPDF ─────────────────────────────────────────────
+			const { jsPDF } = await import('jspdf');
+
+			// Letter page: 8.5 × 11 in
+			const PDF_W_IN = 8.5;
+			const PDF_H_IN = 11;
+			// Pixel dimensions at 96 dpi (browser default) × 2 for print quality
+			const SCALE     = 2;
+			const PX_W      = 816  * SCALE;  // 8.5in @ 96dpi × scale
+			const PX_H      = 1056 * SCALE;  // 11in  @ 96dpi × scale
+
+			const pdf = new jsPDF({
+				orientation: 'portrait',
+				unit: 'in',
+				format: [PDF_W_IN, PDF_H_IN],
+				compress: true
+			});
+
+			// ── Step 8: Capture each page and add to PDF ───────────────────────
+			for (let i = 0; i < pageEls.length; i++) {
+				const el = pageEls[i];
+
+				const canvas = await html2canvas(el, {
+					scale: SCALE,
+					useCORS: true,
+					allowTaint: false,
+					logging: false,
+					// Target the iframe's window so computed styles resolve correctly
+					windowWidth:  iWin.innerWidth,
+					windowHeight: iWin.innerHeight,
+					width:  816,
+					height: 1056,
+					backgroundColor: '#ffffff'
+				});
+
+				const imgData = canvas.toDataURL('image/jpeg', 0.97);
+
+				if (i > 0) pdf.addPage([PDF_W_IN, PDF_H_IN], 'portrait');
+
+				// Add image full-bleed (no margins — the page layout handles all spacing)
+				pdf.addImage(imgData, 'JPEG', 0, 0, PDF_W_IN, PDF_H_IN, undefined, 'FAST');
+
+				console.log(`[PDF] Page ${i + 1}/${pageEls.length} captured`);
+			}
+
+			// ── Step 9: Download ───────────────────────────────────────────────
+			const filename = `${activeBook.title.toLowerCase().replace(/\s+/g, '_')}_ebook.pdf`;
+			const blob = pdf.output('blob');
+			const blobUrl = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = blobUrl;
+			a.download = filename;
+			document.body.appendChild(a);
+			a.click();
+			document.body.removeChild(a);
+			// Short delay before revoking so the browser has time to start the download
+			setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+
 		} catch (err) {
-			console.error('PDF export error:', err);
-			alert('PDF export encountered an error. Please try again.');
+			console.error('[PDF] Export error:', err);
+			alert(`PDF export failed: ${err instanceof Error ? err.message : String(err)}`);
 		} finally {
+			iframe?.remove();
 			isPdfExporting = false;
 		}
 	}
@@ -738,7 +945,6 @@ ${chaptersHtml}
 		flex: 1;
 		display: flex;
 		flex-direction: column;
-		height: calc(100vh - 65px);
 		overflow: hidden;
 	}
 
@@ -760,9 +966,9 @@ ${chaptersHtml}
 	.no-book a { text-decoration: underline; font-weight: 600; }
 
 	.reader-layout {
-		display: grid;
-		grid-template-columns: 280px 1fr;
-		height: 100%;
+		display: flex;
+		flex-direction: row;
+		height: calc(100vh - 65px);
 		overflow: hidden;
 	}
 
@@ -788,15 +994,20 @@ ${chaptersHtml}
 		--r-border: #2D2A26; --r-active-bg: #272523;
 	}
 
-	/* Sidebar */
+	/* Sidebar — fixed panel that never scrolls with content */
 	.reader-sidebar {
+		width: 280px;
+		min-width: 280px;
+		height: 100%;
 		background-color: var(--r-sidebar);
 		border-right: 1px solid var(--r-border);
 		display: flex;
 		flex-direction: column;
-		height: 100%;
 		overflow-y: auto;
 		transition: background-color 0.25s;
+		position: sticky;
+		top: 0;
+		flex-shrink: 0;
 	}
 
 	.book-spine {
@@ -966,13 +1177,37 @@ ${chaptersHtml}
 
 	@keyframes spin { to { transform: rotate(360deg); } }
 
-	/* Scroll area */
+	/* Scroll area — fills remaining width, owns all vertical scrolling */
 	.reader-scroll-area {
+		flex: 1;
+		min-width: 0; /* prevent flex blowout */
 		background-color: var(--r-viewport);
 		overflow-y: auto;
 		overflow-x: auto;
 		height: 100%;
 		transition: background-color 0.25s;
+	}
+
+	/* ─ Responsive: collapse sidebar above content on small screens ─ */
+	@media (max-width: 768px) {
+		.reader-layout {
+			flex-direction: column;
+			height: auto;
+			overflow: visible;
+		}
+		.reader-sidebar {
+			width: 100%;
+			min-width: 0;
+			height: auto;
+			max-height: 220px;
+			position: static;
+			border-right: none;
+			border-bottom: 1px solid var(--r-border);
+			overflow-y: auto;
+		}
+		.reader-scroll-area {
+			height: calc(100vh - 65px - 220px);
+		}
 	}
 
 	/* Cover section container for book mockup centering */
