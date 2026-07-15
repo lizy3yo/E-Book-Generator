@@ -164,13 +164,45 @@ TONE DIRECTIVE — ${tone}:
 ${toneGuide}
 
 FORMATTING RULES:
-- Use Markdown: ## for section headings, ### for sub-sections, > for block quotes, ** for bold key terms, * for italics.
+- Use Markdown: ## for section headings, ### for sub-sections, ** for bold key terms, * for italics.
 - Open each section with a strong topic sentence.
 - Use real examples, data points, and named case studies where possible.
 - End the chapter with a concise "Key Takeaways" or transition paragraph that points to the next chapter.
 - Do NOT include a chapter number header — start directly with the first section heading.
 - Do NOT include sign-offs, pleasantries, or meta-commentary about the writing.
-- Aim for substantial depth: each chapter should read as a complete, standalone piece of professional writing.`;
+- Aim for substantial depth: each chapter should read as a complete, standalone piece of professional writing.
+
+VISUAL ELEMENTS & LAYOUT DIRECTIVES (Align content with professional, publication-ready ebook standards):
+1. TABLES FOR COMPARISONS: If the section lists scenarios, checklists, comparisons, or lookup guides, format them using standard markdown tables.
+   Example:
+   | Done | Fix | Notes |
+   | :--- | :--- | :--- |
+   | [ ] | 1. Find main water shutoff | Located in basement or near street meter |
+2. PROFESSIONAL CALLOUT BOXES: For tips, definitions, specific guidelines, warning checklists, or important rules, wrap them in clean HTML callout divs.
+   Structure:
+   <div class="callout-box">
+     <span class="callout-box__title">ROGER'S RULE / SAFETY WARNING / KEY CHECKPOINT</span>
+     <div class="callout-box__content">Detailed practical rule or checklist items...</div>
+   </div>
+3. DIAGRAMS & FLOWCHARTS: Where a sequence of steps, a loop/cycle, or visual anatomy is described (e.g. "Water Shutoff Loop" or "Leak-Trace Decision Tree"), write a visual diagram block using a clean HTML flex container matching these classes:
+   Structure:
+   <div class="diagram-box">
+     <div class="diagram-box__title">Diagram Title (e.g., Faucet Anatomy)</div>
+     <div class="diagram-box__subtitle">Sub-label detail</div>
+     <div class="diagram-flow">
+       <div class="diagram-step">
+         <div class="diagram-step__num">1. See It</div>
+         <div class="diagram-step__text">Observe stain or dampness</div>
+       </div>
+       <div class="diagram-arrow">➔</div>
+       <div class="diagram-step">
+         <div class="diagram-step__num">2. Stop Damage</div>
+         <div class="diagram-step__text">Locate shutoff immediately</div>
+       </div>
+       <!-- Add arrows and steps as needed -->
+     </div>
+     <div class="diagram-takeaway">Short summary takeaway about this diagram...</div>
+   </div>`;
 
 			userPrompt = `Write the complete content for the following ebook chapter:
 

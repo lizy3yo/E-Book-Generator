@@ -112,10 +112,29 @@ Rules:
 - Write entirely new prose — do NOT reference, copy, or paraphrase the existing content.
 - Anchor your writing to the chapter brief; it defines the scope and purpose of this chapter.
 - Use the declared tone and genre conventions throughout.
-- Use Markdown: ## for section headings, ### for sub-headings, > for block quotes, ** for bold key terms.
+- Use Markdown: ## for section headings, ### for sub-headings, ** for bold key terms, * for italics.
 - Open with a strong hook. End with a concise synthesis or forward bridge to the next chapter.
 - Do NOT include a chapter-number heading at the top.
-- Aim for the same approximate depth and length as a professionally published trade ebook chapter.`;
+- Aim for the same approximate depth and length as a professionally published trade ebook chapter.
+
+VISUAL ELEMENTS & LAYOUT DIRECTIVES (Align content with professional, publication-ready ebook standards):
+1. TABLES FOR COMPARISONS: If the section lists scenarios, checklists, comparisons, or lookup guides, format them using standard markdown tables.
+2. PROFESSIONAL CALLOUT BOXES: For tips, definitions, specific guidelines, warning checklists, or important rules, wrap them in clean HTML callout divs:
+   <div class="callout-box">
+     <span class="callout-box__title">TITLE LABEL</span>
+     <div class="callout-box__content">Content...</div>
+   </div>
+3. DIAGRAMS & FLOWCHARTS: Where a sequence of steps, a loop/cycle, or visual anatomy is described, write a visual diagram block using a clean HTML flex container matching these classes:
+   <div class="diagram-box">
+     <div class="diagram-box__title">Diagram Title</div>
+     <div class="diagram-box__subtitle">Sub-label detail</div>
+     <div class="diagram-flow">
+       <div class="diagram-step"><div class="diagram-step__num">1. Step Name</div><div class="diagram-step__text">Description</div></div>
+       <div class="diagram-arrow">➔</div>
+       <div class="diagram-step"><div class="diagram-step__num">2. Step Name</div><div class="diagram-step__text">Description</div></div>
+     </div>
+     <div class="diagram-takeaway">Summary...</div>
+   </div>`;
 
 			userPrompt = `Chapter ${chapterOrder}: "${chapterTitle}"
 

@@ -13,7 +13,7 @@
 	let title       = $state('');
 	let subtitle    = $state('');
 	let author      = $state('');
-	let genre       = $state('Technology & AI');
+	let genre       = $state('');
 	let length      = $state<'short' | 'medium' | 'long'>('medium');
 	let tone        = $state('Authoritative & Educational');
 	let structure   = $state('Standard Chapters');
@@ -581,43 +581,17 @@
 						</div>
 						<div class="form-group">
 							<label for="genre">Genre / Subject</label>
-							<select id="genre" bind:value={genre}>
-								<optgroup label="Business & Professional">
-									<option value="Business Strategy & Leadership">Business Strategy & Leadership</option>
-									<option value="Marketing & Brand Building">Marketing & Brand Building</option>
-									<option value="Entrepreneurship & Startups">Entrepreneurship & Startups</option>
-									<option value="Personal Finance & Investing">Personal Finance & Investing</option>
-									<option value="Sales & Negotiation">Sales & Negotiation</option>
-								</optgroup>
-								<optgroup label="Technology">
-									<option value="Technology & AI">Technology & AI</option>
-									<option value="Software Engineering & Development">Software Engineering & Development</option>
-									<option value="Cybersecurity & Privacy">Cybersecurity & Privacy</option>
-									<option value="Data Science & Analytics">Data Science & Analytics</option>
-								</optgroup>
-								<optgroup label="Personal Development">
-									<option value="Self-Help & Personal Growth">Self-Help & Personal Growth</option>
-									<option value="Productivity & Time Management">Productivity & Time Management</option>
-									<option value="Mindset & Psychology">Mindset & Psychology</option>
-									<option value="Health, Wellness & Fitness">Health, Wellness & Fitness</option>
-									<option value="Relationships & Communication">Relationships & Communication</option>
-								</optgroup>
-								<optgroup label="Knowledge & Research">
-									<option value="Science & Space">Science & Space</option>
-									<option value="History & Culture">History & Culture</option>
-									<option value="Philosophy & Ethics">Philosophy & Ethics</option>
-									<option value="Education & Learning">Education & Learning</option>
-								</optgroup>
-								<optgroup label="Creative & Narrative">
-									<option value="Narrative Non-Fiction">Narrative Non-Fiction</option>
-									<option value="Memoir & Biography">Memoir & Biography</option>
-									<option value="Inspirational & Spiritual">Inspirational & Spiritual</option>
-								</optgroup>
-							</select>
+							<input
+								id="genre"
+								type="text"
+								placeholder="e.g., Technology & AI, Vintage Pipe Restoration, Filipino Street Food History"
+								bind:value={genre}
+								required
+							/>
 						</div>
 					</div>
 
-					<div class="form-row grid-3-col">
+					<div class="form-row grid-2-col">
 						<div class="form-group">
 							<label for="length">Target Length</label>
 							<select id="length" bind:value={length}>
@@ -626,59 +600,67 @@
 								<option value="long">Full-Length — 8 chapters (~50–60k words)</option>
 							</select>
 						</div>
-						<div class="form-group">
-							<label for="tone">Writing Tone</label>
-							<select id="tone" bind:value={tone}>
-								<optgroup label="Non-Fiction / Professional">
-									<option value="Authoritative & Educational">Authoritative & Educational</option>
-									<option value="Conversational & Accessible">Conversational & Accessible</option>
-									<option value="Practical & Action-Oriented">Practical & Action-Oriented</option>
-									<option value="Academic & Research-Driven">Academic & Research-Driven</option>
-									<option value="Journalistic & Investigative">Journalistic & Investigative</option>
-								</optgroup>
-								<optgroup label="Narrative / Inspirational">
-									<option value="Narrative & Storytelling">Narrative & Storytelling</option>
-									<option value="Inspirational & Motivational">Inspirational & Motivational</option>
-									<option value="Reflective & Philosophical">Reflective & Philosophical</option>
-								</optgroup>
-								<optgroup label="Technical">
-									<option value="Technical & Precise">Technical & Precise</option>
-									<option value="Instructional & Step-by-Step">Instructional & Step-by-Step</option>
-								</optgroup>
-							</select>
-						</div>
-						<div class="form-group">
-							<label for="structure">Book Structure</label>
-							<select id="structure" bind:value={structure}>
-								<option value="Standard Chapters">Standard Chapters — Introduction, body chapters, conclusion</option>
-								<option value="Problem–Solution Framework">Problem–Solution — Challenge, analysis, resolution arc</option>
-								<option value="Step-by-Step Blueprint">Step-by-Step Blueprint — Sequential phases & actionable guides</option>
-								<option value="Pillar & Chapter Framework">Pillar Framework — Core pillars each expanded into chapters</option>
-								<option value="Story Narrative">Story Narrative — Chronological arc with chapter scenes</option>
-								<option value="Academic Thesis">Academic Thesis — Abstract, literature review, methodology, discussion</option>
-								<option value="Interview & Case Study">Interview & Case Study — Expert voices and real-world examples</option>
-							</select>
-						</div>
 					</div>
 
-					<div class="form-row parameters-section font-serif">
-						<h4>Pipeline Settings</h4>
-						<div class="parameters-grid">
-							<div class="parameter-group">
-								<label for="depth">Research Grounding</label>
-								<select id="depth" bind:value={researchDepth}>
-									<option value="basic">Standard — Key facts & citations</option>
-									<option value="deep">Deep — Comprehensive source extraction</option>
-								</select>
+					<!-- ── Advanced Settings (collapsed by default) ─────────── -->
+					<details class="advanced-settings">
+						<summary class="advanced-settings__toggle font-serif">
+							<span class="advanced-settings__label">Advanced Settings</span>
+							<span class="advanced-settings__hint">Writing tone, book structure, research depth, quality pass, illustrations</span>
+						</summary>
+						<div class="advanced-settings__body">
+							<div class="advanced-row grid-2-col">
+								<div class="form-group">
+									<label for="tone">Writing Tone</label>
+									<select id="tone" bind:value={tone}>
+										<optgroup label="Non-Fiction / Professional">
+											<option value="Authoritative & Educational">Authoritative & Educational</option>
+											<option value="Conversational & Accessible">Conversational & Accessible</option>
+											<option value="Practical & Action-Oriented">Practical & Action-Oriented</option>
+											<option value="Academic & Research-Driven">Academic & Research-Driven</option>
+											<option value="Journalistic & Investigative">Journalistic & Investigative</option>
+										</optgroup>
+										<optgroup label="Narrative / Inspirational">
+											<option value="Narrative & Storytelling">Narrative & Storytelling</option>
+											<option value="Inspirational & Motivational">Inspirational & Motivational</option>
+											<option value="Reflective & Philosophical">Reflective & Philosophical</option>
+										</optgroup>
+										<optgroup label="Technical">
+											<option value="Technical & Precise">Technical & Precise</option>
+											<option value="Instructional & Step-by-Step">Instructional & Step-by-Step</option>
+										</optgroup>
+									</select>
+								</div>
+								<div class="form-group">
+									<label for="structure">Book Structure</label>
+									<select id="structure" bind:value={structure}>
+										<option value="Standard Chapters">Standard Chapters</option>
+										<option value="Problem–Solution Framework">Problem–Solution Framework</option>
+										<option value="Step-by-Step Blueprint">Step-by-Step Blueprint</option>
+										<option value="Pillar & Chapter Framework">Pillar Framework</option>
+										<option value="Story Narrative">Story Narrative</option>
+										<option value="Academic Thesis">Academic Thesis</option>
+										<option value="Interview & Case Study">Interview & Case Study</option>
+									</select>
+								</div>
 							</div>
-							<div class="parameter-group">
-								<label for="correction">Quality Pass</label>
-								<select id="correction" bind:value={selfCorrectionLevel}>
-									<option value="standard">Standard — Consistency & copy-edit pass</option>
-									<option value="rigorous">Rigorous — Full fact-mesh cross-validation</option>
-								</select>
+							<div class="advanced-row grid-2-col">
+								<div class="form-group">
+									<label for="depth">Research Grounding</label>
+									<select id="depth" bind:value={researchDepth}>
+										<option value="basic">Standard — Key facts & citations</option>
+										<option value="deep">Deep — Comprehensive source extraction</option>
+									</select>
+								</div>
+								<div class="form-group">
+									<label for="correction">Quality Pass</label>
+									<select id="correction" bind:value={selfCorrectionLevel}>
+										<option value="standard">Standard — Consistency & copy-edit pass</option>
+										<option value="rigorous">Rigorous — Full fact-mesh cross-validation</option>
+									</select>
+								</div>
 							</div>
-							<div class="parameter-group check-group">
+							<div class="advanced-row">
 								<label class="checkbox-container">
 									<input type="checkbox" bind:checked={useUltraRealistic} />
 									<span class="checkbox-custom"></span>
@@ -689,7 +671,7 @@
 								</label>
 							</div>
 						</div>
-					</div>
+					</details>
 
 					<!-- Optional author brief -->
 					<div class="context-section">
@@ -1292,11 +1274,80 @@
 		border: 1px solid var(--border-color); background-color: var(--bg-inset);
 		border-radius: var(--radius-md); padding: 1.5rem; margin-top: 0.25rem;
 	}
-	.parameters-section h4 { font-size: 1rem; margin-bottom: 1rem; color: var(--accent); }
 	.parameters-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; align-items: center; }
 	@media (max-width: 600px) { .parameters-grid { grid-template-columns: 1fr; } }
 	.check-group { grid-column: span 2; }
 	@media (max-width: 600px) { .check-group { grid-column: span 1; } }
+
+	/* ── Advanced Settings accordion ───────────────────────────────── */
+	.advanced-settings {
+		border: 1px solid var(--border-color);
+		border-radius: var(--radius-md);
+		background-color: var(--bg-inset);
+		overflow: hidden;
+	}
+
+	.advanced-settings__toggle {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		padding: 0.9rem 1.25rem;
+		cursor: pointer;
+		list-style: none;
+		user-select: none;
+		transition: background 0.15s;
+	}
+
+	.advanced-settings__toggle:hover { background: var(--accent-light); }
+
+	.advanced-settings__toggle::before {
+		content: '›';
+		font-size: 1rem;
+		color: var(--accent);
+		transition: transform 0.2s ease;
+		flex-shrink: 0;
+		line-height: 1;
+	}
+
+	.advanced-settings[open] .advanced-settings__toggle::before {
+		transform: rotate(90deg);
+	}
+
+	.advanced-settings__label {
+		font-size: 0.88rem;
+		font-weight: 600;
+		color: var(--accent);
+	}
+
+	.advanced-settings__hint {
+		font-size: 0.75rem;
+		color: var(--text-muted);
+		font-style: italic;
+		font-family: var(--font-sans);
+	}
+
+	.advanced-settings__body {
+		padding: 1.25rem 1.25rem 1.5rem;
+		display: flex;
+		flex-direction: column;
+		gap: 1.25rem;
+		border-top: 1px solid var(--border-color);
+	}
+
+	.advanced-row {
+		display: flex;
+		gap: 1.25rem;
+	}
+
+	.advanced-row.grid-2-col {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 1.25rem;
+	}
+
+	@media (max-width: 600px) {
+		.advanced-row.grid-2-col { grid-template-columns: 1fr; }
+	}
 
 	/* Custom checkbox */
 	.checkbox-container {

@@ -10,7 +10,16 @@
 	} from '@lucide/svelte';
 
 	let fontSize = $state(18);
-	let readerTheme = $state<'cream' | 'sepia' | 'white' | 'night'>('cream');
+	let readerTheme = $state<'white'>('white');
+	// Incrementing this forces all section style attributes to re-evaluate,
+	// snapping header/footer design tokens back to the current cover settings.
+	let designKey = $state(0);
+
+	let headerFooterPreset = $state('Classical Editorial');
+	let interiorCustomInstructions = $state('');
+
+	let appliedPreset = $state('Classical Editorial');
+	let appliedCustomInstructions = $state('');
 
 	let copySuccess = $state(false);
 	let isPdfExporting = $state(false);
@@ -433,9 +442,25 @@
 	// Helper to convert remote URLs to base64 Data URLs for offline/CORS-safe canvas drawing
 	async function getAsDataUrl(url: string): Promise<string> {
 		if (!url) return '';
-		if (url.startsWith('data:')) return url;
+		if (url.startsWith('data:')) {
+			if (url.includes(';base64,')) {
+				return url;
+			}
+			// Base64-encode non-base64 data URL (e.g. utf-8 encoded SVG placeholders)
+			const parts = url.split(',');
+			if (parts.length >= 2) {
+				const meta = parts[0];
+				const data = parts[1];
+				const decoded = decodeURIComponent(data);
+				const base64Data = btoa(unescape(encodeURIComponent(decoded)));
+				return `${meta.replace(/;utf8$/i, '').replace(/;charset=[^;]+/i, '')};base64,${base64Data}`;
+			}
+			return url;
+		}
 		try {
-			const res = await fetch(url);
+			// Fetch via server-side proxy to bypass CORS
+			const proxyUrl = `/api/proxy?url=${encodeURIComponent(url)}`;
+			const res = await fetch(proxyUrl);
 			if (!res.ok) throw new Error(`Fetch failed with status ${res.status}`);
 			const blob = await res.blob();
 			return new Promise((resolve, reject) => {
@@ -445,7 +470,7 @@
 				reader.readAsDataURL(blob);
 			});
 		} catch (err) {
-			console.warn(`Could not convert ${url} to data URL (CORS or network error). Image will be omitted from PDF.`);
+			console.warn(`Could not convert ${url} to data URL via proxy (CORS or network error). Image will be omitted from PDF.`, err);
 			return ''; // Return empty — callers check hasOwnProperty to distinguish 'failed' from 'not tried'
 		}
 	}
@@ -574,7 +599,7 @@
 
 					chapHtml += `
 						<section class="chapter-section ${coverStyleClass}">
-							<div class="running-header">
+							<div class="running-header" ${isFirst ? 'style="visibility: hidden;"' : ''}>
 								<span class="rh-book">${activeBook.title}</span>
 								<span class="rh-chap">Chapter ${c.order} — ${c.title}</span>
 							</div>
@@ -601,7 +626,7 @@
 	<style>
 	*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
 	body, .chapter-section, .cover-page, .toc-page {
-	font-family: ${bodyFontCss};
+	font-family: ${activeBook.interiorDesign?.['--r-body-font'] ?? bodyFontCss};
 	font-size: 12pt;
 	line-height: 1.85;
 	color: #1A1612;
@@ -664,12 +689,13 @@
 	display: flex;
 	justify-content: space-between;
 	align-items: baseline;
-	font-family: 'Inter',sans-serif;
+	font-family: ${activeBook.interiorDesign?.['--r-header-font'] ?? `'Inter',sans-serif`};
 	font-size: 7.5pt;
-	text-transform: uppercase;
-	letter-spacing: 1.5pt;
-	color: #9A8E82;
-	border-bottom: 0.5pt solid #D9CFC2;
+	text-transform: ${activeBook.interiorDesign?.['--r-header-transform'] ?? 'uppercase'};
+	letter-spacing: ${activeBook.interiorDesign?.['--r-header-letter-spacing'] ?? '1.5pt'};
+	color: ${activeBook.interiorDesign?.['--r-header-color'] ?? titleColor};
+	border-bottom: ${activeBook.interiorDesign?.['--r-header-border'] ?? `0.5pt solid ${accent}`};
+	opacity: ${activeBook.interiorDesign?.['--r-header-opacity'] ?? '0.75'};
 	padding-bottom: 6pt;
 	margin-bottom: 0;
 	flex-shrink: 0;
@@ -677,23 +703,54 @@
 	.rh-book  { font-weight: 600; }
 	.rh-chap  { font-style: italic; font-family: ${titleFontCss}; text-transform: none; letter-spacing: 0; }
 	.chapter-content { flex: 1; overflow: hidden; padding-top: 0.5in; }
-	.chapter-header { margin-bottom: 2rem; text-align: ${alignment}; display: flex; flex-direction: column; align-items: ${flexAlign}; }
-	.chapter-label  { font-family: 'Inter',sans-serif; font-size: 8pt; text-transform: uppercase; letter-spacing: 3pt; color: ${accent}; margin-bottom: 6pt; }
-	.chapter-title  { font-family: ${titleFontCss}; font-size: 20pt; font-weight: 700; line-height: 1.25; color: ${titleColor}; margin-bottom: 12pt; }
-	.chapter-rule   { border: none; border-top: 1.5pt solid ${accent}; width: ${ruleW}; margin-left: ${ruleML}; margin-right: ${ruleMR}; }
+	.chapter-header { margin-bottom: 2rem; text-align: ${alignment}; display: flex; flex-direction: column; align-items: ${activeBook.interiorDesign?.['--r-header-align'] ?? flexAlign}; }
+	.chapter-label  {
+		font-family: ${activeBook.interiorDesign?.['--r-label-font'] ?? `'Inter',sans-serif`};
+		font-size: 8pt;
+		text-transform: ${activeBook.interiorDesign?.['--r-label-transform'] ?? 'uppercase'};
+		letter-spacing: ${activeBook.interiorDesign?.['--r-label-letter-spacing'] ?? '3pt'};
+		color: ${activeBook.interiorDesign?.['--r-label-color'] ?? accent};
+		background: ${activeBook.interiorDesign?.['--r-label-bg'] ?? 'transparent'};
+		padding: ${activeBook.interiorDesign?.['--r-label-padding'] ?? '0'};
+		border-radius: ${activeBook.interiorDesign?.['--r-label-border-radius'] ?? '0'};
+		margin-bottom: 6pt;
+		display: inline-block;
+	}
+	.chapter-title  {
+		font-family: ${activeBook.interiorDesign?.['--r-title-font'] ?? titleFontCss};
+		font-size: 20pt;
+		font-weight: ${activeBook.interiorDesign?.['--r-title-weight'] ?? '700'};
+		text-transform: ${activeBook.interiorDesign?.['--r-title-transform'] ?? 'none'};
+		letter-spacing: ${activeBook.interiorDesign?.['--r-title-letter-spacing'] ?? '0'};
+		font-style: ${activeBook.interiorDesign?.['--r-title-style'] ?? 'normal'};
+		line-height: 1.25;
+		color: ${activeBook.interiorDesign?.['--r-title-color'] ?? titleColor};
+		margin-bottom: 12pt;
+	}
+	.chapter-rule   { border: none; border-top: ${activeBook.interiorDesign?.['--r-rule-border'] ?? `1.5pt solid ${accent}`}; width: ${activeBook.interiorDesign?.['--r-rule-width'] ?? ruleW}; margin-left: ${ruleML}; margin-right: ${ruleMR}; }
 	.illustration { margin: 16pt 0; text-align: center; }
 	.illustration img { max-width: 100%; max-height: 240pt; border-radius: 3pt; }
 	p { margin: 0 0 10pt; text-indent: 1.4em; hyphens: auto; }
 	p:first-of-type { text-indent: 0; }
 	.has-drop-cap p:first-of-type::first-letter {
-	font-family: ${titleFontCss};
+	font-family: ${activeBook.interiorDesign?.['--r-dropcap-font'] ?? titleFontCss};
 	font-size: 3.2em; float: left;
 	line-height: 0.85; margin-top: 0.1em; margin-right: 0.1em;
-	font-weight: 700; color: ${accent};
+	font-weight: ${activeBook.interiorDesign?.['--r-dropcap-weight'] ?? '700'};
+	font-style: ${activeBook.interiorDesign?.['--r-dropcap-style'] ?? 'normal'};
+	color: ${activeBook.interiorDesign?.['--r-dropcap-color'] ?? accent};
 	}
-	h2 { font-family: ${titleFontCss}; font-size: 15pt; font-weight: 600; color: ${titleColor}; margin: 18pt 0 8pt; }
-	h3 { font-family: ${titleFontCss}; font-size: 12pt; font-weight: 600; color: ${titleColor}; margin: 14pt 0 6pt; }
-	blockquote { border-left: 3pt solid ${accent}; margin: 14pt 0; padding-left: 14pt; font-style: italic; color: #6A6055; }
+	h2 { font-family: ${titleFontCss}; font-size: 15pt; font-weight: 600; color: ${activeBook.interiorDesign?.['--r-title-color'] ?? titleColor}; margin: 18pt 0 8pt; }
+	h3 { font-family: ${titleFontCss}; font-size: 12pt; font-weight: 600; color: ${activeBook.interiorDesign?.['--r-title-color'] ?? titleColor}; margin: 14pt 0 6pt; }
+	blockquote {
+		border-left: ${activeBook.interiorDesign?.['--r-blockquote-border'] ?? `3pt solid ${accent}`};
+		background: ${activeBook.interiorDesign?.['--r-blockquote-bg'] ?? 'transparent'};
+		margin: 14pt 0;
+		padding: ${activeBook.interiorDesign?.['--r-blockquote-padding'] ?? '0 0 0 14pt'};
+		border-radius: ${activeBook.interiorDesign?.['--r-blockquote-border-radius'] ?? '0'};
+		font-style: italic;
+		color: ${activeBook.interiorDesign?.['--r-blockquote-color'] ?? '#6A6055'};
+	}
 	ul, ol { margin: 10pt 0; padding-left: 20pt; }
 	li { margin-bottom: 5pt; }
 	strong { font-weight: 700; }
@@ -703,16 +760,129 @@
 	justify-content: center;
 	align-items: center;
 	padding-top: 6pt;
-	border-top: 0.5pt solid #D9CFC2;
+	border-top: ${activeBook.interiorDesign?.['--r-footer-border'] ?? `0.5pt solid ${accent}`};
+	opacity: ${activeBook.interiorDesign?.['--r-footer-opacity'] ?? '0.75'};
 	flex-shrink: 0;
 	}
-	.page-num { font-family: 'Inter',sans-serif; font-size: 8pt; color: #9A8E82; letter-spacing: 1pt; }
+	.page-num {
+		font-family: ${activeBook.interiorDesign?.['--r-footer-font'] ?? `'Inter',sans-serif`};
+		font-size: 8pt;
+		color: ${activeBook.interiorDesign?.['--r-footer-color'] ?? titleColor};
+		letter-spacing: ${activeBook.interiorDesign?.['--r-footer-letter-spacing'] ?? '1pt'};
+	}
 
-	.style-dark-minimalist .chapter-title { font-weight: 300; letter-spacing: 2pt; text-transform: uppercase; }
-	.style-bold-graphic    .chapter-title { font-weight: 800; text-transform: uppercase; letter-spacing: -0.5pt; }
-	.style-bold-graphic    .chapter-label { background: ${accent}; color: #fff; padding: 2pt 6pt; border-radius: 2pt; }
-	.style-bold-graphic    .chapter-rule  { border-top-width: 4pt; }
-	.style-warm-editorial  .chapter-title { font-style: italic; }
+	/* All custom layout typography overrides are dynamically loaded from activeBook.interiorDesign. */
+
+	table {
+		width: 100%;
+		border-collapse: collapse;
+		margin: 2rem 0;
+		font-size: 0.95rem;
+		text-align: left;
+		line-height: 1.5;
+	}
+	th {
+		background-color: ${activeBook.interiorDesign?.['--r-table-header-bg'] ?? '#0F172A'};
+		color: #ffffff;
+		font-weight: 600;
+		padding: 0.75rem 1rem;
+		border: 1px solid ${activeBook.interiorDesign?.['--r-border'] ?? '#e2e8f0'};
+	}
+	td {
+		padding: 0.75rem 1rem;
+		border: 1px solid ${activeBook.interiorDesign?.['--r-border'] ?? '#e2e8f0'};
+	}
+	tr:nth-child(even)) {
+		background-color: #f8fafc;
+	}
+
+	.callout-box {
+		background-color: #faf7f2;
+		border-left: 3.5px solid ${accent};
+		border-radius: 4px;
+		padding: 1.25rem 1.5rem;
+		margin: 2rem 0;
+		box-sizing: border-box;
+	}
+	.callout-box__title {
+		font-family: 'Inter',sans-serif;
+		font-weight: 700;
+		font-size: 0.85rem;
+		text-transform: uppercase;
+		letter-spacing: 1.5px;
+		color: ${accent};
+		margin-bottom: 0.5rem;
+		display: block;
+	}
+	.callout-box__content {
+		font-size: 0.95rem;
+		line-height: 1.6;
+		color: #1a1612;
+	}
+
+	.diagram-box {
+		background-color: #f8fafc;
+		border: 1.5px solid #e2e8f0;
+		border-radius: 6px;
+		padding: 1.5rem;
+		margin: 2.5rem 0;
+		text-align: center;
+	}
+	.diagram-box__title {
+		font-family: ${titleFontCss};
+		font-size: 1.25rem;
+		font-weight: 600;
+		color: ${titleColor};
+		margin-bottom: 0.25rem;
+	}
+	.diagram-box__subtitle {
+		font-size: 0.8rem;
+		color: #64748b;
+		margin-bottom: 1.5rem;
+		text-transform: uppercase;
+		letter-spacing: 1px;
+	}
+	.diagram-flow {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: center;
+		align-items: center;
+		gap: 1rem;
+		margin: 1rem 0;
+	}
+	.diagram-step {
+		background-color: #ffffff;
+		border: 1px solid #cbd5e1;
+		border-radius: 4px;
+		padding: 0.75rem 1rem;
+		min-width: 140px;
+		max-width: 200px;
+		font-size: 0.85rem;
+		text-align: left;
+	}
+	.diagram-step__num {
+		font-weight: 700;
+		color: ${accent};
+		margin-bottom: 0.25rem;
+		font-size: 0.8rem;
+	}
+	.diagram-step__text {
+		font-weight: 500;
+		color: #1e293b;
+	}
+	.diagram-arrow {
+		font-size: 1.2rem;
+		color: #cbd5e1;
+		user-select: none;
+	}
+	.diagram-takeaway {
+		margin-top: 1.5rem;
+		padding-top: 1rem;
+		border-top: 1px solid #e2e8f0;
+		font-size: 0.85rem;
+		font-style: italic;
+		color: #475569;
+	}
 
 	@media print {
 	body { background: #fff; }
@@ -916,12 +1086,35 @@
 			}
 		}
 
+		function isLightColor(color: string | null | undefined): boolean {
+			if (!color) return false;
+			const hex = color.replace('#', '');
+			if (hex.length === 3) {
+				const r = parseInt(hex[0] + hex[0], 16);
+				const g = parseInt(hex[1] + hex[1], 16);
+				const b = parseInt(hex[2] + hex[2], 16);
+				return (r * 299 + g * 587 + b * 114) / 1000 > 200;
+			}
+			if (hex.length === 6) {
+				const r = parseInt(hex.slice(0, 2), 16);
+				const g = parseInt(hex.slice(2, 4), 16);
+				const b = parseInt(hex.slice(4, 6), 16);
+				return (r * 299 + g * 587 + b * 114) / 1000 > 200;
+			}
+			return false;
+		}
+
 		// Design values based on the cover style and options
-		let coverStyle = $derived(
-			activeBook && activeBook.selectedCoverIndex !== null && activeBook.coverOptions?.[activeBook.selectedCoverIndex]
-				? activeBook.coverOptions[activeBook.selectedCoverIndex].style
-				: 'Warm Editorial'
-		);
+		let coverStyle = $derived.by(() => {
+			if (activeBook && activeBook.selectedCoverIndex !== null && activeBook.coverOptions?.[activeBook.selectedCoverIndex]) {
+				return activeBook.coverOptions[activeBook.selectedCoverIndex].style;
+			}
+			const font = coverSettings?.titleFont;
+			if (font === 'Inter' || font === 'Arial') {
+				return 'Bold Graphic';
+			}
+			return 'Warm Editorial';
+		});
 
 		let designFontFamily = $derived(
 			coverSettings?.titleFont === 'Lora' ? 'Lora, Georgia, serif' :
@@ -937,17 +1130,27 @@
 				: 'Lora, Georgia, serif'
 		);
 
-		let designAccentColor = $derived(
-			coverSettings?.authorColor || '#8E7453'
-		);
+		let designAccentColor = $derived.by(() => {
+			const ac = coverSettings?.authorColor;
+			if (ac && !isLightColor(ac)) return ac;
+			return '#8E7453';
+		});
 
-		let designTitleColor = $derived(
-			coverSettings?.titleColor || '#1A1612'
-		);
+		let designTitleColor = $derived.by(() => {
+			const tc = coverSettings?.titleColor;
+			if (tc && !isLightColor(tc)) return tc;
+			if (coverStyle === 'Bold Graphic') return '#0F172A';
+			if (coverStyle === 'Dark Minimalist') return '#1A1612';
+			return '#3D2B1A';
+		});
 
-		let designSubtitleColor = $derived(
-			coverSettings?.subtitleColor || '#6E6860'
-		);
+		let designSubtitleColor = $derived.by(() => {
+			const sc = coverSettings?.subtitleColor;
+			if (sc && !isLightColor(sc)) return sc;
+			if (coverStyle === 'Bold Graphic') return '#334155';
+			if (coverStyle === 'Dark Minimalist') return '#57534E';
+			return '#5C4033';
+		});
 
 		let designOrnament = $derived.by(() => {
 			if (coverStyle === 'Dark Minimalist') return '✦';
@@ -971,6 +1174,99 @@
 			coverSettings?.alignment === 'center' ? 'center' :
 			coverSettings?.alignment === 'right' ? 'flex-end' : 'flex-start'
 		);
+
+		let designStyles = $derived.by(() => {
+			const base = [
+				`--design-key: ${designKey}`,
+				`--chapter-font-family: ${designFontFamily}`,
+				`--chapter-body-font: ${designBodyFont}`,
+				`--chapter-accent-color: ${designAccentColor}`,
+				`--chapter-title-color: ${designTitleColor}`,
+				`--chapter-subtitle-color: ${designSubtitleColor}`,
+				`--chapter-alignment: ${coverSettings?.alignment || 'center'}`,
+				`--chapter-rule-width: ${ruleWidth}`,
+				`--chapter-rule-margin-left: ${ruleMarginLeft}`,
+				`--chapter-rule-margin-right: ${ruleMarginRight}`,
+				`--header-flex-align: ${headerFlexAlign}`
+			];
+
+			if (activeBook?.interiorDesign) {
+				for (const [key, val] of Object.entries(activeBook.interiorDesign)) {
+					base.push(`${key}: ${val}`);
+				}
+			}
+
+			return base.join('; ');
+		});
+
+		let currentCoverSignature = $derived.by(() => {
+			if (!activeBook) return '';
+			return JSON.stringify({
+				selectedCoverIndex: activeBook.selectedCoverIndex,
+				style: coverStyle,
+				titleFont: activeBook.coverSettings?.titleFont,
+				alignment: activeBook.coverSettings?.alignment,
+				textPosition: activeBook.coverSettings?.textPosition,
+				titleColor: activeBook.coverSettings?.titleColor,
+				subtitleColor: activeBook.coverSettings?.subtitleColor,
+				authorColor: activeBook.coverSettings?.authorColor,
+				bgImageUrl: activeBook.coverSettings?.bgImageUrl,
+				overlayOpacity: activeBook.coverSettings?.overlayOpacity,
+				preset: appliedPreset,
+				customInstructions: appliedCustomInstructions
+			});
+		});
+
+		let isGeneratingInteriorDesign = $state(false);
+
+		async function generateInteriorDesignAI(force = false) {
+			if (!activeBook || isGeneratingInteriorDesign) return;
+
+			appliedPreset = headerFooterPreset;
+			appliedCustomInstructions = interiorCustomInstructions;
+
+			await tick();
+			const signature = currentCoverSignature;
+			if (!force && activeBook.interiorDesign && activeBook.interiorDesign._coverSignature === signature) return;
+
+			isGeneratingInteriorDesign = true;
+			try {
+				const res = await fetch('/api/design-interior', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						coverSettings: activeBook.coverSettings,
+						coverStyle: coverStyle,
+						bookTitle: activeBook.title,
+						apiKey: globalState.apiKeys.anthropicKey,
+						useMockMode: globalState.apiKeys.useMockMode,
+						headerFooterPreset: appliedPreset,
+						customInstructions: appliedCustomInstructions
+					})
+				});
+				const data = await res.json();
+				if (data.success && data.design) {
+					const designWithSig = {
+						...data.design,
+						_coverSignature: signature
+					};
+					globalState.updateBookInteriorDesign(activeBook.id, designWithSig);
+				}
+			} catch (err) {
+				console.error('Failed to generate AI interior design:', err);
+			} finally {
+				isGeneratingInteriorDesign = false;
+			}
+		}
+
+		$effect(() => {
+			if (activeBook && typeof window !== 'undefined') {
+				const sig = currentCoverSignature;
+				if (!activeBook.interiorDesign || activeBook.interiorDesign._coverSignature !== sig) {
+					generateInteriorDesignAI();
+				}
+			}
+		});
 		// Key: chapter.id
 	// Value: array of pages; each page is { blocks: string[], startIdx: number, endIdx: number }
 	// startIdx/endIdx are the markdown paragraph-block indices this page covers.
@@ -1008,7 +1304,7 @@
 		measureDiv.className = 'chapter-body';
 		document.body.appendChild(measureDiv);
 
-		const maxPageHeight = 740;
+		const maxPageHeight = 700;
 		const newPaginated: Record<string, PageSlice[]> = {};
 
 		for (const chap of activeBook.chapters) {
@@ -1024,8 +1320,12 @@
 			let currentHeight = 0;
 			let currentStartIdx = 0;
 
-			// Reserve space for the chapter header on page 1
-			currentHeight += 160;
+			// Reserve space for the chapter header on page 1.
+			// Chapter label + title + rule ≈ 120px.
+			// Illustration (when present) has max-height 380px + margins ≈ 440px.
+			// Use a conservative combined reserve so text is never clipped.
+			const hasIllustration = !!chap.illustrationUrl;
+			currentHeight += hasIllustration ? 440 : 160;
 
 			for (let blockIdx = 0; blockIdx < blocks.length; blockIdx++) {
 				const block = blocks[blockIdx];
@@ -1104,14 +1404,6 @@
 					</nav>
 
 					<div class="sidebar-actions">
-						<div class="theme-row">
-							<span class="label font-serif">Paper:</span>
-							<button class="theme-dot cream {readerTheme === 'cream' ? 'on' : ''}" onclick={() => readerTheme = 'cream'} aria-label="Cream"></button>
-							<button class="theme-dot sepia {readerTheme === 'sepia' ? 'on' : ''}" onclick={() => readerTheme = 'sepia'} aria-label="Sepia"></button>
-							<button class="theme-dot white {readerTheme === 'white' ? 'on' : ''}" onclick={() => readerTheme = 'white'} aria-label="White"></button>
-							<button class="theme-dot night {readerTheme === 'night' ? 'on' : ''}" onclick={() => readerTheme = 'night'} aria-label="Night"></button>
-						</div>
-
 						<div class="font-row">
 							<span class="label font-serif">Size:</span>
 							<button class="font-btn" onclick={() => fontSize = Math.max(fontSize - 1, 14)}>A-</button>
@@ -1119,6 +1411,45 @@
 							<button class="font-btn" onclick={() => fontSize = Math.min(fontSize + 1, 26)}>A+</button>
 						</div>
 
+						<div class="form-group font-row" style="display:flex; flex-direction:column; gap:0.4rem; margin-top: 0.5rem; margin-bottom: 0.5rem; width: 100%;">
+							<span class="label font-serif">Header/Footer Style:</span>
+							<select
+								class="preset-select"
+								value={headerFooterPreset}
+								onchange={(e: Event) => headerFooterPreset = (e.target as HTMLSelectElement).value}
+								style="width: 100%; padding: 0.4rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color); font-size: 0.85rem;"
+							>
+								<option value="Classical Editorial">Classical Editorial (Serif, thin rules)</option>
+								<option value="Modern Minimalist">Modern Minimalist (Sans, no rules)</option>
+								<option value="Bold Tech / Graphic">Bold Tech / Graphic (Bold sans, thick rules)</option>
+								<option value="Hidden / None">Hidden / None (No headers/footers)</option>
+							</select>
+						</div>
+
+						<div class="form-group font-row" style="display:flex; flex-direction:column; gap:0.4rem; margin-bottom: 0.75rem; width: 100%;">
+							<span class="label font-serif">Custom Style Prompt:</span>
+							<input
+								type="text"
+								class="style-input"
+								placeholder="e.g. elegant gold lines, centered page numbers..."
+								value={interiorCustomInstructions}
+								oninput={(e: Event) => interiorCustomInstructions = (e.target as HTMLInputElement).value}
+								style="width: 100%; padding: 0.4rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color); font-size: 0.85rem;"
+							/>
+						</div>
+
+						<button
+							class="action-btn font-serif"
+							onclick={() => { generateInteriorDesignAI(true); designKey = Date.now(); }}
+							title="Generate dynamic, contrast-safe interior styles based on the cover using Claude AI"
+							disabled={isGeneratingInteriorDesign}
+						>
+							{#if isGeneratingInteriorDesign}
+								<span class="spinner"></span> Restyling...
+							{:else}
+								<RefreshCcw size={14} /> AI Restyle
+							{/if}
+						</button>
 						<button
 							class="action-btn action-btn--primary font-serif"
 							onclick={handleExportPdf}
@@ -1181,18 +1512,7 @@
 						<section
 							data-section-id="{chapIdx}-{pageIdx}"
 							use:registerSection={pageIdx === 0 ? chapIdx : `${chapIdx}-${pageIdx}`}
-							style="
-								--chapter-font-family: {designFontFamily};
-								--chapter-body-font: {designBodyFont};
-								--chapter-accent-color: {designAccentColor};
-								--chapter-title-color: {designTitleColor};
-								--chapter-subtitle-color: {designSubtitleColor};
-								--chapter-alignment: {coverSettings?.alignment || 'center'};
-								--chapter-rule-width: {ruleWidth};
-								--chapter-rule-margin-left: {ruleMarginLeft};
-								--chapter-rule-margin-right: {ruleMarginRight};
-								--header-flex-align: {headerFlexAlign};
-							"
+							style={designStyles}
 						>
 							<!-- Book page wrap — centres the sheet in the scroll viewport -->
 							<div class="book-page-wrap">
@@ -1200,8 +1520,8 @@
 								<!-- US Letter sheet: 8.5 × 11 in — header, body, and footer all live inside -->
 								<div class="book-page-card style-{coverStyle.toLowerCase().replace(/\s+/g, '-')}" style="font-size: {fontSize}px;">
 
-									<!-- Running header — top of page, inside the margin -->
-									<header class="running-header" aria-hidden="true">
+									<!-- Running header — top of page, suppressed on page 1 of the chapter -->
+									<header class="running-header" style={pageIdx === 0 ? "visibility: hidden;" : ""} aria-hidden="true">
 										<span class="running-header__book">{activeBook.title}</span>
 										<span class="running-header__chapter">Chapter {chap.order} — {chap.title}</span>
 									</header>
@@ -1523,6 +1843,9 @@
 		--r-sidebar: #131211; --r-viewport: #181716;
 		--r-text: #E5DFD5; --r-muted: #9E958A;
 		--r-border: #2D2A26; --r-active-bg: #272523;
+		--chapter-title-color: #E5DFD5 !important;
+		--chapter-subtitle-color: #9E958A !important;
+		--chapter-accent-color: #C4A97A !important;
 	}
 
 	/* Sidebar — fixed panel that never scrolls with content */
@@ -1880,48 +2203,43 @@
 	}
 
 	/* ── Running header ─────────────────────────────────────────────────────── */
-	/*
-	 * Sits at the top of the page inside the outer margin.
-	 * Book title on the left (recto convention), chapter on the right.
-	 */
 	.running-header {
 		display: flex;
 		justify-content: space-between;
 		align-items: baseline;
 		padding-bottom: 0.45rem;
 		margin-bottom: 0.6rem;
-		border-bottom: 0.5px solid var(--chapter-accent-color, var(--r-border));
+		border-bottom: var(--r-header-border, var(--page-rule-width, 0.5px) solid var(--chapter-accent-color, var(--r-border)));
 		flex-shrink: 0;
 		gap: 1rem;
 	}
 
 	.running-header__book {
-		font-family: var(--font-sans);
+		font-family: var(--r-header-font, var(--chapter-font-family, var(--font-sans)));
 		font-size: 0.6rem;
-		text-transform: uppercase;
-		letter-spacing: 2.5px;
+		text-transform: var(--r-header-transform, uppercase);
+		letter-spacing: var(--r-header-letter-spacing, 2.5px);
 		font-weight: 600;
-		color: var(--chapter-accent-color, var(--r-muted));
+		color: var(--r-header-color, var(--chapter-title-color, var(--r-text)));
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
-		opacity: 0.7;
+		opacity: var(--r-header-opacity, 0.7);
 	}
 
 	.running-header__chapter {
-		font-family: var(--font-serif);
+		font-family: var(--r-header-font, var(--chapter-font-family, var(--font-serif)));
 		font-size: 0.6rem;
 		font-style: italic;
-		color: var(--chapter-accent-color, var(--r-muted));
+		color: var(--r-header-color, var(--chapter-title-color, var(--r-text)));
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		text-align: right;
-		opacity: 0.7;
+		opacity: var(--r-header-opacity, 0.7);
 	}
 
 	/* ── Page body ──────────────────────────────────────────────────────────── */
-	/* Fills all space between the running header and the footer */
 	.page-body {
 		flex: 1;
 		overflow: hidden;
@@ -1929,10 +2247,6 @@
 	}
 
 	/* ── Running footer / page number ───────────────────────────────────────── */
-	/*
-	 * Centred folio (page number) with a thin rule above it — the most
-	 * common convention in professionally typeset books.
-	 */
 	.page-footer {
 		display: flex;
 		align-items: center;
@@ -1940,23 +2254,33 @@
 		gap: 1rem;
 		padding-top: 0.45rem;
 		margin-top: 0.6rem;
-		border-top: 0.5px solid var(--chapter-accent-color, var(--r-border));
+		border-top: var(--r-footer-border, var(--page-rule-width, 0.5px) solid var(--chapter-accent-color, var(--r-border)));
 		flex-shrink: 0;
 	}
 
 	.page-footer__rule {
 		flex: 1;
 		height: 1px;
-		/* intentionally transparent — the border-top on .page-footer carries the full rule */
 	}
 
 	.page-footer__num {
-		font-family: var(--font-serif);
+		font-family: var(--r-footer-font, var(--chapter-font-family, var(--font-serif)));
 		font-size: 0.65rem;
-		color: var(--chapter-accent-color, var(--r-muted));
-		letter-spacing: 1.5px;
-		opacity: 0.7;
+		color: var(--r-footer-color, var(--chapter-title-color, var(--r-text)));
+		letter-spacing: var(--r-footer-letter-spacing, 1.5px);
+		opacity: var(--r-footer-opacity, 0.7);
 	}
+
+	/* ── Cover-style header/footer treatments ───────────────────────────────── */
+	/*
+	 * Each cover style gets a distinct typographic treatment on the running
+	 * header and footer so the interior pages feel cohesive with the cover.
+	 *
+	 * Dark Minimalist — thinner rules, tight uppercase tracking
+	 * Bold Graphic    — heavier rules, no italic
+	 * Warm Editorial  — standard weight, italic chapter title (default)
+	 */
+	/* All running header and footer styles are fully dynamic and driven by AI variables. */
 
 	/*
 	 * Fluid below 1100px: viewport is narrower than sidebar (280px) + 8.5in card.
@@ -1981,35 +2305,46 @@
 		.book-page-wrap { padding: 1rem 0 2rem; }
 	}
 
-	.chapter-header { margin-bottom: 2.5rem; }
+	.chapter-header {
+		margin-bottom: 2.5rem;
+		display: flex;
+		flex-direction: column;
+		align-items: var(--r-header-align, var(--header-flex-align, center));
+	}
 
 	.chapter-label {
 		display: block;
-		font-family: var(--font-sans);
+		font-family: var(--r-label-font, var(--font-sans));
 		font-size: 0.75rem;
-		text-transform: uppercase;
-		letter-spacing: 2.5px;
-		color: var(--chapter-accent-color, var(--accent));
+		text-transform: var(--r-label-transform, uppercase);
+		letter-spacing: var(--r-label-letter-spacing, 2.5px);
+		color: var(--r-label-color, var(--chapter-accent-color, var(--accent)));
 		font-weight: 600;
 		margin-bottom: 0.6rem;
 		text-align: var(--chapter-alignment, center);
+		background: var(--r-label-bg, transparent);
+		padding: var(--r-label-padding, 0);
+		border-radius: var(--r-label-border-radius, 0);
 	}
 
 	.chapter-title {
 		font-size: 2rem;
-		font-weight: 700;
+		font-weight: var(--r-title-weight, 700);
 		line-height: 1.25;
 		margin: 0 0 1.5rem;
-		color: var(--chapter-title-color, var(--r-text));
-		font-family: var(--chapter-font-family, var(--font-serif));
+		color: var(--r-title-color, var(--chapter-title-color, var(--r-text)));
+		font-family: var(--r-title-font, var(--chapter-font-family, var(--font-serif)));
 		text-align: var(--chapter-alignment, center);
+		text-transform: var(--r-title-transform, none);
+		letter-spacing: var(--r-title-letter-spacing, 0px);
+		font-style: var(--r-title-style, normal);
 	}
 
 	.chapter-rule {
 		border: none;
-		border-top: 1.5px solid var(--chapter-accent-color, var(--r-border));
+		border-top: var(--r-rule-border, 1.5px solid var(--chapter-accent-color, var(--r-border)));
 		margin: 0;
-		width: var(--chapter-rule-width, 100%);
+		width: var(--r-rule-width, var(--chapter-rule-width, 100%));
 		margin-left: var(--chapter-rule-margin-left, 0);
 		margin-right: var(--chapter-rule-margin-right, auto);
 	}
@@ -2034,7 +2369,7 @@
 	}
 
 	.chapter-body {
-		font-family: var(--chapter-body-font, var(--font-serif));
+		font-family: var(--r-body-font, var(--chapter-body-font, var(--font-serif)));
 	}
 
 	.chapter-body :global(p) {
@@ -2046,14 +2381,15 @@
 
 	/* Drop Cap: Industry standard styling for first paragraph */
 	.has-drop-cap :global(p:first-of-type::first-letter) {
-		font-family: var(--chapter-font-family, var(--font-serif));
+		font-family: var(--r-dropcap-font, var(--chapter-font-family, var(--font-serif)));
 		font-size: 3.5em;
 		float: left;
 		line-height: 0.85;
 		margin-top: 0.1em;
 		margin-right: 0.15em;
-		font-weight: 700;
-		color: var(--chapter-accent-color, var(--accent));
+		font-weight: var(--r-dropcap-weight, 700);
+		color: var(--r-dropcap-color, var(--chapter-accent-color, var(--accent)));
+		font-style: var(--r-dropcap-style, normal);
 	}
 
 	.chapter-body :global(h2) {
@@ -2083,11 +2419,13 @@
 	}
 
 	.chapter-body :global(blockquote) {
-		border-left: 3.5px solid var(--chapter-accent-color, var(--accent));
+		border-left: var(--r-blockquote-border, 3.5px solid var(--chapter-accent-color, var(--accent)));
 		margin: 2rem 0;
-		padding-left: 1.8rem;
+		padding: var(--r-blockquote-padding, 0 0 0 1.8rem);
 		font-style: italic;
-		color: var(--r-muted);
+		color: var(--r-blockquote-color, var(--r-muted));
+		background-color: var(--r-blockquote-bg, transparent);
+		border-radius: var(--r-blockquote-border-radius, 0);
 		line-height: 1.7;
 	}
 
@@ -2104,48 +2442,7 @@
 	.chapter-body :global(strong) { font-weight: 700; }
 	.chapter-body :global(em) { font-style: italic; }
 
-	/* Cover-specific chapter style pairs */
-	.style-dark-minimalist .chapter-title {
-		font-weight: 300;
-		letter-spacing: 2px;
-		text-transform: uppercase;
-	}
-	.style-dark-minimalist .chapter-body :global(blockquote) {
-		border-left: 2px solid var(--chapter-accent-color);
-		background-color: var(--r-active-bg);
-		padding: 1.2rem 1.8rem;
-		border-radius: 4px;
-	}
-
-	.style-bold-graphic .chapter-title {
-		font-weight: 800;
-		text-transform: uppercase;
-		letter-spacing: -0.5px;
-	}
-	.style-bold-graphic .chapter-label {
-		font-weight: 800;
-		background: var(--chapter-accent-color);
-		color: #fff !important;
-		display: inline-block;
-		padding: 0.2rem 0.6rem;
-		border-radius: 4px;
-		margin-bottom: 1rem;
-	}
-	.style-bold-graphic .chapter-header {
-		display: flex;
-		flex-direction: column;
-		align-items: var(--header-flex-align, center);
-	}
-	.style-bold-graphic .chapter-rule {
-		border-top: 4px solid var(--chapter-accent-color);
-	}
-
-	.style-warm-editorial .chapter-title {
-		font-style: italic;
-	}
-	.style-warm-editorial .chapter-body :global(p:first-of-type::first-letter) {
-		font-style: italic;
-	}
+	/* Cover-specific chapter styles are dynamically defined by AI variables. */
 
 	/* Chapter separator */
 	.chapter-separator {
@@ -2169,6 +2466,125 @@
 		color: var(--chapter-accent-color, var(--r-muted));
 		opacity: 0.75;
 		line-height: 1;
+	}
+
+	/* ── Industry-Standard Table Styles ────────────────────────────────────── */
+	.chapter-body :global(table) {
+		width: 100%;
+		border-collapse: collapse;
+		margin: 2rem 0;
+		font-size: 0.95rem;
+		text-align: left;
+		line-height: 1.5;
+	}
+	.chapter-body :global(th) {
+		background-color: var(--r-table-header-bg, #0F172A);
+		color: #ffffff;
+		font-weight: 600;
+		padding: 0.75rem 1rem;
+		border: 1px solid var(--r-border, #e2e8f0);
+	}
+	.chapter-body :global(td) {
+		padding: 0.75rem 1rem;
+		border: 1px solid var(--r-border, #e2e8f0);
+	}
+	.chapter-body :global(tr:nth-child(even)) {
+		background-color: var(--r-table-stripe, #f8fafc);
+	}
+	.chapter-body :global(tr:hover) {
+		background-color: var(--r-table-hover, #f1f5f9);
+	}
+
+	/* ── Callout Boxes ──────────────────────────────────────────────────────── */
+	.chapter-body :global(.callout-box) {
+		background-color: var(--r-callout-bg, #faf7f2);
+		border-left: var(--r-callout-border-width, 3.5px) solid var(--r-callout-border-color, var(--chapter-accent-color, #8e7453));
+		border-radius: var(--r-callout-border-radius, 4px);
+		padding: 1.25rem 1.5rem;
+		margin: 2rem 0;
+		box-sizing: border-box;
+	}
+	.chapter-body :global(.callout-box__title) {
+		font-family: var(--r-label-font, var(--font-sans));
+		font-weight: 700;
+		font-size: 0.85rem;
+		text-transform: uppercase;
+		letter-spacing: 1.5px;
+		color: var(--r-callout-title-color, var(--chapter-accent-color, #8e7453));
+		margin-bottom: 0.5rem;
+		display: block;
+	}
+	.chapter-body :global(.callout-box__content) {
+		font-size: 0.95rem;
+		line-height: 1.6;
+		color: var(--r-text, #1a1612);
+	}
+
+	/* ── Diagram and Flowchart Layouts ──────────────────────────────────────── */
+	.chapter-body :global(.diagram-box) {
+		background-color: var(--r-diagram-bg, #f8fafc);
+		border: 1.5px solid var(--r-border, #e2e8f0);
+		border-radius: 6px;
+		padding: 1.5rem;
+		margin: 2.5rem 0;
+		text-align: center;
+		box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+	}
+	.chapter-body :global(.diagram-box__title) {
+		font-family: var(--r-title-font, var(--font-serif));
+		font-size: 1.25rem;
+		font-weight: 600;
+		color: var(--r-title-color, var(--chapter-title-color, #0f172a));
+		margin-bottom: 0.25rem;
+	}
+	.chapter-body :global(.diagram-box__subtitle) {
+		font-size: 0.8rem;
+		color: var(--r-muted, #64748b);
+		margin-bottom: 1.5rem;
+		text-transform: uppercase;
+		letter-spacing: 1px;
+	}
+	.chapter-body :global(.diagram-flow) {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: center;
+		align-items: center;
+		gap: 1rem;
+		margin: 1rem 0;
+	}
+	.chapter-body :global(.diagram-step) {
+		background-color: #ffffff;
+		border: 1px solid var(--r-border, #cbd5e1);
+		border-radius: 4px;
+		padding: 0.75rem 1rem;
+		min-width: 140px;
+		max-width: 200px;
+		font-size: 0.85rem;
+		box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+		text-align: left;
+	}
+	.chapter-body :global(.diagram-step__num) {
+		font-weight: 700;
+		color: var(--chapter-accent-color, #8e7453);
+		margin-bottom: 0.25rem;
+		font-size: 0.8rem;
+	}
+	.chapter-body :global(.diagram-step__text) {
+		font-weight: 500;
+		color: var(--r-text, #1e293b);
+	}
+	.chapter-body :global(.diagram-arrow) {
+		font-size: 1.2rem;
+		color: var(--chapter-accent-color, #cbd5e1);
+		user-select: none;
+	}
+	.chapter-body :global(.diagram-takeaway) {
+		margin-top: 1.5rem;
+		padding-top: 1rem;
+		border-top: 1px solid var(--r-border, #e2e8f0);
+		font-size: 0.85rem;
+		font-style: italic;
+		color: var(--r-muted, #475569);
 	}
 
 	/* ── Edit triggers — shown on card hover ────────────────────────────────── */

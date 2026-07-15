@@ -295,6 +295,15 @@ class GlobalState {
 		this.persistBook(updatedBook);
 	}
 
+	updateBookInteriorDesign(bookId: string, interiorDesign: Record<string, string>) {
+		const bookIndex = this.books.findIndex(b => b.id === bookId);
+		if (bookIndex === -1) return;
+
+		const updatedBook: Book = { ...this.books[bookIndex], interiorDesign, updatedAt: new Date().toISOString() };
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
+	}
+
 	updateChapterContent(bookId: string, chapterId: string, content: string, status: Chapter['status']) {
 		const bookIndex = this.books.findIndex(b => b.id === bookId);
 		if (bookIndex === -1) return;

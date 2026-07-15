@@ -87,6 +87,7 @@ export interface Book {
 
 	coverSettings: CoverSettings;
 	chapters: Chapter[];
+	interiorDesign?: Record<string, string>;
 
 	status: 'idle' | 'researching' | 'outlining' | 'writing' | 'verifying' | 'illustrating' | 'completed' | 'failed';
 	currentStep: string;
