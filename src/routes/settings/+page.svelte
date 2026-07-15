@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { globalState } from '$lib/state.svelte';
 	import type { ApiKeys } from '$lib/types';
 
@@ -6,14 +7,35 @@
 	let showExa = $state(false);
 	let showImage = $state(false);
 
-	let anthropicKey = $state(globalState.apiKeys.anthropicKey);
-	let exaKey = $state(globalState.apiKeys.exaKey);
-	let imageKey = $state(globalState.apiKeys.imageKey);
+	let anthropicKey  = $state(globalState.apiKeys.anthropicKey);
+	let exaKey        = $state(globalState.apiKeys.exaKey);
+	let imageKey      = $state(globalState.apiKeys.imageKey);
 	let imageProvider = $state<ApiKeys['imageProvider']>(globalState.apiKeys.imageProvider);
-	let useMockMode = $state(globalState.apiKeys.useMockMode);
+	let useMockMode   = $state(globalState.apiKeys.useMockMode);
 
-	let message = $state('');
+	let message     = $state('');
 	let messageType = $state<'success' | 'error' | ''>('');
+	let serverStatus = $state<{ anthropic: boolean; exa: boolean; image: boolean; imageProvider: string } | null>(null);
+
+	// On mount: fetch which server-side keys are configured.
+	// If the user has never explicitly saved settings (mock mode is still the
+	// default true) and the server has real keys, auto-switch to live mode.
+	onMount(async () => {
+		try {
+			const res = await fetch('/api/config');
+			if (!res.ok) return;
+			const cfg = await res.json();
+			serverStatus = cfg.server;
+
+			const neverConfigured = !localStorage.getItem('ebook_api_keys');
+			if (neverConfigured && cfg.liveReady) {
+				useMockMode   = false;
+				imageProvider = cfg.server.imageProvider || 'kie';
+				// Persist so all other pages pick it up immediately
+				globalState.saveKeys({ ...globalState.apiKeys, useMockMode: false, imageProvider });
+			}
+		} catch { /* non-fatal — settings still work manually */ }
+	});
 
 	function saveSettings() {
 		globalState.saveKeys({
@@ -23,7 +45,7 @@
 			imageProvider,
 			useMockMode
 		});
-		
+
 		message = 'Configuration saved successfully!';
 		messageType = 'success';
 
@@ -63,6 +85,16 @@
 					<div class="toggle-info">
 						<label for="mock-mode" class="toggle-label font-serif">Simulated Generation (Mock Mode)</label>
 						<span class="toggle-desc">Generate outlines, full chapters, and covers using instant simulated pipelines without needing API keys.</span>
+						{#if serverStatus}
+							<div class="server-key-status">
+								<span class="key-dot {serverStatus.anthropic ? 'ok' : 'missing'}"></span>
+								<span>Claude {serverStatus.anthropic ? 'configured' : 'not set'}</span>
+								<span class="key-dot {serverStatus.exa ? 'ok' : 'missing'}"></span>
+								<span>Exa {serverStatus.exa ? 'configured' : 'not set'}</span>
+								<span class="key-dot {serverStatus.image ? 'ok' : 'missing'}"></span>
+								<span>Image {serverStatus.image ? 'configured' : 'not set'}</span>
+							</div>
+						{/if}
 					</div>
 					<label class="switch">
 						<input type="checkbox" id="mock-mode" bind:checked={useMockMode} />
@@ -297,6 +329,27 @@
 		font-size: 0.8rem;
 		color: var(--text-muted);
 	}
+
+	.server-key-status {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 0.3rem 0.6rem;
+		margin-top: 0.5rem;
+		font-size: 0.73rem;
+		color: var(--text-muted);
+	}
+
+	.key-dot {
+		display: inline-block;
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		flex-shrink: 0;
+	}
+
+	.key-dot.ok      { background: #22c55e; }
+	.key-dot.missing { background: #d1d5db; }
 
 	/* Switch Slider styling */
 	.switch {

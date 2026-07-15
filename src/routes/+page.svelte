@@ -6,6 +6,7 @@
 		Loader, RefreshCw, CheckCircle, ChevronRight,
 		ArrowLeft, Info, RotateCcw
 	} from '@lucide/svelte';
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 
 	// ── Stage 1: concept form ──────────────────────────────────────────────────
 	let title       = $state('');
@@ -24,6 +25,30 @@
 	// ── Stage 2: cover options ─────────────────────────────────────────────────
 	let regeneratingCoverIdx = $state<number | null>(null);
 	let isGeneratingCovers   = $state(false);
+
+	// ── Delete confirmation ────────────────────────────────────────────────────
+	let deleteConfirmOpen  = $state(false);
+	let deleteTargetId     = $state<string | null>(null);
+	let deleteTargetTitle  = $state('');
+
+	function requestDeleteBook(id: string, title: string) {
+		deleteTargetId    = id;
+		deleteTargetTitle = title;
+		deleteConfirmOpen = true;
+	}
+
+	function confirmDeleteBook() {
+		if (deleteTargetId) globalState.deleteBook(deleteTargetId);
+		deleteConfirmOpen = false;
+		deleteTargetId    = null;
+		deleteTargetTitle = '';
+	}
+
+	function cancelDeleteBook() {
+		deleteConfirmOpen = false;
+		deleteTargetId    = null;
+		deleteTargetTitle = '';
+	}
 
 	// ── Stage 3: chapter plan ──────────────────────────────────────────────────
 	let isGeneratingPlan  = $state(false);
@@ -490,7 +515,17 @@
 	<aside class="sidebar-library">
 		<div class="library-header font-serif">
 			<h3>Your Library</h3>
-			<span class="count">{globalState.books.length}</span>
+			<div class="library-header-actions">
+				<span class="count">{globalState.books.length}</span>
+				<button
+					class="btn-new-book"
+					onclick={() => globalState.setActiveBook(null)}
+					title="Start a new ebook"
+					aria-label="Create new ebook"
+				>
+					+ New
+				</button>
+			</div>
 		</div>
 
 		<div class="library-list">
@@ -524,8 +559,8 @@
 					</div>
 					<button
 						class="btn-delete"
-						onclick={(e: MouseEvent) => { e.stopPropagation(); globalState.deleteBook(b.id); }}
-						title="Delete book"
+						onclick={(e: MouseEvent) => { e.stopPropagation(); requestDeleteBook(b.id, b.title); }}
+						title="Remove book"
 					>
 						<Trash2 size={14} />
 					</button>
@@ -667,7 +702,10 @@
 								<label class="checkbox-container">
 									<input type="checkbox" bind:checked={useUltraRealistic} />
 									<span class="checkbox-custom"></span>
-									<span>High-Fidelity Chapter Illustrations</span>
+									<span class="checkbox-label-body">
+										<span class="checkbox-label-title">Photorealistic Illustrations</span>
+										<span class="checkbox-label-desc">Use high-fidelity image generation for chapter art. Produces more detailed, cinematic visuals — uses more API credits and takes longer.</span>
+									</span>
 								</label>
 							</div>
 						</div>
@@ -1065,7 +1103,34 @@
 		{:else if active.pipelineStage === 5}
 			<div class="stage-workspace complete-stage">
 				<div class="complete-card card">
-					<div class="complete-icon">📖</div>
+					<!-- Book cover thumbnail — uses the generated cover image if available,
+					     otherwise renders a minimal typeset spine as a fallback -->
+					{#if active.coverSettings?.bgImageUrl}
+						<div class="complete-cover">
+							<img
+								src={active.coverSettings.bgImageUrl}
+								alt="Cover of {active.title}"
+								class="complete-cover-img"
+							/>
+						</div>
+					{:else}
+						<div
+							class="complete-cover-fallback"
+							style="background: linear-gradient(160deg, {active.coverSettings?.titleColor ?? '#1A1612'} 0%, #3A2E22 100%);"
+						>
+							<span
+								class="complete-cover-fallback-title"
+								style="font-family: {active.coverSettings?.titleFont === 'Inter' || active.coverSettings?.titleFont === 'Arial' ? 'Inter, sans-serif' : 'Lora, Georgia, serif'}; color: {active.coverSettings?.subtitleColor ?? '#EDE5D5'};"
+							>{active.title}</span>
+							{#if active.author}
+								<span
+									class="complete-cover-fallback-author"
+									style="color: {active.coverSettings?.authorColor ?? '#8E7453'};"
+								>{active.author}</span>
+							{/if}
+						</div>
+					{/if}
+
 					<h2 class="font-serif">{active.title}</h2>
 					<p class="font-serif">Your ebook is complete — {active.chapters.length} chapters written, verified, and illustrated.</p>
 
@@ -1104,6 +1169,17 @@
 	</main>
 </div>
 
+<!-- Delete confirmation dialog — rendered outside the layout flow -->
+<ConfirmDialog
+	open={deleteConfirmOpen}
+	title="Remove ebook"
+	message={`"${deleteTargetTitle}" and all its chapters will be permanently removed. This cannot be undone.`}
+	confirmLabel="Remove"
+	intent="danger"
+	onConfirm={confirmDeleteBook}
+	onCancel={cancelDeleteBook}
+/>
+
 <style>
 	/* ── Layout ─────────────────────────────────────────────────────────── */
 	.workspace-grid {
@@ -1133,12 +1209,35 @@
 		align-items: center;
 	}
 	.library-header h3 { font-size: 1rem; font-weight: 600; }
+	.library-header-actions {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
 	.library-header .count {
 		font-size: 0.78rem;
 		color: var(--text-muted);
 		background-color: var(--accent-light);
 		padding: 0.1rem 0.45rem;
 		border-radius: 20px;
+	}
+	.btn-new-book {
+		font-family: var(--font-sans, inherit);
+		font-size: 0.75rem;
+		font-weight: 600;
+		padding: 0.25rem 0.65rem;
+		border-radius: 5px;
+		border: 1px solid var(--accent, #8E7453);
+		background: transparent;
+		color: var(--accent, #8E7453);
+		cursor: pointer;
+		white-space: nowrap;
+		transition: background 0.15s, color 0.15s;
+		line-height: 1.4;
+	}
+	.btn-new-book:hover {
+		background: var(--accent, #8E7453);
+		color: #fff;
 	}
 	.library-list { display: flex; flex-direction: column; flex: 1; padding: 0.5rem; gap: 0.2rem; }
 	.empty-library { padding: 2rem 1rem; text-align: center; color: var(--text-muted); font-style: italic; font-size: 0.88rem; }
@@ -1218,6 +1317,76 @@
 	@media (max-width: 600px) { .parameters-grid { grid-template-columns: 1fr; } }
 	.check-group { grid-column: span 2; }
 	@media (max-width: 600px) { .check-group { grid-column: span 1; } }
+
+	/* Custom checkbox */
+	.checkbox-container {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.75rem;
+		cursor: pointer;
+		user-select: none;
+	}
+
+	.checkbox-container input[type="checkbox"] {
+		position: absolute;
+		opacity: 0;
+		width: 0;
+		height: 0;
+	}
+
+	.checkbox-custom {
+		flex-shrink: 0;
+		width: 18px;
+		height: 18px;
+		margin-top: 2px;
+		border: 1.5px solid var(--border-focus, #8E7453);
+		border-radius: 4px;
+		background: var(--bg-card, #fff);
+		transition: background 0.15s, border-color 0.15s;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.checkbox-container input[type="checkbox"]:checked + .checkbox-custom {
+		background: var(--accent, #8E7453);
+		border-color: var(--accent, #8E7453);
+	}
+
+	.checkbox-container input[type="checkbox"]:checked + .checkbox-custom::after {
+		content: '';
+		display: block;
+		width: 5px;
+		height: 9px;
+		border: 2px solid #fff;
+		border-top: none;
+		border-left: none;
+		transform: rotate(45deg) translateY(-1px);
+	}
+
+	.checkbox-container:hover .checkbox-custom {
+		border-color: var(--accent, #8E7453);
+		background: var(--accent-light, #f5f0ea);
+	}
+
+	.checkbox-label-body {
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+	}
+
+	.checkbox-label-title {
+		font-size: 0.88rem;
+		font-weight: 600;
+		color: var(--text-primary, #2B2927);
+		line-height: 1.3;
+	}
+
+	.checkbox-label-desc {
+		font-size: 0.78rem;
+		color: var(--text-muted, #6E6860);
+		line-height: 1.5;
+	}
 
 	.form-actions { display: flex; justify-content: flex-end; padding-top: 0.5rem; }
 
@@ -1741,7 +1910,53 @@
 		padding: 3rem 2.5rem; display: flex; flex-direction: column;
 		align-items: center; gap: 1.25rem;
 	}
-	.complete-icon { font-size: 3.5rem; line-height: 1; }
+	.complete-cover {
+		width: 140px;
+		height: 210px;
+		border-radius: 4px;
+		overflow: hidden;
+		box-shadow:
+			4px 4px 0 rgba(0,0,0,0.08),
+			0 8px 24px rgba(0,0,0,0.18),
+			0 2px 6px rgba(0,0,0,0.12);
+		flex-shrink: 0;
+	}
+	.complete-cover-img {
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+		display: block;
+	}
+	/* Typeset fallback when no cover image has been generated yet */
+	.complete-cover-fallback {
+		width: 140px;
+		height: 210px;
+		border-radius: 4px;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 0.6rem;
+		padding: 1.2rem 0.75rem;
+		box-shadow:
+			4px 4px 0 rgba(0,0,0,0.08),
+			0 8px 24px rgba(0,0,0,0.18),
+			0 2px 6px rgba(0,0,0,0.12);
+		flex-shrink: 0;
+	}
+	.complete-cover-fallback-title {
+		font-size: 0.82rem;
+		font-weight: 700;
+		text-align: center;
+		line-height: 1.3;
+		letter-spacing: 0.01em;
+	}
+	.complete-cover-fallback-author {
+		font-size: 0.65rem;
+		font-style: italic;
+		text-align: center;
+		letter-spacing: 0.02em;
+	}
 	.complete-card h2 { font-size: 2rem; margin: 0; }
 	.complete-card > p { color: var(--text-muted); font-size: 0.95rem; margin: 0; }
 	.complete-actions { display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center; }
