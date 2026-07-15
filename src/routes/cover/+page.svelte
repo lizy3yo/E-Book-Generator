@@ -322,13 +322,12 @@
 
 	function handleAssistantSubmit(e: Event) {
 		e.preventDefault();
-		if (!chatInput.trim()) return;
+		if (!chatInput.trim() || isProcessingChat) return;
 
 		const userMsg = chatInput.trim();
 		chatMessages = [...chatMessages, { sender: 'user', text: userMsg }];
 		chatInput = '';
 
-		// Process assistant response back-and-forth
 		processAssistantCommand(userMsg);
 	}
 
@@ -336,122 +335,79 @@
 		chatMessages = [...chatMessages, { sender: 'assistant', text }];
 	}
 
-	// Lightweight local assistant command parser
+	let isProcessingChat = $state(false);
+
+	/**
+	 * Send the user's instruction to Claude via /api/cover-assistant.
+	 * Claude returns a structured mutations object — we apply each field
+	 * directly to coverSettings.  If bgImagePrompt is included, we also
+	 * kick off a new image generation.
+	 */
 	async function processAssistantCommand(msg: string) {
-		const lowerMsg = msg.toLowerCase();
-		
-		// Simulate assistant thinking
-		await new Promise(resolve => setTimeout(resolve, 800));
+		if (!globalState.activeBook) return;
+		isProcessingChat = true;
 
-		// 1. Check for font changes
-		if (lowerMsg.includes('font to') || lowerMsg.includes('change font')) {
-			if (lowerMsg.includes('georgia')) {
-				updateSetting('titleFont', 'Georgia');
-				addAssistantMessage("Done! I have changed the font family to Georgia.");
-				return;
-			} else if (lowerMsg.includes('lora')) {
-				updateSetting('titleFont', 'Lora');
-				addAssistantMessage("Done! I have updated the font family to Lora.");
-				return;
-			} else if (lowerMsg.includes('inter') || lowerMsg.includes('sans')) {
-				updateSetting('titleFont', 'Inter');
-				addAssistantMessage("Done! Font updated to Inter.");
-				return;
-			} else if (lowerMsg.includes('arial')) {
-				updateSetting('titleFont', 'Arial');
-				addAssistantMessage("Done! Font changed to Arial.");
-				return;
+		try {
+			// Build a lightweight variant summary so Claude knows which slots exist
+			const variants = coverOptions.map((opt, idx) => ({
+				index: idx,
+				style: opt.style,
+				hasImage: !!opt.imageUrl
+			}));
+
+			const res = await fetch('/api/cover-assistant', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					instruction: msg,
+					apiKey: globalState.apiKeys.anthropicKey,
+					useMockMode: globalState.apiKeys.useMockMode,
+					currentSettings: settings,
+					bookTitle: globalState.activeBook.title,
+					genre: globalState.activeBook.genre,
+					variants
+				})
+			});
+
+			const data = await res.json();
+			if (!data.success) throw new Error(data.error || 'Assistant request failed.');
+
+			const mutations = data.mutations as Record<string, unknown>;
+			const hasImagePrompt = 'bgImagePrompt' in mutations && mutations.bgImagePrompt;
+
+			// Apply typography / layout mutations
+			const layoutKeys = [
+				'titleFont', 'titleColor', 'subtitleColor', 'authorColor',
+				'titleSize', 'subtitleSize', 'authorSize',
+				'alignment', 'textPosition', 'overlayOpacity'
+			];
+			for (const key of layoutKeys) {
+				if (key in mutations) {
+					updateSetting(key as keyof typeof settings, mutations[key] as never);
+				}
 			}
-		}
 
-		// 2. Check for layout position changes
-		if (lowerMsg.includes('layout') || lowerMsg.includes('position')) {
-			if (lowerMsg.includes('top')) {
-				updateSetting('textPosition', 'top');
-				addAssistantMessage("I've shifted the title group to the top of the cover.");
-				return;
-			} else if (lowerMsg.includes('bottom')) {
-				updateSetting('textPosition', 'bottom');
-				addAssistantMessage("I've aligned the titles to the bottom of the cover.");
-				return;
-			} else if (lowerMsg.includes('middle') || lowerMsg.includes('center')) {
-				updateSetting('textPosition', 'middle');
-				addAssistantMessage("I've centered the titles vertically.");
-				return;
+			// If Claude identified a specific variant slot, activate it first so
+			// the generated image lands in the right slot.
+			if (typeof data.variantIndex === 'number' && globalState.activeBookId) {
+				activateVariant(data.variantIndex);
 			}
-		}
 
-		// 3. Check for text alignments
-		if (lowerMsg.includes('align') || lowerMsg.includes('justification')) {
-			if (lowerMsg.includes('left')) {
-				updateSetting('alignment', 'left');
-				addAssistantMessage("Aligned all text fields to the left margin.");
-				return;
-			} else if (lowerMsg.includes('right')) {
-				updateSetting('alignment', 'right');
-				addAssistantMessage("Aligned all text fields to the right margin.");
-				return;
-			} else if (lowerMsg.includes('center')) {
-				updateSetting('alignment', 'center');
-				addAssistantMessage("Centered all text fields horizontally.");
-				return;
+			addAssistantMessage(data.reply);
+
+			// Trigger image generation after layout mutations are applied
+			if (hasImagePrompt) {
+				updateSetting('bgImagePrompt', mutations.bgImagePrompt as string);
+				addAssistantMessage('Generating new cover art now…');
+				await generateNewCoverArt();
 			}
-		}
 
-		// 4. Check for color changes
-		if (lowerMsg.includes('title color to') || lowerMsg.includes('make title')) {
-			if (lowerMsg.includes('gold') || lowerMsg.includes('yellow')) {
-				updateSetting('titleColor', '#D4AF37');
-				addAssistantMessage("Perfect. Title color updated to warm gold (#D4AF37).");
-				return;
-			} else if (lowerMsg.includes('red')) {
-				updateSetting('titleColor', '#A84C4C');
-				addAssistantMessage("Updated. Title color set to muted red (#A84C4C).");
-				return;
-			} else if (lowerMsg.includes('white')) {
-				updateSetting('titleColor', '#FFFFFF');
-				addAssistantMessage("Updated title color to paper white.");
-				return;
-			} else if (lowerMsg.includes('dark') || lowerMsg.includes('black') || lowerMsg.includes('charcoal')) {
-				updateSetting('titleColor', '#242220');
-				addAssistantMessage("Set title color back to deep charcoal ink.");
-				return;
-			}
+		} catch (err: any) {
+			console.error('[Cover assistant]', err);
+			addAssistantMessage(`Sorry, something went wrong: ${err.message || 'Unknown error.'}`);
+		} finally {
+			isProcessingChat = false;
 		}
-
-		// 5. Check for size adjustments
-		if (lowerMsg.includes('title size') || lowerMsg.includes('make title larger') || lowerMsg.includes('make title smaller')) {
-			const sizeMatch = lowerMsg.match(/\d+/);
-			if (sizeMatch) {
-				const size = parseInt(sizeMatch[0]);
-				updateSetting('titleSize', size);
-				addAssistantMessage(`I've set the title size to ${size}px.`);
-				return;
-			} else if (lowerMsg.includes('larger')) {
-				updateSetting('titleSize', Math.min(settings.titleSize + 4, 60));
-				addAssistantMessage(`Increased title size to ${settings.titleSize}px.`);
-				return;
-			} else if (lowerMsg.includes('smaller')) {
-				updateSetting('titleSize', Math.max(settings.titleSize - 4, 18));
-				addAssistantMessage(`Reduced title size to ${settings.titleSize}px.`);
-				return;
-			}
-		}
-
-		// 6. Check for image prompt requests
-		if (lowerMsg.includes('generate') || lowerMsg.includes('make background') || lowerMsg.includes('image of') || lowerMsg.includes('draw')) {
-			let newPrompt = msg;
-			if (lowerMsg.startsWith('generate')) newPrompt = msg.substring(8).trim();
-			updateSetting('bgImagePrompt', newPrompt);
-			addAssistantMessage(`I've updated the image generation prompt to: "${newPrompt}". Generating the new artwork now...`);
-			generateNewCoverArt();
-			return;
-		}
-
-		// Fallback: Default to modifying the image prompt
-		updateSetting('bgImagePrompt', msg);
-		addAssistantMessage(`I've set your prompt as the active cover art goal: "${msg}". Initiating Kie.ai/69labs image generation pipeline...`);
-		generateNewCoverArt();
 	}
 
 	function downloadCover() {
@@ -634,11 +590,11 @@
 							type="text" 
 							placeholder="Ask assistant to modify layout, fonts, colors, or images..." 
 							bind:value={chatInput} 
-							disabled={isGeneratingImage}
+							disabled={isGeneratingImage || isProcessingChat}
 						/>
-						<button type="submit" class="btn btn-primary" disabled={isGeneratingImage || !chatInput.trim()}>
-							{#if isGeneratingImage}
-								...
+						<button type="submit" class="btn btn-primary" disabled={isGeneratingImage || isProcessingChat || !chatInput.trim()}>
+							{#if isProcessingChat || isGeneratingImage}
+								…
 							{:else}
 								Send
 							{/if}
