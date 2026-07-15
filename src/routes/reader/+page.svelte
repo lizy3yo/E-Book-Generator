@@ -2,6 +2,11 @@
 	import { onMount, tick } from 'svelte';
 	import { globalState } from '$lib/state.svelte';
 	import type { Chapter } from '$lib/types';
+	import {
+		BookMarked, Clipboard, ClipboardCheck, FileCode, FileDown,
+		Image as ImageIcon, PenLine, BookOpen,
+		Sparkles, Wand2, RefreshCcw, RotateCcw
+	} from '@lucide/svelte';
 
 	let fontSize = $state(18);
 	let readerTheme = $state<'cream' | 'sepia' | 'white' | 'night'>('cream');
@@ -1095,7 +1100,7 @@
 							class="toc-item {activeSection === 'cover' ? 'active' : ''}"
 							onclick={() => scrollTo('cover')}
 						>
-							📔 Cover
+							<BookMarked size={14} /> Cover
 						</button>
 
 						{#each activeBook.chapters as chap, idx}
@@ -1127,10 +1132,14 @@
 						</div>
 
 						<button class="action-btn font-serif" onclick={handleCopyMarkdown}>
-							{copySuccess ? '✓ Copied!' : '📋 Copy Markdown'}
+							{#if copySuccess}
+								<ClipboardCheck size={14} /> Copied!
+							{:else}
+								<Clipboard size={14} /> Copy Markdown
+							{/if}
 						</button>
 						<button class="action-btn font-serif" onclick={handleCompileHtml}>
-							💾 Export HTML
+							<FileCode size={14} /> Export HTML
 						</button>
 						<button
 							class="action-btn action-btn--primary font-serif"
@@ -1140,7 +1149,7 @@
 							{#if isPdfExporting}
 								<span class="spinner"></span> Generating...
 							{:else}
-								📄 Export PDF
+								<FileDown size={14} /> Export PDF
 							{/if}
 						</button>
 					</div>
@@ -1251,7 +1260,9 @@
 															? `A high-quality editorial illustration for a chapter titled "${chap.title}" about: ${chap.summary}. Cinematic lighting, detailed, professional.`
 															: `Editorial illustration: "${chap.title}"`
 													})}
-												>🎨 Edit Illustration</button>
+												>
+												<ImageIcon size={13} /> Edit Illustration
+											</button>
 											</div>
 										{/if}
 
@@ -1286,7 +1297,9 @@
 													pageEndIdx: pageSlice.endIdx,
 													pageText: htmlToPlainText(pageSlice.blocks.join(''))
 												})}
-											>✏️ Edit Page</button>
+											>
+											<PenLine size={12} /> Edit Page
+										</button>
 
 											{#if pageIdx === 0}
 												<button
@@ -1300,7 +1313,9 @@
 														chapterSummary: chap.summary,
 														chapterContent: chap.content
 													})}
-												>📖 Edit Chapter</button>
+												>
+												<BookOpen size={12} /> Edit Chapter
+											</button>
 											{/if}
 										</div>
 									</footer>
@@ -1337,7 +1352,13 @@
 					<div class="edit-drawer__header">
 						<div class="edit-drawer__title-row">
 							<span class="edit-drawer__scope-badge edit-drawer__scope-badge--{editTarget.scope}">
-								{editTarget.scope === 'page' ? '✏️ Page' : editTarget.scope === 'chapter' ? '📖 Chapter' : '🎨 Illustration'}
+								{#if editTarget.scope === 'page'}
+									<PenLine size={11} /> Page
+								{:else if editTarget.scope === 'chapter'}
+									<BookOpen size={11} /> Chapter
+								{:else}
+									<ImageIcon size={11} /> Illustration
+								{/if}
 							</span>
 							<h3 class="edit-drawer__title font-serif">
 								{editTarget.scope === 'page'

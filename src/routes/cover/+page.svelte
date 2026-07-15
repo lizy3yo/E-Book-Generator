@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { globalState } from '$lib/state.svelte';
 	import type { CoverSettings } from '$lib/types';
+	import { RefreshCw, Download, Bot, User, Check } from '@lucide/svelte';
 
 	let canvas: HTMLCanvasElement | null = $state(null);
 	let isGeneratingImage = $state(false);
@@ -561,7 +562,13 @@
 					<div class="chat-viewport">
 						{#each chatMessages as msg}
 							<div class="chat-bubble {msg.sender}">
-								<div class="avatar font-serif">{msg.sender === 'assistant' ? '🤖' : '👤'}</div>
+								<div class="avatar">
+									{#if msg.sender === 'assistant'}
+										<Bot size={16} />
+									{:else}
+										<User size={16} />
+									{/if}
+								</div>
 								<div class="text font-serif">{msg.text}</div>
 							</div>
 						{/each}
@@ -614,7 +621,9 @@
 											<div class="variant-empty">—</div>
 										{/if}
 										{#if selectedCoverIndex === idx}
-											<div class="variant-active-badge" aria-label="Active design">✓</div>
+											<div class="variant-active-badge" aria-label="Active design">
+												<Check size={11} strokeWidth={3} />
+											</div>
 										{/if}
 									</div>
 									<span class="variant-label font-serif">{opt.style}</span>
@@ -642,7 +651,7 @@
 							{#if isGeneratingImage}
 								<span class="spinner"></span> Rendering Art...
 							{:else}
-								🔄 Regenerate Base Art
+								<RefreshCw size={15} /> Regenerate Base Art
 							{/if}
 						</button>
 						
@@ -651,7 +660,7 @@
 							onclick={downloadCover}
 							disabled={isGeneratingImage}
 						>
-							💾 Download Cover PNG
+							<Download size={15} /> Download Cover PNG
 						</button>
 					</div>
 				</div>
