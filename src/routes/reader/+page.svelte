@@ -41,6 +41,7 @@
 		chapterOrder: number;
 		chapterSummary: string;
 		chapterContent: string;
+		researchNotes?: string;
 		// page scope
 		pageIndex?: number;
 		pageStartIdx?: number;   // markdown block start index for this page
@@ -163,7 +164,8 @@
 						structure: activeBook.structure,
 						chapterTitle: editTarget.chapterTitle,
 						chapterOrder: editTarget.chapterOrder,
-						chapterSummary: editTarget.chapterSummary
+						chapterSummary: editTarget.chapterSummary,
+						researchNotes: editTarget.researchNotes
 					})
 				});
 				const data = await res.json();
@@ -186,7 +188,8 @@
 						chapterOrder: editTarget.chapterOrder,
 						chapterSummary: editTarget.chapterSummary,
 						chapterContent: editTarget.chapterContent,
-						pageContent: editTarget.pageText
+						pageContent: editTarget.pageText,
+						researchNotes: editTarget.researchNotes
 					})
 				});
 				const data = await res.json();
@@ -257,7 +260,8 @@
 						chapterTitle: editTarget.chapterTitle,
 						chapterOrder: editTarget.chapterOrder,
 						chapterContent: editTarget.chapterContent,
-						editInstruction: instruction
+						editInstruction: instruction,
+						researchNotes: editTarget.researchNotes
 					})
 				});
 				const data = await res.json();
@@ -281,7 +285,8 @@
 						chapterOrder: editTarget.chapterOrder,
 						chapterContent: editTarget.chapterContent,
 						pageContent: editTarget.pageText,
-						editInstruction: instruction
+						editInstruction: instruction,
+						researchNotes: editTarget.researchNotes
 					})
 				});
 				const data = await res.json();
@@ -1553,6 +1558,7 @@
 														chapterOrder: chap.order,
 														chapterSummary: chap.summary,
 														chapterContent: chap.content,
+														researchNotes: chap.researchNotes,
 														illustrationUrl: chap.illustrationUrl ?? '',
 														illustrationPrompt: chap.summary
 															? `A high-quality editorial illustration for a chapter titled "${chap.title}" about: ${chap.summary}. Cinematic lighting, detailed, professional.`
@@ -1590,6 +1596,7 @@
 													chapterOrder: chap.order,
 													chapterSummary: chap.summary,
 													chapterContent: chap.content,
+													researchNotes: chap.researchNotes,
 													pageIndex: pageIdx,
 													pageStartIdx: pageSlice.startIdx,
 													pageEndIdx: pageSlice.endIdx,
@@ -1609,7 +1616,8 @@
 														chapterTitle: chap.title,
 														chapterOrder: chap.order,
 														chapterSummary: chap.summary,
-														chapterContent: chap.content
+														chapterContent: chap.content,
+														researchNotes: chap.researchNotes
 													})}
 												>
 												<BookOpen size={12} /> Edit Chapter

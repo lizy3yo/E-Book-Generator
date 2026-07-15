@@ -428,6 +428,7 @@
 		// Commit
 		const final = [...globalState.books.find(b => b.id === bookId)!.chapters];
 		final[chapIndex].content       = finalContent;
+		final[chapIndex].researchNotes = factsSummary;
 		final[chapIndex].illustrationUrl = illustUrl;
 		final[chapIndex].status        = 'completed';
 		globalState.updateBookChapters(bookId, final);

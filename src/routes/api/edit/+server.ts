@@ -26,7 +26,8 @@ export const POST: RequestHandler = async ({ request }) => {
 			// illustration context (edit-illustration only)
 			illustrationPrompt,
 			// user's editing instruction (absent for reconstruct)
-			editInstruction
+			editInstruction,
+			researchNotes
 		} = await request.json();
 
 		const selectedModel =
@@ -84,18 +85,22 @@ export const POST: RequestHandler = async ({ request }) => {
 			systemPrompt = `You are a professional ebook editor working on "${bookTitle}" (${genre}).
 The chapter is written in a "${tone}" voice — preserve this voice in all edits.
 
-Your task is to apply the user's editing instruction to the full chapter content.
+Your task is to apply the user's editing instruction to the full chapter content while maintaining absolute factual accuracy.
 Rules:
 - Return ONLY the revised chapter content in Markdown — no commentary, no meta-text.
 - Preserve the chapter's existing structure (headings, sections, flow) unless the instruction explicitly changes it.
 - Keep or improve prose quality; never make the writing worse.
 - If the instruction is stylistic (e.g. "make it shorter"), apply it uniformly across the whole chapter.
-- Do NOT add a chapter-number heading at the top.`;
+- Do NOT add a chapter-number heading at the top.
+- Ground all facts in the provided Exa AI research notes. Never fabricate statistics, studies, quotes, dates, or events. If unverified, state that evidence is limited.`;
 
 			userPrompt = `Chapter ${chapterOrder}: "${chapterTitle}"
 
 Editing instruction:
 "${editInstruction}"
+
+Grounding Research & Author Notes:
+${researchNotes || 'None provided.'}
 
 Current chapter content:
 ${chapterContent}
@@ -104,18 +109,47 @@ Apply the instruction and return the revised chapter now.`;
 
 		} else if (action === 'reconstruct-chapter') {
 			// Full fresh rewrite — existing content is NOT sent; only the brief drives the output
-			systemPrompt = `You are a professional ebook author writing for a commercial publishing house.
+			systemPrompt = `You are an expert researcher, technical writer, and editor writing for a commercial publishing house.
 Book: "${bookTitle}" | Genre: ${genre} | Tone: ${tone}${structure ? ` | Structure: ${structure}` : ''}
 
-Your task is to write a COMPLETELY FRESH version of a chapter from scratch.
-Rules:
-- Write entirely new prose — do NOT reference, copy, or paraphrase the existing content.
-- Anchor your writing to the chapter brief; it defines the scope and purpose of this chapter.
-- Use the declared tone and genre conventions throughout.
+Your task is to write a COMPLETELY FRESH version of a chapter from scratch, ensuring it is accurate, evidence-based, and thoroughly researched.
+
+Core Principle: Research comes before writing. Ground all your claims in the provided Exa AI research notes. Do not begin writing until you have fully analyzed and synthesized the facts.
+
+Synthesize:
+- Combine the information from the provided Exa AI research notes and chapter brief into a cohesive, high-quality chapter.
+- Do NOT copy source wording. Rewrite everything in original, sophisticated language.
+- The writing should read naturally and flow seamlessly, rather than looking like a collection of raw research notes.
+
+Writing Requirements:
+- Include clear, accessible explanations.
+- Provide practical examples and real-world applications/case studies to ground theoretical concepts.
+- Provide historical background and context where appropriate.
+- Incorporate expert insights, highlight common mistakes, and give actionable advice.
+- Ensure smooth, natural transitions between ideas and sections.
+- Avoid shallow summaries or high-level fluff. Each section must teach the reader something meaningful.
 - Use Markdown: ## for section headings, ### for sub-headings, ** for bold key terms, * for italics.
 - Open with a strong hook. End with a concise synthesis or forward bridge to the next chapter.
 - Do NOT include a chapter-number heading at the top.
 - Aim for the same approximate depth and length as a professionally published trade ebook chapter.
+
+Accuracy Rules:
+- Never fabricate statistics, studies, surveys, expert quotes, dates, historical events, laws, medical information, or financial information.
+- If information cannot be verified confidently from the provided research notes, state that evidence is limited instead of speculating or guessing. Avoid presenting speculation as fact.
+
+Depth Requirements:
+- For every major concept introduced:
+  1. Explain what it is.
+  2. Explain why it matters.
+  3. Explain how it works.
+  4. Outline its benefits and limitations/drawbacks.
+  5. Correct common misconceptions about it.
+  6. Detail practical implementation steps and real-world examples.
+- Assume the reader has no prior knowledge of the topic, but maintain a professional, high-standard tone.
+
+Consistency:
+- Maintain consistent terminology throughout.
+- Follow a logical progression of ideas with no contradictions or repeated information.
 
 VISUAL ELEMENTS & LAYOUT DIRECTIVES (Align content with professional, publication-ready ebook standards):
 1. TABLES FOR COMPARISONS: If the section lists scenarios, checklists, comparisons, or lookup guides, format them using standard markdown tables.
@@ -141,6 +175,9 @@ VISUAL ELEMENTS & LAYOUT DIRECTIVES (Align content with professional, publicatio
 Chapter brief (your sole creative brief — write to this, not to any prior draft):
 ${chapterSummary || `Write a comprehensive chapter on the topic of "${chapterTitle}" for a book about "${bookTitle}".`}
 
+Grounding Research & Author Notes:
+${researchNotes || 'None provided.'}
+
 Write the complete fresh chapter now.`;
 
 		} else if (action === 'edit-page') {
@@ -153,7 +190,8 @@ Rules:
 - Return ONLY the rewritten passage in Markdown — nothing else.
 - Match the length of the original passage unless the instruction asks for more or less.
 - Do not add headings the original passage did not have.
-- Maintain voice, tense, and style consistency with the rest of the chapter.`;
+- Maintain voice, tense, and style consistency with the rest of the chapter.
+- Ground all edited information in the provided Exa AI research notes. Never fabricate statistics, studies, quotes, dates, or events.`;
 
 			userPrompt = `Full chapter context (for reference — do NOT rewrite this):
 ${chapterContent}
@@ -162,6 +200,11 @@ ${chapterContent}
 
 Passage to rewrite (this exact excerpt from the chapter):
 ${pageContent}
+
+---
+
+Grounding Research & Author Notes:
+${researchNotes || 'None provided.'}
 
 ---
 
@@ -182,10 +225,16 @@ Rules:
 - Use the chapter context to maintain logical and narrative continuity.
 - Match the approximate length of the original passage.
 - Return ONLY the new passage in Markdown — no commentary, no labels.
-- Maintain voice, tense, and style consistency with the chapter.`;
+- Maintain voice, tense, and style consistency with the chapter.
+- Ground all claims in the provided Exa AI research notes. Never fabricate statistics, studies, quotes, dates, or events. If unverified, state that evidence is limited.`;
 
 			userPrompt = `Chapter context (for continuity — do NOT copy this):
 ${chapterContent}
+
+---
+
+Grounding Research & Author Notes:
+${researchNotes || 'None provided.'}
 
 ---
 
