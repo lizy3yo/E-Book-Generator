@@ -61,8 +61,9 @@
 	function activateVariant(index: number) {
 		if (!globalState.activeBookId) return;
 		globalState.selectCoverOption(globalState.activeBookId, index);
-		// bgImage cache must be cleared so redrawCanvas picks up the new URL
-		bgImage = null;
+		// Clear the cached image so redrawCanvas fetches the new variant's URL
+		bgImage    = null;
+		bgImageSrc = '';
 	}
 
 	function updateSetting<K extends keyof CoverSettings>(key: K, value: CoverSettings[K]) {
@@ -74,53 +75,66 @@
 
 	// Dynamic background image loader
 	let bgImage: HTMLImageElement | null = null;
+	let bgImageSrc = '';   // tracks which URL is currently loaded
+
+	let generateError = $state('');
+
+	/**
+	 * Return the URL to use for loading an image into the canvas.
+	 * External URLs (http/https) are routed through the server-side proxy so
+	 * the browser treats them as same-origin and allows canvas drawImage()
+	 * without tainting the canvas.  Data URLs are used as-is.
+	 */
+	function canvasUrl(url: string): string {
+		if (!url) return '';
+		if (url.startsWith('data:')) return url;
+		return `/api/proxy?url=${encodeURIComponent(url)}`;
+	}
+
 	function redrawCanvas() {
 		if (!canvas) return;
 		const ctx = canvas.getContext('2d');
 		if (!ctx) return;
 
-		const width = canvas.width;
+		const width  = canvas.width;
 		const height = canvas.height;
-
-		// Clear canvas
 		ctx.clearRect(0, 0, width, height);
 
-		// 1. Draw background image or cream fallback
 		if (settings.bgImageUrl) {
-			if (!bgImage || bgImage.src !== settings.bgImageUrl) {
-				bgImage = new Image();
-				bgImage.crossOrigin = 'anonymous';
-				bgImage.src = settings.bgImageUrl;
-				bgImage.onload = () => {
+			const src = canvasUrl(settings.bgImageUrl);
+			if (!bgImage || bgImageSrc !== src) {
+				bgImage   = new Image();
+				bgImageSrc = src;
+				// No crossOrigin needed — proxy serves same-origin
+				bgImage.onload  = () => drawLayers(ctx, width, height);
+				bgImage.onerror = () => {
+					bgImage    = null;
+					bgImageSrc = '';
+					ctx.fillStyle = '#FAF7F2';
+					ctx.fillRect(0, 0, width, height);
 					drawLayers(ctx, width, height);
 				};
+				bgImage.src = src;
 			} else {
 				drawLayers(ctx, width, height);
 			}
 		} else {
-			// Fallback: Cream paper background
 			ctx.fillStyle = '#FAF7F2';
 			ctx.fillRect(0, 0, width, height);
-			
-			// Draw simple vector shapes for placeholder
 			ctx.strokeStyle = '#E6DDD0';
 			ctx.lineWidth = 1;
 			ctx.strokeRect(15, 15, width - 30, height - 30);
-			
-			// Abstract geometric placeholder
 			ctx.fillStyle = '#EAE5D9';
 			ctx.beginPath();
 			ctx.arc(width / 2, height / 2.5, width / 5, 0, Math.PI * 2);
 			ctx.fill();
-			
 			drawLayers(ctx, width, height);
 		}
 	}
 
 	function drawLayers(ctx: CanvasRenderingContext2D, width: number, height: number) {
 		// Draw background image if loaded
-		if (settings.bgImageUrl && bgImage && bgImage.complete) {
-			// Draw aspect fill
+		if (settings.bgImageUrl && bgImage && bgImage.complete && bgImage.naturalWidth > 0) {
 			const imgRatio = bgImage.width / bgImage.height;
 			const canvasRatio = width / height;
 			let sWidth = bgImage.width;
@@ -137,12 +151,13 @@
 			}
 
 			ctx.drawImage(bgImage, sx, sy, sWidth, sHeight, 0, 0, width, height);
-		}
 
-		// Skip drawing overlays, borders, and typography if using a pre-baked template
-		const isBakedInTemplate = coverOptions.some(opt => opt.imageUrl && opt.imageUrl === settings.bgImageUrl);
-		if (isBakedInTemplate) {
-			return;
+			// If the active bgImageUrl is an AI-generated cover (either a saved
+			// variant OR a newly regenerated image), treat it as a baked image and
+			// skip all text overlays — the image already contains the full design.
+			const isAiImage = settings.bgImageUrl.startsWith('http')
+				|| settings.bgImageUrl.startsWith('data:image/');
+			if (isAiImage) return;
 		}
 
 		// 2. Draw color overlay
@@ -235,31 +250,71 @@
 	async function generateNewCoverArt() {
 		if (isGeneratingImage || !globalState.activeBookId) return;
 		isGeneratingImage = true;
+		generateError = '';
 
 		try {
 			const keys = globalState.apiKeys;
+			const book = globalState.activeBook!;
+
+			// Build a rich prompt — use the selected variant's stored prompt if available,
+			// falling back to the generic bgImagePrompt or a book-specific construction.
+			const selectedVariant = selectedCoverIndex !== null
+				? coverOptions[selectedCoverIndex]
+				: null;
+
+			const storedPrompt = (selectedVariant?.prompt || settings.bgImagePrompt)?.trim();
+			const isGenericPrompt = !storedPrompt
+				|| storedPrompt === 'Abstract minimalist painting with warm colors';
+
+			const prompt = isGenericPrompt
+				? `A professional book cover background for "${book.title}" — ${book.genre} genre. ` +
+				  `${book.subtitle ? `Subtitle: ${book.subtitle}. ` : ''}` +
+				  `Style: atmospheric, editorial, high-quality illustration. ` +
+				  `Cinematic lighting, rich detail, suitable for a published trade ebook.`
+				: storedPrompt;
+
 			const res = await fetch('/api/image', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
-					prompt: settings.bgImagePrompt,
+					prompt,
 					apiKey: keys.imageKey,
 					provider: keys.imageProvider,
 					useMockMode: keys.useMockMode,
 					isCover: true
 				})
 			});
-			const data = await res.json();
 
-			if (!data.success) {
-				throw new Error(data.error || 'Failed to render image.');
+			const data = await res.json();
+			if (!data.success) throw new Error(data.error || 'Image generation failed.');
+
+			// Clear cached image so redrawCanvas picks up the new URL
+			bgImage    = null;
+			bgImageSrc = '';
+
+			// 1. Update coverSettings so the canvas redraws with the new image
+			updateSetting('bgImageUrl', data.imageUrl);
+
+			// 2. Write the new imageUrl back into the selected variant slot so the
+			//    thumbnail in the Design Variants panel reflects the new generation.
+			if (selectedCoverIndex !== null && coverOptions[selectedCoverIndex]) {
+				globalState.replaceCoverOption(book.id, selectedCoverIndex, {
+					...coverOptions[selectedCoverIndex],
+					imageUrl: data.imageUrl
+				});
+			} else if (coverOptions.length > 0) {
+				// No variant selected — update slot 0 as a sensible default
+				globalState.replaceCoverOption(book.id, 0, {
+					...coverOptions[0],
+					imageUrl: data.imageUrl
+				});
 			}
 
-			updateSetting('bgImageUrl', data.imageUrl);
-			addAssistantMessage("I've successfully generated and applied the new background art!");
+			addAssistantMessage('New cover art generated and applied.');
 		} catch (err: any) {
-			console.error(err);
-			addAssistantMessage(`Sorry, there was an issue rendering that cover: ${err.message || 'Unknown error.'}`);
+			console.error('[Cover] generateNewCoverArt error:', err);
+			generateError = err.message || 'Image generation failed. Check your API key and try again.';
+			addAssistantMessage(`Generation failed: ${generateError}`);
 		} finally {
 			isGeneratingImage = false;
 		}
@@ -600,27 +655,33 @@
 					<div class="variants-panel card">
 						<div class="variants-header">
 							<h3 class="font-serif">Design Variants</h3>
-							<span class="variants-hint font-serif">Generated during setup — click to switch active design</span>
+							<span class="variants-hint font-serif">Click a variant to select it, then hit Regenerate to generate or switch designs</span>
 						</div>
 						<div class="variants-grid">
 							{#each coverOptions as opt, idx}
 								<!-- svelte-ignore a11y_click_events_have_key_events -->
 								<!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
 								<div
-									class="variant-thumb {selectedCoverIndex === idx ? 'active' : ''}"
+									class="variant-thumb {selectedCoverIndex === idx ? 'active' : ''} {!opt.imageUrl ? 'ungenerated' : ''}"
 									role="button"
 									tabindex="0"
 									onclick={() => activateVariant(idx)}
 									onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activateVariant(idx); } }}
-									title="Switch to: {opt.style}"
+									title={opt.imageUrl ? `Switch to: ${opt.style}` : `Select ${opt.style} then click Regenerate`}
 								>
 									<div class="variant-img-wrap">
 										{#if opt.imageUrl}
 											<img src={opt.imageUrl} alt={opt.style} />
 										{:else}
-											<div class="variant-empty">—</div>
+											<div class="variant-empty">
+												{#if selectedCoverIndex === idx}
+													<span class="variant-empty-label">Selected — click<br/>Regenerate to generate</span>
+												{:else}
+													<span class="variant-empty-label">Select to generate</span>
+												{/if}
+											</div>
 										{/if}
-										{#if selectedCoverIndex === idx}
+										{#if selectedCoverIndex === idx && opt.imageUrl}
 											<div class="variant-active-badge" aria-label="Active design">
 												<Check size={11} strokeWidth={3} />
 											</div>
@@ -641,6 +702,10 @@
 						height="600" 
 						class="cover-canvas"
 					></canvas>
+
+					{#if generateError}
+						<p class="generate-error" role="alert">{generateError}</p>
+					{/if}
 					
 					<div class="actions-row">
 						<button 
@@ -929,6 +994,18 @@
 		box-shadow: 0 0 0 1px var(--accent);
 	}
 
+	/* Ungenerated variant selected as generation target */
+	.variant-thumb.ungenerated.active {
+		border-style: dashed;
+		border-color: var(--accent);
+		box-shadow: none;
+	}
+
+	.variant-thumb.ungenerated:hover {
+		border-color: var(--accent);
+		opacity: 0.85;
+	}
+
 	.variant-img-wrap {
 		position: relative;
 		width: 100%;
@@ -954,10 +1031,20 @@
 		width: 100%;
 		height: 100%;
 		display: flex;
+		flex-direction: column;
 		align-items: center;
 		justify-content: center;
+		gap: 0.3rem;
+		background: var(--bg-inset);
+	}
+
+	.variant-empty-label {
+		font-family: var(--font-sans, sans-serif);
+		font-size: 0.6rem;
 		color: var(--text-muted);
-		font-size: 1.25rem;
+		text-align: center;
+		padding: 0 0.25rem;
+		line-height: 1.3;
 	}
 
 	.variant-active-badge {
@@ -998,6 +1085,19 @@
 		background-color: #FAF7F2;
 		max-width: 100%;
 		height: auto;
+	}
+
+	.generate-error {
+		width: 100%;
+		font-family: var(--font-sans, sans-serif);
+		font-size: 0.8rem;
+		color: #B91C1C;
+		background: #FEF2F2;
+		border: 1px solid #FECACA;
+		border-radius: 6px;
+		padding: 0.55rem 0.85rem;
+		margin: 0;
+		text-align: center;
 	}
 
 	.actions-row {
