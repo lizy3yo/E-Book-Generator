@@ -1131,16 +1131,6 @@
 							<button class="font-btn" onclick={() => fontSize = Math.min(fontSize + 1, 26)}>A+</button>
 						</div>
 
-						<button class="action-btn font-serif" onclick={handleCopyMarkdown}>
-							{#if copySuccess}
-								<ClipboardCheck size={14} /> Copied!
-							{:else}
-								<Clipboard size={14} /> Copy Markdown
-							{/if}
-						</button>
-						<button class="action-btn font-serif" onclick={handleCompileHtml}>
-							<FileCode size={14} /> Export HTML
-						</button>
 						<button
 							class="action-btn action-btn--primary font-serif"
 							onclick={handleExportPdf}
