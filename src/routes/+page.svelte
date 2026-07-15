@@ -305,28 +305,22 @@
 		const keys    = globalState.apiKeys;
 		const useMock = keys.useMockMode;
 
-		// Collect research facts for chapter context
-		let factsSummary = '';
+		// ── Step 1: Book-level research (shared context for all chapters) ─────
+		let bookLevelFacts = '';
 		try {
 			const r = await fetch('/api/research', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
-					query: `${book.title} ${book.genre}`,
+					query: `${book.title} ${book.genre} comprehensive overview key concepts`,
 					apiKey: keys.exaKey,
 					useMockMode: useMock
 				})
 			});
 			const rd = await r.json();
-			const searchFacts = rd.success
+			bookLevelFacts = rd.success
 				? (rd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
 				: '';
-
-			// Prepend author's background brief so it grounds every chapter
-			factsSummary = [
-				book.userContext?.trim() ? `[Author Brief]\n${book.userContext.trim()}` : '',
-				searchFacts
-			].filter(Boolean).join('\n\n');
 		} catch { /* non-fatal */ }
 
 		const chapters = [...globalState.books.find(b => b.id === book.id)!.chapters];
@@ -334,6 +328,35 @@
 		for (let i = 0; i < chapters.length; i++) {
 			const chap = chapters[i];
 			if (chap.status === 'completed') continue; // skip already done
+
+			// ── Step 2: Per-chapter targeted research ──────────────────────────
+			let chapterFacts = '';
+			try {
+				const cr = await fetch('/api/research', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						query: `${chap.title} ${book.title} ${book.genre} ${chap.summary ?? ''}`.trim(),
+						apiKey: keys.exaKey,
+						useMockMode: useMock
+					})
+				});
+				const crd = await cr.json();
+				chapterFacts = crd.success
+					? (crd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
+					: '';
+				globalState.addLog(book.id, {
+					step: 'research', status: 'success',
+					message: `Research complete for Chapter ${chap.order}: "${chap.title}"`
+				});
+			} catch { /* non-fatal */ }
+
+			// Merge: author brief + book-level facts + chapter-specific facts
+			const factsSummary = [
+				book.userContext?.trim() ? `[Author Brief]\n${book.userContext.trim()}` : '',
+				bookLevelFacts ? `[Book-Level Research]\n${bookLevelFacts}` : '',
+				chapterFacts   ? `[Chapter-Specific Research for "${chap.title}"]\n${chapterFacts}` : ''
+			].filter(Boolean).join('\n\n');
 
 			await writeSingleChapter(book.id, i, chapters, factsSummary, keys, useMock);
 		}
@@ -358,6 +381,7 @@
 		useMock: boolean
 	) {
 		const chap = chaptersSnapshot[chapIndex];
+		const book = globalState.books.find(b => b.id === bookId)!;
 
 		// Mark writing
 		const live = [...globalState.books.find(b => b.id === bookId)!.chapters];
@@ -368,7 +392,7 @@
 			message: `Writing Chapter ${chap.order}: "${chap.title}"…`
 		});
 
-		// Draft
+		// Draft — include all book context fields so Claude can write unique, informed content
 		const draftRes = await fetch('/api/write', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
@@ -376,11 +400,13 @@
 				action: 'write-chapter',
 				apiKey: keys.anthropicKey,
 				useMockMode: useMock,
-				bookTitle: globalState.books.find(b => b.id === bookId)!.title,
+				bookTitle: book.title,
+				genre: book.genre,
+				structure: book.structure,
 				chapterTitle: chap.title,
 				chapterOrder: chap.order,
 				chapterSummary: chap.summary,
-				tone: globalState.books.find(b => b.id === bookId)!.tone,
+				tone: book.tone,
 				researchNotes: factsSummary
 			})
 		});
@@ -399,7 +425,9 @@
 				action: 'verify-chapter',
 				apiKey: keys.anthropicKey,
 				useMockMode: useMock,
-				bookTitle: globalState.books.find(b => b.id === bookId)!.title,
+				bookTitle: book.title,
+				genre: book.genre,
+				tone: book.tone,
 				chapterTitle: chap.title,
 				chapterContent: draftData.content,
 				researchNotes: factsSummary
@@ -408,7 +436,7 @@
 		const verifyData = await verifyRes.json();
 		const finalContent = verifyData.success ? verifyData.verifiedContent : draftData.content;
 
-		// Illustration
+		// Illustration — use chapter summary for a more relevant prompt
 		globalState.addLog(bookId, {
 			step: 'illustrate', status: 'running',
 			message: `Generating illustration for Chapter ${chap.order}…`
@@ -416,8 +444,11 @@
 
 		let illustUrl: string | null = null;
 		try {
+			const illustPrompt = chap.summary
+				? `High-quality editorial illustration for a chapter titled "${chap.title}". Topic: ${chap.summary}. From the book "${book.title}" (${book.genre}). Minimal flat vector style, cream background, sophisticated palette.`
+				: `Minimalist editorial illustration for chapter: "${chap.title}". Cream background, vector style.`;
 			illustUrl = await generateImage({
-				prompt:      `Minimalist editorial illustration for chapter: "${chap.title}". Cream background, vector style.`,
+				prompt:      illustPrompt,
 				apiKey:      keys.imageKey,
 				provider:    keys.imageProvider,
 				useMockMode: useMock,
@@ -427,10 +458,10 @@
 
 		// Commit
 		const final = [...globalState.books.find(b => b.id === bookId)!.chapters];
-		final[chapIndex].content       = finalContent;
-		final[chapIndex].researchNotes = factsSummary;
+		final[chapIndex].content         = finalContent;
+		final[chapIndex].researchNotes   = factsSummary;
 		final[chapIndex].illustrationUrl = illustUrl;
-		final[chapIndex].status        = 'completed';
+		final[chapIndex].status          = 'completed';
 		globalState.updateBookChapters(bookId, final);
 
 		globalState.addLog(bookId, {
@@ -446,28 +477,49 @@
 
 		const keys    = globalState.apiKeys;
 		const useMock = keys.useMockMode;
+		const chap    = active.chapters[chapIndex];
 
-		let factsSummary = '';
+		// ── Book-level background research ──────────────────────────────────
+		let bookLevelFacts = '';
 		try {
 			const r = await fetch('/api/research', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
-					query: `${active.title} ${active.genre}`,
+					query: `${active.title} ${active.genre} comprehensive overview key concepts`,
 					apiKey: keys.exaKey,
 					useMockMode: useMock
 				})
 			});
 			const rd = await r.json();
-			const searchFacts = rd.success
+			bookLevelFacts = rd.success
 				? (rd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
 				: '';
-
-			factsSummary = [
-				active.userContext?.trim() ? `[Author Brief]\n${active.userContext.trim()}` : '',
-				searchFacts
-			].filter(Boolean).join('\n\n');
 		} catch { /* non-fatal */ }
+
+		// ── Chapter-specific targeted research ────────────────────────────
+		let chapterFacts = '';
+		try {
+			const cr = await fetch('/api/research', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					query: `${chap.title} ${active.title} ${active.genre} ${chap.summary ?? ''}`.trim(),
+					apiKey: keys.exaKey,
+					useMockMode: useMock
+				})
+			});
+			const crd = await cr.json();
+			chapterFacts = crd.success
+				? (crd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
+				: '';
+		} catch { /* non-fatal */ }
+
+		const factsSummary = [
+			active.userContext?.trim() ? `[Author Brief]\n${active.userContext.trim()}` : '',
+			bookLevelFacts ? `[Book-Level Research]\n${bookLevelFacts}` : '',
+			chapterFacts   ? `[Chapter-Specific Research for "${chap.title}"]\n${chapterFacts}` : ''
+		].filter(Boolean).join('\n\n');
 
 		try {
 			const snapshot = [...active.chapters];

@@ -32,7 +32,7 @@
 	);
 
 	// ── Content Editor state ──────────────────────────────────────────────────
-	type EditScope = 'page' | 'chapter' | 'illustration';
+	type EditScope = 'page' | 'chapter' | 'illustration' | 'add-page';
 
 	interface EditTarget {
 		scope: EditScope;
@@ -61,6 +61,18 @@
 	let lastInstruction = $state('');
 	// Which action triggered the current in-progress edit (for button loading state)
 	let activeAction    = $state<'apply' | 'redo' | 'reconstruct' | null>(null);
+
+	// ── Per-book design color overrides (written into interiorDesign) ──────────
+	let designAccentOverride = $state('');
+	let designPageBgOverride = $state('');
+	let designTextOverride   = $state('');
+	let designHeaderOverride = $state('');
+
+	function applyColorOverride(key: string, value: string) {
+		if (!activeBook) return;
+		const current = activeBook.interiorDesign ?? {};
+		globalState.updateBookInteriorDesign(activeBook.id, { ...current, [key]: value, _coverSignature: (current._coverSignature ?? '') });
+	}
 
 	function openEditPanel(target: EditTarget) {
 		editTarget = target;
@@ -150,6 +162,31 @@
 		editError = '';
 
 		try {
+			// ── Fetch fresh targeted Exa research for this specific chapter ────
+			let freshResearch = editTarget.researchNotes || '';
+			try {
+				const rRes = await fetch('/api/research', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						query: `${editTarget.chapterTitle} ${activeBook.title} ${activeBook.genre} ${editTarget.chapterSummary ?? ''}`.trim(),
+						apiKey: globalState.apiKeys.exaKey,
+						useMockMode: globalState.apiKeys.useMockMode
+					})
+				});
+				const rData = await rRes.json();
+				if (rData.success && rData.results?.length) {
+					const newFacts = (rData.results as any[])
+						.map((f: any) => `[${f.title}] ${f.snippet}`)
+						.join('\n\n');
+					// Merge fresh research with any saved notes
+					freshResearch = [
+						freshResearch ? `[Saved Research Notes]\n${freshResearch}` : '',
+						`[Fresh Research for "${editTarget.chapterTitle}"]\n${newFacts}`
+					].filter(Boolean).join('\n\n');
+				}
+			} catch { /* non-fatal — use saved notes as fallback */ }
+
 			if (editTarget.scope === 'chapter') {
 				const res = await fetch('/api/edit', {
 					method: 'POST',
@@ -165,7 +202,7 @@
 						chapterTitle: editTarget.chapterTitle,
 						chapterOrder: editTarget.chapterOrder,
 						chapterSummary: editTarget.chapterSummary,
-						researchNotes: editTarget.researchNotes
+						researchNotes: freshResearch
 					})
 				});
 				const data = await res.json();
@@ -189,7 +226,7 @@
 						chapterSummary: editTarget.chapterSummary,
 						chapterContent: editTarget.chapterContent,
 						pageContent: editTarget.pageText,
-						researchNotes: editTarget.researchNotes
+						researchNotes: freshResearch
 					})
 				});
 				const data = await res.json();
@@ -229,6 +266,78 @@
 			await tick();
 			if (editTarget.scope !== 'illustration') paginateAllChapters();
 
+		} catch (err: any) {
+			editError = err.message || 'An unexpected error occurred.';
+		} finally {
+			isEditing = false;
+			activeAction = null;
+		}
+	}
+
+	/** Add a new page of AI-generated content after the current page */
+	async function applyAddPage() {
+		if (!editTarget || !editInstruction.trim() || !activeBook || isEditing) return;
+		isEditing = true;
+		activeAction = 'apply';
+		editSuccess = false;
+		editError = '';
+
+		try {
+			// Fetch fresh Exa research for this chapter
+			let freshResearch = editTarget.researchNotes || '';
+			try {
+				const rRes = await fetch('/api/research', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						query: `${editTarget.chapterTitle} ${activeBook.title} ${editInstruction}`.trim(),
+						apiKey: globalState.apiKeys.exaKey,
+						useMockMode: globalState.apiKeys.useMockMode
+					})
+				});
+				const rData = await rRes.json();
+				if (rData.success && rData.results?.length) {
+					const newFacts = (rData.results as any[])
+						.map((f: any) => `[${f.title}] ${f.snippet}`)
+						.join('\n\n');
+					freshResearch = [freshResearch ? `[Saved]\n${freshResearch}` : '', `[Fresh Research]\n${newFacts}`].filter(Boolean).join('\n\n');
+				}
+			} catch { /* non-fatal */ }
+
+			const res = await fetch('/api/edit', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					action: 'add-page',
+					apiKey: globalState.apiKeys.anthropicKey,
+					useMockMode: globalState.apiKeys.useMockMode,
+					bookTitle: activeBook.title,
+					genre: activeBook.genre,
+					tone: activeBook.tone,
+					chapterTitle: editTarget.chapterTitle,
+					chapterOrder: editTarget.chapterOrder,
+					chapterContent: editTarget.chapterContent,
+					pageContent: (editTarget.pageIndex ?? 0) + 1,
+					editInstruction: editInstruction.trim(),
+					researchNotes: freshResearch
+				})
+			});
+			const data = await res.json();
+			if (!data.success) throw new Error(data.error || 'Add page failed');
+
+			// Splice new content AFTER the current page's end index
+			const insertAt = editTarget.pageEndIdx ?? editTarget.chapterContent.split(/\n\n+/).length;
+			const mdBlocks = editTarget.chapterContent.split(/\n\n+/);
+			const before = mdBlocks.slice(0, insertAt);
+			const after  = mdBlocks.slice(insertAt);
+			const updatedContent = [...before, data.pageContent.trim(), ...after].join('\n\n');
+
+			globalState.updateChapterContent(activeBook.id, editTarget.chapterId, updatedContent, 'completed');
+			editTarget = { ...editTarget, chapterContent: updatedContent };
+			lastInstruction = editInstruction.trim();
+			editSuccess = true;
+			await tick();
+			paginateAllChapters();
 		} catch (err: any) {
 			editError = err.message || 'An unexpected error occurred.';
 		} finally {
@@ -404,10 +513,28 @@
 	function parseMarkdown(md: string): string {
 		if (!md) return '<p>No content written for this chapter yet.</p>';
 
-		let html = md.trim();
-		html = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+		let src = md.trim();
 
-		// Headings — handle h1–h4 in descending order so #### matches before ###
+		// ── Step 1: extract raw HTML blocks so we don't escape them ───────────
+		// Matches block-level HTML tags that Claude emits: <div ...>, <table ...>
+		const rawBlocks: string[] = [];
+		src = src.replace(
+			/<(div|table|thead|tbody|tr|th|td|figure)(\s[^>]*)?>([\s\S]*?)<\/\1>/gi,
+			(match) => {
+				const placeholder = `\x02RAWBLOCK${rawBlocks.length}\x03`;
+				rawBlocks.push(match);
+				return placeholder;
+			}
+		);
+
+		// ── Step 2: escape remaining text so inline HTML isn't injected ────────
+		let html = src
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;');
+
+		// ── Step 3: standard markdown → HTML conversion ─────────────────────
+		// Headings (descending so #### is matched before ###)
 		html = html.replace(/^#### (.*?)$/gm, '<h4>$1</h4>');
 		html = html.replace(/^### (.*?)$/gm, '<h3>$1</h3>');
 		html = html.replace(/^## (.*?)$/gm, '<h2>$1</h2>');
@@ -418,16 +545,30 @@
 		html = html.replace(/^\* (.*?)$/gm, '<li>$1</li>');
 		html = html.replace(/^- (.*?)$/gm, '<li>$1</li>');
 
+		// Numbered lists: "1. item"
+		html = html.replace(/^\d+\.\s+(.*?)$/gm, '<li>$1</li>');
+
+		// Paragraph wrap — skip if line already contains a block element or placeholder
 		const paragraphs = html.split('\n\n');
 		html = paragraphs.map((p) => {
 			const trimmed = p.trim();
 			if (!trimmed) return '';
-			if (trimmed.startsWith('<h') || trimmed.startsWith('<blockquote') || trimmed.startsWith('<li')) return trimmed;
+			if (
+				trimmed.startsWith('<h') ||
+				trimmed.startsWith('<blockquote') ||
+				trimmed.startsWith('<li') ||
+				trimmed.startsWith('\x02RAWBLOCK')
+			) return trimmed;
 			return `<p>${trimmed}</p>`;
 		}).join('\n');
 
+		// Merge consecutive <li> into a single <ul>
 		html = html.replace(/(<li>.*?<\/li>)/gs, '<ul>$1</ul>');
 		html = html.replace(/<\/ul>\s*<ul>/g, '');
+
+		// ── Step 4: restore raw HTML blocks ───────────────────────────────
+		html = html.replace(/\x02RAWBLOCK(\d+)\x03/g, (_, i) => rawBlocks[parseInt(i)]);
+
 		return html;
 	}
 
@@ -1662,16 +1803,20 @@
 									<PenLine size={11} /> Page
 								{:else if editTarget.scope === 'chapter'}
 									<BookOpen size={11} /> Chapter
+								{:else if editTarget.scope === 'add-page'}
+									<Sparkles size={11} /> Add Page
 								{:else}
 									<ImageIcon size={11} /> Illustration
 								{/if}
 							</span>
 							<h3 class="edit-drawer__title font-serif">
 								{editTarget.scope === 'page'
-									? `Page ${(editTarget.pageIndex ?? 0) + 1} · Chapter ${editTarget.chapterOrder}`
+									? `Edit Page ${(editTarget.pageIndex ?? 0) + 1} · Ch. ${editTarget.chapterOrder}`
 									: editTarget.scope === 'chapter'
-									? `Chapter ${editTarget.chapterOrder}`
-									: `Illustration`}
+									? `Edit Chapter ${editTarget.chapterOrder}`
+									: editTarget.scope === 'add-page'
+									? `Add Page After Page ${(editTarget.pageIndex ?? 0) + 1}`
+									: `Edit Illustration`}
 							</h3>
 						</div>
 						<p class="edit-drawer__subtitle font-serif">{editTarget.chapterTitle}</p>
@@ -1684,6 +1829,8 @@
 							<p class="edit-drawer__hint">AI will rewrite this specific page while preserving the rest of the chapter. Describe what you want changed.</p>
 						{:else if editTarget.scope === 'chapter'}
 							<p class="edit-drawer__hint">AI will rewrite the entire chapter based on your instruction. Structure and tone are maintained unless you specify otherwise.</p>
+						{:else if editTarget.scope === 'add-page'}
+							<p class="edit-drawer__hint">AI will generate a brand-new page and insert it <strong>after</strong> page {(editTarget.pageIndex ?? 0) + 1}. Describe exactly what content you want — tables, stat blocks, diagrams, comparisons, and more.</p>
 						{:else}
 							<p class="edit-drawer__hint">AI will generate a new illustration. Be specific about style, mood, subject, and composition.</p>
 						{/if}

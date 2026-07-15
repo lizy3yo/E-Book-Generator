@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { CLAUDE_WRITING_MODEL, CLAUDE_OPUS_MODEL } from '$env/static/private';
+import { CLAUDE_WRITING_MODEL, CLAUDE_OPUS_MODEL, ANTHROPIC_API_KEY } from '$env/static/private';
 
 export const POST: RequestHandler = async ({ request }) => {
 	try {
@@ -21,13 +21,15 @@ export const POST: RequestHandler = async ({ request }) => {
 			chapterContent
 		} = await request.json();
 
+		const activeApiKey = (apiKey?.trim()) || ANTHROPIC_API_KEY;
+
 		// claude-opus-4 → heavyweight flagship; default → sonnet-5 for best quality/speed
 		const selectedModel = model === 'claude-opus-4'
 			? (CLAUDE_OPUS_MODEL || 'claude-opus-4-8')
 			: (CLAUDE_WRITING_MODEL || 'claude-sonnet-5');
 
 		// Handle Mock Mode
-		if (useMockMode || !apiKey) {
+		if (useMockMode || !activeApiKey) {
 			await new Promise((resolve) => setTimeout(resolve, 3000)); // Simulate thinking
 
 			if (action === 'outline') {
@@ -204,35 +206,114 @@ TONE DIRECTIVE — ${tone}:
 ${toneGuide}
 
 VISUAL ELEMENTS & LAYOUT DIRECTIVES (Align content with professional, publication-ready ebook standards):
-1. TABLES FOR COMPARISONS: If the section lists scenarios, checklists, comparisons, or lookup guides, format them using standard markdown tables.
+
+CRITICAL RULE: Actively choose the RIGHT element for each content type. Do not default to paragraphs when a visual element communicates better.
+
+1. TABLES FOR COMPARISONS & CHECKLISTS: When listing scenarios, comparing options, showing lookup data, or presenting checklists, use a markdown table.
    Example:
-   | Done | Fix | Notes |
-   | :--- | :--- | :--- |
-   | [ ] | 1. Find main water shutoff | Located in basement or near street meter |
-2. PROFESSIONAL CALLOUT BOXES: For tips, definitions, specific guidelines, warning checklists, or important rules, wrap them in clean HTML callout divs.
-   Structure:
-   <div class="callout-box">
-     <span class="callout-box__title">ROGER'S RULE / SAFETY WARNING / KEY CHECKPOINT</span>
-     <div class="callout-box__content">Detailed practical rule or checklist items...</div>
+   | Done | Fix | Est. Cost | Difficulty |
+   | :--- | :--- | :--- | :--- |
+   | [ ] | Seal foundation cracks | $20–$50 | Easy |
+   | [ ] | Replace weatherstripping | $10–$30 | Easy |
+
+2. TYPED CALLOUT BOXES: Use these for tips, definitions, warnings, rules, and key points. Choose the type that fits the message:
+   - TIP BOX (advice, best practice):
+   <div class="tip-box">
+     <span class="callout-box__title">💡 PRO TIP</span>
+     <div class="callout-box__content">Actionable advice or best practice here.</div>
    </div>
-3. DIAGRAMS & FLOWCHARTS: Where a sequence of steps, a loop/cycle, or visual anatomy is described (e.g. "Water Shutoff Loop" or "Leak-Trace Decision Tree"), write a visual diagram block using a clean HTML flex container matching these classes:
-   Structure:
+   - WARNING BOX (safety or risk):
+   <div class="warning-box">
+     <span class="callout-box__title">⚠️ IMPORTANT WARNING</span>
+     <div class="callout-box__content">Safety note or risk to be aware of.</div>
+   </div>
+   - KEY RULE BOX (critical principle):
+   <div class="key-rule-box">
+     <span class="callout-box__title">📌 KEY RULE</span>
+     <div class="callout-box__content">A core rule or principle that must not be skipped.</div>
+   </div>
+   - GENERAL CALLOUT (facts, insights, definitions):
+   <div class="callout-box">
+     <span class="callout-box__title">KEY INSIGHT / DEFINITION</span>
+     <div class="callout-box__content">Content here.</div>
+   </div>
+
+3. STAT / KPI BLOCKS: Whenever a section introduces a key statistic, percentage, dollar amount, or metric, render it as a visual stat block BEFORE the paragraph that discusses it. Use 2–4 stat items per block.
+   <div class="stat-block">
+     <div class="stat-block__item">
+       <div class="stat-block__num">$2,400</div>
+       <div class="stat-block__label">Average annual energy savings</div>
+     </div>
+     <div class="stat-block__item">
+       <div class="stat-block__num">73%</div>
+       <div class="stat-block__label">Of homes have fixable air leaks</div>
+     </div>
+     <div class="stat-block__item">
+       <div class="stat-block__num">3–5 yrs</div>
+       <div class="stat-block__label">Typical payback period</div>
+     </div>
+   </div>
+
+4. BAR CHARTS (horizontal): When comparing magnitudes, frequencies, or rankings across 3–8 items, render a horizontal CSS bar chart.
+   <div class="chart-bar">
+     <div class="chart-bar__title">Most Common Home Repair Costs</div>
+     <div class="chart-bar__row">
+       <div class="chart-bar__label">Roof repair</div>
+       <div class="chart-bar__track"><div class="chart-bar__fill" style="width:85%">$8,500</div></div>
+     </div>
+     <div class="chart-bar__row">
+       <div class="chart-bar__label">HVAC replacement</div>
+       <div class="chart-bar__track"><div class="chart-bar__fill" style="width:70%">$7,000</div></div>
+     </div>
+     <div class="chart-bar__row">
+       <div class="chart-bar__label">Foundation repair</div>
+       <div class="chart-bar__track"><div class="chart-bar__fill" style="width:60%">$6,000</div></div>
+     </div>
+   </div>
+
+5. PRO / CON GRIDS: Whenever comparing two sides of an argument, approach, or option, use a side-by-side pro/con grid.
+   <div class="pro-con-grid">
+     <div class="pro-grid__col pro-grid__col--pro">
+       <div class="pro-grid__header">✅ Pros</div>
+       <div class="pro-grid__item">Cost-effective long term</div>
+       <div class="pro-grid__item">DIY-friendly</div>
+     </div>
+     <div class="pro-grid__col pro-grid__col--con">
+       <div class="pro-grid__header">❌ Cons</div>
+       <div class="pro-grid__item">Time-intensive upfront</div>
+       <div class="pro-grid__item">Requires specific tools</div>
+     </div>
+   </div>
+
+6. NUMBERED CHECKLISTS: For step-by-step procedures or action item lists, use a styled checklist.
+   <div class="checklist-box">
+     <div class="checklist-box__title">Action Checklist</div>
+     <div class="checklist-box__item"><span class="checklist-box__num">01</span><span>Inspect all visible pipes for corrosion</span></div>
+     <div class="checklist-box__item"><span class="checklist-box__num">02</span><span>Test water pressure at main valve</span></div>
+     <div class="checklist-box__item"><span class="checklist-box__num">03</span><span>Document findings with photos</span></div>
+   </div>
+
+7. DIAGRAMS & FLOWCHARTS: Where a sequence of steps, a loop/cycle, or visual anatomy is described, write a visual diagram block.
    <div class="diagram-box">
-     <div class="diagram-box__title">Diagram Title (e.g., Faucet Anatomy)</div>
+     <div class="diagram-box__title">Diagram Title</div>
      <div class="diagram-box__subtitle">Sub-label detail</div>
      <div class="diagram-flow">
        <div class="diagram-step">
-         <div class="diagram-step__num">1. See It</div>
-         <div class="diagram-step__text">Observe stain or dampness</div>
+         <div class="diagram-step__num">1. Inspect</div>
+         <div class="diagram-step__text">Look for visible damage</div>
        </div>
        <div class="diagram-arrow">➔</div>
        <div class="diagram-step">
-         <div class="diagram-step__num">2. Stop Damage</div>
-         <div class="diagram-step__text">Locate shutoff immediately</div>
+         <div class="diagram-step__num">2. Assess</div>
+         <div class="diagram-step__text">Determine repair scope</div>
        </div>
-       <!-- Add arrows and steps as needed -->
+       <div class="diagram-arrow">➔</div>
+       <div class="diagram-step">
+         <div class="diagram-step__num">3. Fix</div>
+         <div class="diagram-step__text">Apply the correct solution</div>
+       </div>
      </div>
-     <div class="diagram-takeaway">Short summary takeaway about this diagram...</div>
+     <div class="diagram-takeaway">Short summary takeaway about this diagram.</div>
    </div>`;
 
 			userPrompt = `Write the complete content for the following ebook chapter:
@@ -289,12 +370,12 @@ Review, correct, and return in the required format.`;
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',
-				'x-api-key': apiKey,
+				'x-api-key': activeApiKey,
 				'anthropic-version': '2023-06-01'
 			},
 			body: JSON.stringify({
 				model: selectedModel,
-				max_tokens: action === 'write-chapter' ? 4000 : 2000,
+				max_tokens: action === 'write-chapter' ? 8000 : action === 'verify-chapter' ? 6000 : 2000,
 				system: systemPrompt,
 				messages: [
 					{ role: 'user', content: userPrompt }

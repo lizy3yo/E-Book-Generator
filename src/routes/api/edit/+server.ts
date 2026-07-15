@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { CLAUDE_WRITING_MODEL, CLAUDE_OPUS_MODEL } from '$env/static/private';
+import { CLAUDE_WRITING_MODEL, CLAUDE_OPUS_MODEL, ANTHROPIC_API_KEY } from '$env/static/private';
 
 export const POST: RequestHandler = async ({ request }) => {
 	try {
@@ -30,13 +30,15 @@ export const POST: RequestHandler = async ({ request }) => {
 			researchNotes
 		} = await request.json();
 
+		const activeApiKey = (apiKey?.trim()) || ANTHROPIC_API_KEY;
+
 		const selectedModel =
 			model === 'claude-opus-4'
 				? (CLAUDE_OPUS_MODEL || 'claude-opus-4-8')
 				: (CLAUDE_WRITING_MODEL || 'claude-sonnet-5');
 
 		// ── Mock mode ──────────────────────────────────────────────────────────
-		if (useMockMode || !apiKey) {
+		if (useMockMode || !activeApiKey) {
 			await new Promise((r) => setTimeout(r, 2000));
 
 			if (action === 'edit-chapter') {
@@ -71,6 +73,13 @@ export const POST: RequestHandler = async ({ request }) => {
 				return json({
 					success: true,
 					pageContent: `The ideas on this page have been reconstructed from the chapter brief. In a fully realised version, this passage would develop one of the chapter's core arguments through a combination of narrative, evidence, and analysis. The prose would maintain the book's established voice while advancing the reader's understanding in a concrete and memorable way.`,
+					source: 'mock'
+				});
+			}
+			if (action === 'add-page') {
+				return json({
+					success: true,
+					pageContent: `### New Section\n\nThis newly added page expands on the chapter content based on your instruction. In live mode, Claude will write fully researched, publication-quality content matching the book's voice and style.\n\n<div class="stat-block"><div class="stat-block__item"><div class="stat-block__num">85%</div><div class="stat-block__label">Of readers prefer structured visual content</div></div><div class="stat-block__item"><div class="stat-block__num">3×</div><div class="stat-block__label">Higher retention with visual elements</div></div></div>\n\nThe addition integrates seamlessly with surrounding content, maintaining the established narrative flow and ensuring no disruption to the reader's experience.`,
 					source: 'mock'
 				});
 			}
@@ -151,24 +160,23 @@ Consistency:
 - Maintain consistent terminology throughout.
 - Follow a logical progression of ideas with no contradictions or repeated information.
 
-VISUAL ELEMENTS & LAYOUT DIRECTIVES (Align content with professional, publication-ready ebook standards):
-1. TABLES FOR COMPARISONS: If the section lists scenarios, checklists, comparisons, or lookup guides, format them using standard markdown tables.
-2. PROFESSIONAL CALLOUT BOXES: For tips, definitions, specific guidelines, warning checklists, or important rules, wrap them in clean HTML callout divs:
-   <div class="callout-box">
-     <span class="callout-box__title">TITLE LABEL</span>
-     <div class="callout-box__content">Content...</div>
-   </div>
-3. DIAGRAMS & FLOWCHARTS: Where a sequence of steps, a loop/cycle, or visual anatomy is described, write a visual diagram block using a clean HTML flex container matching these classes:
-   <div class="diagram-box">
-     <div class="diagram-box__title">Diagram Title</div>
-     <div class="diagram-box__subtitle">Sub-label detail</div>
-     <div class="diagram-flow">
-       <div class="diagram-step"><div class="diagram-step__num">1. Step Name</div><div class="diagram-step__text">Description</div></div>
-       <div class="diagram-arrow">➔</div>
-       <div class="diagram-step"><div class="diagram-step__num">2. Step Name</div><div class="diagram-step__text">Description</div></div>
-     </div>
-     <div class="diagram-takeaway">Summary...</div>
-   </div>`;
+VISUAL ELEMENTS & LAYOUT DIRECTIVES — Use the RIGHT element for each content type:
+1. TABLES: For comparisons, checklists, lookup data — use markdown tables.
+2. TYPED CALLOUTS — pick the matching type:
+   <div class="tip-box"><span class="callout-box__title">💡 PRO TIP</span><div class="callout-box__content">Advice here.</div></div>
+   <div class="warning-box"><span class="callout-box__title">⚠️ IMPORTANT WARNING</span><div class="callout-box__content">Risk here.</div></div>
+   <div class="key-rule-box"><span class="callout-box__title">📌 KEY RULE</span><div class="callout-box__content">Principle here.</div></div>
+   <div class="callout-box"><span class="callout-box__title">KEY INSIGHT</span><div class="callout-box__content">Content here.</div></div>
+3. STAT BLOCKS (use before paragraphs with key metrics/numbers):
+   <div class="stat-block"><div class="stat-block__item"><div class="stat-block__num">75%</div><div class="stat-block__label">Stat label</div></div><div class="stat-block__item"><div class="stat-block__num">$1,200</div><div class="stat-block__label">Another metric</div></div></div>
+4. BAR CHARTS (3–8 items being compared by magnitude):
+   <div class="chart-bar"><div class="chart-bar__title">Chart Title</div><div class="chart-bar__row"><div class="chart-bar__label">Item A</div><div class="chart-bar__track"><div class="chart-bar__fill" style="width:80%">$8,000</div></div></div><div class="chart-bar__row"><div class="chart-bar__label">Item B</div><div class="chart-bar__track"><div class="chart-bar__fill" style="width:50%">$5,000</div></div></div></div>
+5. PRO/CON GRIDS (comparing two sides):
+   <div class="pro-con-grid"><div class="pro-grid__col pro-grid__col--pro"><div class="pro-grid__header">✅ Pros</div><div class="pro-grid__item">Benefit one</div></div><div class="pro-grid__col pro-grid__col--con"><div class="pro-grid__header">❌ Cons</div><div class="pro-grid__item">Drawback one</div></div></div>
+6. CHECKLISTS (step-by-step actions):
+   <div class="checklist-box"><div class="checklist-box__title">Action Checklist</div><div class="checklist-box__item"><span class="checklist-box__num">01</span><span>Step one</span></div><div class="checklist-box__item"><span class="checklist-box__num">02</span><span>Step two</span></div></div>
+7. DIAGRAMS/FLOWCHARTS (processes and sequences):
+   <div class="diagram-box"><div class="diagram-box__title">Title</div><div class="diagram-box__subtitle">Subtitle</div><div class="diagram-flow"><div class="diagram-step"><div class="diagram-step__num">1. Step</div><div class="diagram-step__text">Detail</div></div><div class="diagram-arrow">➔</div><div class="diagram-step"><div class="diagram-step__num">2. Step</div><div class="diagram-step__text">Detail</div></div></div><div class="diagram-takeaway">Summary.</div></div>`;
 
 			userPrompt = `Chapter ${chapterOrder}: "${chapterTitle}"
 
@@ -261,6 +269,42 @@ User's instruction:
 
 Write the improved image generation prompt now.`;
 
+		} else if (action === 'add-page') {
+			// Write a brand-new page of content to insert into an existing chapter
+			systemPrompt = `You are a professional ebook author working on "${bookTitle}" (${genre}).
+The book is written in a "${tone}" voice.
+
+Your task is to write ONE NEW PAGE of content to be inserted into Chapter ${chapterOrder}: "${chapterTitle}".
+Rules:
+- Write only the content for the new page — no chapter heading, no label, no commentary.
+- The new content must flow naturally before/after the surrounding chapter material.
+- Match the voice, tense, and style of the existing chapter.
+- Return ONLY the new content in Markdown — no meta-commentary.
+- Ground all claims in the provided Exa AI research notes. Never fabricate statistics, studies, quotes, dates, or events.
+- Use visual elements whenever appropriate:
+  STAT BLOCKS: <div class="stat-block"><div class="stat-block__item"><div class="stat-block__num">VALUE</div><div class="stat-block__label">Label</div></div></div>
+  TYPED CALLOUTS: <div class="tip-box"><span class="callout-box__title">💡 PRO TIP</span><div class="callout-box__content">Content.</div></div>
+  BAR CHARTS: <div class="chart-bar"><div class="chart-bar__title">Title</div><div class="chart-bar__row"><div class="chart-bar__label">Item</div><div class="chart-bar__track"><div class="chart-bar__fill" style="width:70%">Value</div></div></div></div>
+  PRO/CON GRIDS: <div class="pro-con-grid"><div class="pro-grid__col pro-grid__col--pro"><div class="pro-grid__header">✅ Pros</div><div class="pro-grid__item">Item</div></div><div class="pro-grid__col pro-grid__col--con"><div class="pro-grid__header">❌ Cons</div><div class="pro-grid__item">Item</div></div></div>
+  CHECKLISTS: <div class="checklist-box"><div class="checklist-box__title">Title</div><div class="checklist-box__item"><span class="checklist-box__num">01</span><span>Step</span></div></div>
+  TABLES: standard markdown tables
+  DIAGRAMS: <div class="diagram-box">...</div>`;
+
+			userPrompt = `Chapter context (for continuity — do NOT rewrite this, just fit the new content into it naturally):
+${chapterContent}
+
+---
+
+Grounding Research & Author Notes:
+${researchNotes || 'None provided.'}
+
+---
+
+User's request for the new page content:
+"${editInstruction}"
+
+Write the new page content now. It will be inserted after page ${(pageContent as any) ?? 'the selected page'} in this chapter.`;
+
 		} else {
 			throw new Error(`Unknown edit action: "${action}"`);
 		}
@@ -269,12 +313,12 @@ Write the improved image generation prompt now.`;
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',
-				'x-api-key': apiKey,
+				'x-api-key': activeApiKey,
 				'anthropic-version': '2023-06-01'
 			},
 			body: JSON.stringify({
 				model: selectedModel,
-				max_tokens: (action === 'edit-chapter' || action === 'reconstruct-chapter') ? 4000 : 1500,
+				max_tokens: (action === 'reconstruct-chapter') ? 8000 : (action === 'edit-chapter') ? 6000 : 2000,
 				system: systemPrompt,
 				messages: [{ role: 'user', content: userPrompt }]
 			})
@@ -291,7 +335,7 @@ Write the improved image generation prompt now.`;
 		if (action === 'edit-chapter' || action === 'reconstruct-chapter') {
 			return json({ success: true, content: text, source: 'live' });
 		}
-		if (action === 'edit-page' || action === 'reconstruct-page') {
+		if (action === 'edit-page' || action === 'reconstruct-page' || action === 'add-page') {
 			return json({ success: true, pageContent: text, source: 'live' });
 		}
 		if (action === 'edit-illustration') {
