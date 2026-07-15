@@ -1,5 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
+import { CLAUDE_WRITING_MODEL, CLAUDE_OPUS_MODEL } from '$env/static/private';
 
 export const POST: RequestHandler = async ({ request }) => {
 	try {
@@ -20,7 +21,10 @@ export const POST: RequestHandler = async ({ request }) => {
 			chapterContent
 		} = await request.json();
 
-		const selectedModel = model === 'claude-opus-4' ? 'claude-3-opus-20240229' : 'claude-3-5-sonnet-20241022';
+		// claude-opus-4 → heavyweight flagship; default → sonnet-5 for best quality/speed
+		const selectedModel = model === 'claude-opus-4'
+			? (CLAUDE_OPUS_MODEL || 'claude-opus-4-8')
+			: (CLAUDE_WRITING_MODEL || 'claude-sonnet-5');
 
 		// Handle Mock Mode
 		if (useMockMode || !apiKey) {

@@ -267,28 +267,32 @@ class GlobalState {
 			timestamp: new Date().toLocaleTimeString()
 		};
 
-		this.books[bookIndex].logs = [...this.books[bookIndex].logs, newLog];
-		this.books[bookIndex].currentStep = log.message;
-		this.books[bookIndex].updatedAt = new Date().toISOString();
-		this.persistBook(this.books[bookIndex]);
+		const updatedBook: Book = {
+			...this.books[bookIndex],
+			logs: [...this.books[bookIndex].logs, newLog],
+			currentStep: log.message,
+			updatedAt: new Date().toISOString()
+		};
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
 	}
 
 	updateBookStatus(bookId: string, status: Book['status']) {
 		const bookIndex = this.books.findIndex(b => b.id === bookId);
 		if (bookIndex === -1) return;
 
-		this.books[bookIndex].status = status;
-		this.books[bookIndex].updatedAt = new Date().toISOString();
-		this.persistBook(this.books[bookIndex]);
+		const updatedBook: Book = { ...this.books[bookIndex], status, updatedAt: new Date().toISOString() };
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
 	}
 
 	updateBookChapters(bookId: string, chapters: Chapter[]) {
 		const bookIndex = this.books.findIndex(b => b.id === bookId);
 		if (bookIndex === -1) return;
 
-		this.books[bookIndex].chapters = chapters;
-		this.books[bookIndex].updatedAt = new Date().toISOString();
-		this.persistBook(this.books[bookIndex]);
+		const updatedBook: Book = { ...this.books[bookIndex], chapters, updatedAt: new Date().toISOString() };
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
 	}
 
 	updateChapterContent(bookId: string, chapterId: string, content: string, status: Chapter['status']) {
@@ -338,27 +342,33 @@ class GlobalState {
 		const bookIndex = this.books.findIndex(b => b.id === bookId);
 		if (bookIndex === -1) return;
 
-		this.books[bookIndex].coverSettings = coverSettings;
-		this.books[bookIndex].updatedAt = new Date().toISOString();
-		this.persistBook(this.books[bookIndex]);
+		// Immutable replacement at every level so Svelte 5 $derived / $effect
+		// detect the change and redraw the canvas.
+		const updatedBook: Book = {
+			...this.books[bookIndex],
+			coverSettings,
+			updatedAt: new Date().toISOString()
+		};
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
 	}
 
 	setPipelineStage(bookId: string, stage: PipelineStage) {
 		const bookIndex = this.books.findIndex(b => b.id === bookId);
 		if (bookIndex === -1) return;
 
-		this.books[bookIndex].pipelineStage = stage;
-		this.books[bookIndex].updatedAt = new Date().toISOString();
-		this.persistBook(this.books[bookIndex]);
+		const updatedBook: Book = { ...this.books[bookIndex], pipelineStage: stage, updatedAt: new Date().toISOString() };
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
 	}
 
 	setCoverOptions(bookId: string, options: CoverOption[]) {
 		const bookIndex = this.books.findIndex(b => b.id === bookId);
 		if (bookIndex === -1) return;
 
-		this.books[bookIndex].coverOptions = options;
-		this.books[bookIndex].updatedAt = new Date().toISOString();
-		this.persistBook(this.books[bookIndex]);
+		const updatedBook: Book = { ...this.books[bookIndex], coverOptions: options, updatedAt: new Date().toISOString() };
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
 	}
 
 	selectCoverOption(bookId: string, index: number) {
@@ -368,15 +378,18 @@ class GlobalState {
 		const option = this.books[bookIndex].coverOptions[index];
 		if (!option) return;
 
-		this.books[bookIndex].selectedCoverIndex = index;
-		// Apply chosen cover image to coverSettings
-		this.books[bookIndex].coverSettings = {
-			...this.books[bookIndex].coverSettings,
-			bgImageUrl: option.imageUrl,
-			bgImagePrompt: option.prompt
+		const updatedBook: Book = {
+			...this.books[bookIndex],
+			selectedCoverIndex: index,
+			coverSettings: {
+				...this.books[bookIndex].coverSettings,
+				bgImageUrl: option.imageUrl,
+				bgImagePrompt: option.prompt
+			},
+			updatedAt: new Date().toISOString()
 		};
-		this.books[bookIndex].updatedAt = new Date().toISOString();
-		this.persistBook(this.books[bookIndex]);
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
 	}
 
 	/** Replace a single cover option (used when regenerating one specific option). */
@@ -386,9 +399,9 @@ class GlobalState {
 
 		const opts = [...this.books[bookIndex].coverOptions];
 		opts[index] = option;
-		this.books[bookIndex].coverOptions = opts;
-		this.books[bookIndex].updatedAt = new Date().toISOString();
-		this.persistBook(this.books[bookIndex]);
+		const updatedBook: Book = { ...this.books[bookIndex], coverOptions: opts, updatedAt: new Date().toISOString() };
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
 	}
 
 	/** Update the cover reference / visual direction creative brief. */
@@ -396,9 +409,9 @@ class GlobalState {
 		const bookIndex = this.books.findIndex(b => b.id === bookId);
 		if (bookIndex === -1) return;
 
-		this.books[bookIndex].coverReferencePrompt = prompt;
-		this.books[bookIndex].updatedAt = new Date().toISOString();
-		this.persistBook(this.books[bookIndex]);
+		const updatedBook: Book = { ...this.books[bookIndex], coverReferencePrompt: prompt, updatedAt: new Date().toISOString() };
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
 	}
 
 	/** Regenerate a single chapter's content + illustration without touching other chapters. */

@@ -2,6 +2,7 @@
 	import { onMount, tick } from 'svelte';
 	import { globalState } from '$lib/state.svelte';
 	import type { Chapter } from '$lib/types';
+	import { generateImage } from '$lib/generateImage';
 	import {
 		BookMarked, Clipboard, ClipboardCheck, FileCode, FileDown,
 		Image as ImageIcon, PenLine, BookOpen,
@@ -200,21 +201,15 @@
 					'Cinematic lighting, detailed composition, professional finish.'
 				].filter(Boolean).join(' ');
 
-				const imgRes = await fetch('/api/image', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({
-						prompt: freshPrompt,
-						apiKey: globalState.apiKeys.imageKey,
-						provider: globalState.apiKeys.imageProvider,
-						useMockMode: globalState.apiKeys.useMockMode,
-						isCover: false
-					})
+				const newIllustUrl = await generateImage({
+					prompt:      freshPrompt,
+					apiKey:      globalState.apiKeys.imageKey,
+					provider:    globalState.apiKeys.imageProvider,
+					useMockMode: globalState.apiKeys.useMockMode,
+					isCover:     false
 				});
-				const imgData = await imgRes.json();
-				if (!imgData.success) throw new Error(imgData.error || 'Image generation failed');
-				globalState.updateChapterIllustration(activeBook.id, editTarget.chapterId, imgData.imageUrl);
-				editTarget = { ...editTarget, illustrationUrl: imgData.imageUrl, illustrationPrompt: freshPrompt };
+				globalState.updateChapterIllustration(activeBook.id, editTarget.chapterId, newIllustUrl);
+				editTarget = { ...editTarget, illustrationUrl: newIllustUrl, illustrationPrompt: freshPrompt };
 			}
 
 			lastInstruction = '';   // reconstruct has no re-runnable instruction; clear Redo
@@ -312,22 +307,15 @@
 				const promptData = await promptRes.json();
 				if (!promptData.success) throw new Error(promptData.error || 'Prompt refinement failed');
 				// Step 2: generate image
-				const imgRes = await fetch('/api/image', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({
-						prompt: promptData.prompt,
-						apiKey: globalState.apiKeys.imageKey,
-						provider: globalState.apiKeys.imageProvider,
-						useMockMode: globalState.apiKeys.useMockMode,
-						isCover: false
-					})
+				const newIllustUrl = await generateImage({
+					prompt:      promptData.prompt,
+					apiKey:      globalState.apiKeys.imageKey,
+					provider:    globalState.apiKeys.imageProvider,
+					useMockMode: globalState.apiKeys.useMockMode,
+					isCover:     false
 				});
-				const imgData = await imgRes.json();
-				if (!imgData.success) throw new Error(imgData.error || 'Image generation failed');
-				globalState.updateChapterIllustration(activeBook.id, editTarget.chapterId, imgData.imageUrl);
-				// Keep illustration URL in sync for subsequent Redo
-				editTarget = { ...editTarget, illustrationUrl: imgData.imageUrl, illustrationPrompt: promptData.prompt };
+				globalState.updateChapterIllustration(activeBook.id, editTarget.chapterId, newIllustUrl);
+				editTarget = { ...editTarget, illustrationUrl: newIllustUrl, illustrationPrompt: promptData.prompt };
 			}
 
 			lastInstruction = instruction;

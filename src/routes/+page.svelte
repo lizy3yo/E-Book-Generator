@@ -7,6 +7,7 @@
 		ArrowLeft, Info, RotateCcw
 	} from '@lucide/svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+	import { generateImage } from '$lib/generateImage';
 
 	// ── Stage 1: concept form ──────────────────────────────────────────────────
 	let title       = $state('');
@@ -140,24 +141,14 @@
 			const prompt = styleInfo.buildPrompt(book.title, book.subtitle ?? '', book.author ?? 'Unknown Author', book.genre, refClause);
 
 			try {
-				const res = await fetch('/api/image', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({
-						prompt,
-						apiKey: keys.imageKey,
-						provider: keys.imageProvider,
-						useMockMode: keys.useMockMode,
-						isCover: true
-					})
-				});
-				const data = await res.json();
-				options.push({
-					id: crypto.randomUUID(),
+				const imageUrl = await generateImage({
 					prompt,
-					imageUrl: data.success ? data.imageUrl : '',
-					style: styleInfo.style
+					apiKey:      keys.imageKey,
+					provider:    keys.imageProvider,
+					useMockMode: keys.useMockMode,
+					isCover:     true
 				});
+				options.push({ id: crypto.randomUUID(), prompt, imageUrl, style: styleInfo.style });
 			} catch {
 				options.push({ id: crypto.randomUUID(), prompt, imageUrl: '', style: styleInfo.style });
 			}
@@ -180,22 +171,17 @@
 		const prompt = style.buildPrompt(active.title, active.subtitle ?? '', active.author ?? 'Unknown Author', active.genre, refClause);
 
 		try {
-			const res = await fetch('/api/image', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					prompt,
-					apiKey: keys.imageKey,
-					provider: keys.imageProvider,
-					useMockMode: keys.useMockMode,
-					isCover: true
-				})
+			const imageUrl = await generateImage({
+				prompt,
+				apiKey:      keys.imageKey,
+				provider:    keys.imageProvider,
+				useMockMode: keys.useMockMode,
+				isCover:     true
 			});
-			const data = await res.json();
 			globalState.replaceCoverOption(active.id, optionIndex, {
 				id: crypto.randomUUID(),
 				prompt,
-				imageUrl: data.success ? data.imageUrl : active.coverOptions[optionIndex].imageUrl,
+				imageUrl,
 				style: style.style
 			});
 		} catch (err) {
@@ -430,19 +416,13 @@
 
 		let illustUrl: string | null = null;
 		try {
-			const illustRes = await fetch('/api/image', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					prompt: `Minimalist editorial illustration for chapter: "${chap.title}". Cream background, vector style.`,
-					apiKey: keys.imageKey,
-					provider: keys.imageProvider,
-					useMockMode: useMock,
-					isCover: false
-				})
+			illustUrl = await generateImage({
+				prompt:      `Minimalist editorial illustration for chapter: "${chap.title}". Cream background, vector style.`,
+				apiKey:      keys.imageKey,
+				provider:    keys.imageProvider,
+				useMockMode: useMock,
+				isCover:     false
 			});
-			const illustData = await illustRes.json();
-			if (illustData.success) illustUrl = illustData.imageUrl;
 		} catch { /* non-fatal */ }
 
 		// Commit

@@ -1,139 +1,190 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { ANTHROPIC_API_KEY } from '$env/static/private';
+import { ANTHROPIC_API_KEY, CLAUDE_CHAT_MODEL } from '$env/static/private';
 
 /**
  * POST /api/cover-assistant
  *
- * Sends the user's natural-language cover instruction to Claude.
- * Claude returns a JSON object describing exactly which cover settings
- * to mutate, and optionally which variant slot to target for image generation.
+ * Interprets a natural-language cover design instruction and returns a
+ * structured JSON object of mutations to apply to coverSettings.
  *
- * Response shape:
- * {
- *   "reply":       "string — friendly confirmation",
- *   "variantIndex": number | null  — which variant slot to generate for (0/1/2)
- *   "mutations": {
- *     "titleFont", "titleColor", "subtitleColor", "authorColor",
- *     "titleSize", "subtitleSize", "authorSize",
- *     "alignment", "textPosition", "overlayOpacity",
- *     "bgImagePrompt"  — only when user wants a new image
- *   }
- * }
+ * Model: CLAUDE_CHAT_MODEL (env) — defaults to claude-haiku-4-5-20251001
+ *
+ * Circuit breaker: after a hard failure (billing/auth), Claude is skipped
+ * for CIRCUIT_RESET_MS to avoid wasting time on every subsequent request.
  */
+
+const CIRCUIT_RESET_MS    = 5 * 60 * 1000;
+let   claudeCircuitOpenUntil = 0;
+const CLAUDE_HARD_FAIL_CODES = new Set([400, 401, 403]);
+
 export const POST: RequestHandler = async ({ request }) => {
 	try {
-		const {
-			instruction,
-			apiKey,
-			useMockMode,
-			currentSettings,
-			bookTitle,
-			genre,
-			variants          // array of { index, style, hasImage }
-		} = await request.json();
+		const { instruction, apiKey, useMockMode, currentSettings, bookTitle, genre, variants } =
+			await request.json();
 
-		const activeKey = apiKey || ANTHROPIC_API_KEY;
+		const claudeKey = apiKey || ANTHROPIC_API_KEY;
 
 		// ── Mock mode ──────────────────────────────────────────────────────────
-		if (useMockMode || !activeKey) {
-			await new Promise((r) => setTimeout(r, 800));
+		if (useMockMode || !claudeKey) {
+			await new Promise((r) => setTimeout(r, 400));
 			return json({
 				success: true,
-				reply: `Understood: "${instruction}". In live mode Claude will parse this and apply the changes.`,
+				reply: `Got it: "${instruction}". In live mode this applies the changes immediately.`,
 				mutations: {},
 				variantIndex: null,
 				source: 'mock'
 			});
 		}
 
-		// ── Live — Claude 3.5 Sonnet ───────────────────────────────────────────
+		// ── Shared system prompt ───────────────────────────────────────────────
 		const variantContext = variants?.length
-			? `\nAvailable design variants (use variantIndex to target one for image generation):\n` +
-			  variants.map((v: { index: number; style: string; hasImage: boolean }) =>
-			    `  ${v.index}: "${v.style}" — ${v.hasImage ? 'has image' : 'no image yet'}`
-			  ).join('\n')
+			? `\nAvailable design variants:\n` +
+			  (variants as { index: number; style: string; hasImage: boolean }[])
+			    .map(v => `  ${v.index}: "${v.style}" — ${v.hasImage ? 'has image' : 'no image yet'}`)
+			    .join('\n')
 			: '';
 
-		const systemPrompt = `You are an expert book cover design assistant for the ebook "${bookTitle}" (${genre}).
+		const systemContent = `You are an expert book cover design assistant for the ebook "${bookTitle}" (${genre}).
 
-Your job is to interpret the user's natural-language instruction and return a JSON object describing exactly which cover settings to change and, when applicable, which variant slot to generate an image for.
+Interpret the user's instruction and return a JSON object of cover setting changes.
 
-Current cover settings:
-${JSON.stringify(currentSettings, null, 2)}
+Current settings: ${JSON.stringify(currentSettings)}
 ${variantContext}
 
-Valid setting fields and their allowed values:
-- titleFont:      "Lora" | "Inter" | "Georgia" | "Arial"
-- titleColor:     any valid CSS hex color string (e.g. "#D4AF37")
-- subtitleColor:  any valid CSS hex color string
-- authorColor:    any valid CSS hex color string
-- titleSize:      integer between 18 and 54 (pixels)
-- subtitleSize:   integer between 12 and 28 (pixels)
-- authorSize:     integer between 12 and 32 (pixels)
-- alignment:      "left" | "center" | "right"
-- textPosition:   "top" | "middle" | "bottom"
-- overlayOpacity: number between 0 and 0.8
-- bgImagePrompt:  a detailed AI image generation prompt string — only set this when the user wants a new background image or illustration generated
+Fields (all optional — only include ones being changed):
+titleFont: "Lora"|"Inter"|"Georgia"|"Arial"
+titleColor, subtitleColor, authorColor: CSS hex string
+titleSize: 18-54, subtitleSize: 12-28, authorSize: 12-32
+alignment: "left"|"center"|"right"
+textPosition: "top"|"middle"|"bottom"
+overlayOpacity: 0-0.8
+bgImagePrompt: detailed image generation prompt (only when user wants a new image)
+variantIndex: 0|1|2|null (which variant slot to target; null = currently selected)
 
 Rules:
-- Only include mutation fields the instruction actually changes — omit all others.
-- If the user asks for a color by name, convert it to the correct hex code.
-- If the user mentions a specific variant style by name (e.g. "Dark Minimalist", "Warm Editorial", "Bold Graphic"), set variantIndex to that variant's index number so the image generates into the correct slot.
-- If the user asks for a new image without specifying a variant, set variantIndex to null (the currently selected variant will be used).
-- If the user only asks for typography/layout changes (no image), set bgImagePrompt to null and variantIndex to null.
-- reply must be a concise, friendly 1–2 sentence confirmation of what you are doing.
-- Return ONLY valid JSON — no markdown fences, no commentary.
+- Convert color names to hex.
+- For image requests, write a rich detailed bgImagePrompt.
+- reply: 1–2 sentence friendly confirmation.
+- Return ONLY JSON. No prose, no fences.
 
-Response format:
-{"reply": "...", "variantIndex": <number or null>, "mutations": {...}}`;
+Format: {"reply":"...","variantIndex":null,"mutations":{}}`;
 
-		const response = await fetch('https://api.anthropic.com/v1/messages', {
-			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-				'x-api-key': activeKey,
-				'anthropic-version': '2023-06-01'
+		// ── Parse Claude text → structured result ──────────────────────────────
+		function parseResponse(raw: string) {
+			let text = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+
+			// Attempt 1: direct parse
+			try {
+				const p = JSON.parse(text) as Record<string, unknown>;
+				return {
+					reply:        String(p.reply        ?? 'Done.'),
+					variantIndex: p.variantIndex != null ? Number(p.variantIndex) : null,
+					mutations:    (p.mutations as Record<string, unknown>) ?? {}
+				};
+			} catch { /* extract */ }
+
+			const s = text.indexOf('{');
+			if (s !== -1) {
+				const partial = text.slice(s);
+
+				// Attempt 2: brace-match
+				let d = 0, e = -1;
+				for (let i = 0; i < partial.length; i++) {
+					if (partial[i] === '{') d++;
+					else if (partial[i] === '}' && --d === 0) { e = i; break; }
+				}
+				if (e !== -1) {
+					try {
+						const p = JSON.parse(partial.slice(0, e + 1)) as Record<string, unknown>;
+						return {
+							reply:        String(p.reply        ?? 'Done.'),
+							variantIndex: p.variantIndex != null ? Number(p.variantIndex) : null,
+							mutations:    (p.mutations as Record<string, unknown>) ?? {}
+						};
+					} catch { /* repair */ }
+				}
+
+				// Attempt 3: truncation repair
+				let open = 0;
+				for (const ch of partial) { if (ch === '{') open++; else if (ch === '}') open--; }
+				if (open > 0) {
+					try {
+						const p = JSON.parse(partial + '}'.repeat(open)) as Record<string, unknown>;
+						return {
+							reply:        String(p.reply        ?? 'Done.'),
+							variantIndex: p.variantIndex != null ? Number(p.variantIndex) : null,
+							mutations:    (p.mutations as Record<string, unknown>) ?? {}
+						};
+					} catch { /* regex */ }
+				}
+
+				// Attempt 4: regex extraction
+				const replyMatch = partial.match(/"reply"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+				const mutMatch   = partial.match(/"mutations"\s*:\s*(\{[^}]*\})/);
+				if (replyMatch) {
+					let mutations: Record<string, unknown> = {};
+					if (mutMatch) { try { mutations = JSON.parse(mutMatch[1]); } catch { /* ignore */ } }
+					return { reply: replyMatch[1], variantIndex: null, mutations };
+				}
+			}
+
+			return { reply: text, variantIndex: null, mutations: {} };
+		}
+
+		// ── Fetch helper with AbortController timeout ──────────────────────────
+		async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
+			const ctrl  = new AbortController();
+			const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+			try   { return await fetch(url, { ...init, signal: ctrl.signal }); }
+			finally { clearTimeout(timer); }
+		}
+
+		// ── Circuit-breaker guard ──────────────────────────────────────────────
+		if (Date.now() < claudeCircuitOpenUntil) {
+			const remainSec = Math.ceil((claudeCircuitOpenUntil - Date.now()) / 1000);
+			throw new Error(`Claude is temporarily unavailable. Retry in ${remainSec}s.`);
+		}
+
+		// ── Call Claude ────────────────────────────────────────────────────────
+		const model = CLAUDE_CHAT_MODEL || 'claude-haiku-4-5-20251001';
+
+		const claudeRes = await fetchWithTimeout(
+			'https://api.anthropic.com/v1/messages',
+			{
+				method:  'POST',
+				headers: {
+					'Content-Type':      'application/json',
+					'x-api-key':         claudeKey,
+					'anthropic-version': '2023-06-01'
+				},
+				body: JSON.stringify({
+					model,
+					max_tokens: 400,
+					system:     systemContent,
+					messages:   [{ role: 'user', content: instruction }]
+				})
 			},
-			body: JSON.stringify({
-				model: 'claude-3-5-sonnet-20241022',
-				max_tokens: 600,
-				system: systemPrompt,
-				messages: [{ role: 'user', content: instruction }]
-			})
-		});
-
-		if (!response.ok) {
-			const errText = await response.text();
-			throw new Error(`Anthropic API error (${response.status}): ${errText}`);
-		}
-
-		const data = await response.json();
-		const raw = (data.content?.[0]?.text || '').trim();
-		const clean = raw.startsWith('```')
-			? raw.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim()
-			: raw;
-
-		let parsed: { reply: string; variantIndex: number | null; mutations: Record<string, unknown> };
-		try {
-			parsed = JSON.parse(clean);
-		} catch {
-			return json({ success: true, reply: raw, mutations: {}, variantIndex: null, source: 'live' });
-		}
-
-		return json({
-			success: true,
-			reply: parsed.reply || 'Done.',
-			variantIndex: parsed.variantIndex ?? null,
-			mutations: parsed.mutations || {},
-			source: 'live'
-		});
-
-	} catch (error: any) {
-		console.error('[cover-assistant] Error:', error);
-		return json(
-			{ success: false, error: error.message || 'Unexpected error.' },
-			{ status: 500 }
+			8000
 		);
+
+		if (claudeRes.ok) {
+			const data = await claudeRes.json();
+			const raw = (data.content?.[0]?.text || '').trim();
+			return json({ success: true, ...parseResponse(raw), source: 'claude' });
+		}
+
+		// Open circuit on hard billing/auth failures
+		if (CLAUDE_HARD_FAIL_CODES.has(claudeRes.status)) {
+			claudeCircuitOpenUntil = Date.now() + CIRCUIT_RESET_MS;
+		}
+
+		const errText = await claudeRes.text();
+		throw new Error(`Anthropic API error (${claudeRes.status}): ${errText}`);
+
+	} catch (error: unknown) {
+		const msg = error instanceof Error ? error.message : 'Unexpected error.';
+		console.error('[cover-assistant] Error:', msg);
+		return json({ success: false, error: msg }, { status: 500 });
 	}
 };

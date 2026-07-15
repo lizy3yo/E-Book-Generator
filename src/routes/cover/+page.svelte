@@ -3,6 +3,7 @@
 	import { globalState } from '$lib/state.svelte';
 	import type { CoverSettings } from '$lib/types';
 	import { RefreshCw, Download, Bot, User, Check } from '@lucide/svelte';
+	import { generateImage } from '$lib/generateImage';
 
 	let canvas: HTMLCanvasElement | null = $state(null);
 	let isGeneratingImage = $state(false);
@@ -273,20 +274,15 @@
 				  `Cinematic lighting, rich detail, suitable for a published trade ebook.`
 				: storedPrompt;
 
-			const res = await fetch('/api/image', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					prompt,
-					apiKey: keys.imageKey,
-					provider: keys.imageProvider,
-					useMockMode: keys.useMockMode,
-					isCover: true
-				})
+			const imageUrl = await generateImage({
+				prompt,
+				apiKey:      keys.imageKey,
+				provider:    keys.imageProvider,
+				useMockMode: keys.useMockMode,
+				isCover:     true
 			});
 
-			const data = await res.json();
-			if (!data.success) throw new Error(data.error || 'Image generation failed.');
+			const data = { success: true, imageUrl };
 
 			// Clear cached image so redrawCanvas picks up the new URL
 			bgImage    = null;
