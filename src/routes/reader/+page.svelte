@@ -333,25 +333,55 @@
 			});
 
 			// ── Step 8: Capture each page and add to PDF ───────────────────────
+			const CAPTURE_TIMEOUT_MS = 25_000;
+
+			const captureWithTimeout = (el: HTMLElement, scale: number): Promise<HTMLCanvasElement> =>
+				Promise.race([
+					html2canvas(el, {
+						scale,
+						useCORS:         true,
+						allowTaint:      false,
+						logging:         false,
+						windowWidth:     iWin.innerWidth,
+						windowHeight:    iWin.innerHeight,
+						width:           816,
+						height:          1056,
+						backgroundColor: '#ffffff',
+						imageTimeout:    10_000,
+					}) as Promise<HTMLCanvasElement>,
+					new Promise<never>((_, reject) =>
+						setTimeout(() => reject(new Error(`timed out`)), CAPTURE_TIMEOUT_MS)
+					),
+				]);
+
 			for (let i = 0; i < pageEls.length; i++) {
 				const el = pageEls[i];
+				let canvas: HTMLCanvasElement;
 
-				const canvas = await html2canvas(el, {
-					scale: SCALE,
-					useCORS: true,
-					allowTaint: false,
-					logging: false,
-					windowWidth:  iWin.innerWidth,
-					windowHeight: iWin.innerHeight,
-					width:  816,
-					height: 1056,
-					backgroundColor: '#ffffff'
-				});
+				try {
+					canvas = await captureWithTimeout(el, SCALE);
+				} catch (primaryErr) {
+					console.warn(`[PDF] Page ${i + 1} primary capture failed (${primaryErr}), retrying at scale 1…`);
+					try {
+						canvas = await captureWithTimeout(el, 1);
+					} catch (retryErr) {
+						console.warn(`[PDF] Page ${i + 1} retry failed, inserting blank page.`);
+						canvas = document.createElement('canvas');
+						canvas.width  = 816;
+						canvas.height = 1056;
+						const ctx = canvas.getContext('2d')!;
+						ctx.fillStyle = '#ffffff';
+						ctx.fillRect(0, 0, 816, 1056);
+					}
+				}
 
-				const imgData = canvas.toDataURL('image/jpeg', 0.97);
+				const imgData = canvas.toDataURL('image/jpeg', 0.92);
+
+				// Release GPU-backed canvas memory immediately — prevents OOM on long books
+				canvas.width  = 0;
+				canvas.height = 0;
 
 				if (i > 0) pdf.addPage([PDF_W_IN, PDF_H_IN], 'portrait');
-
 				pdf.addImage(imgData, 'JPEG', 0, 0, PDF_W_IN, PDF_H_IN, undefined, 'FAST');
 
 				console.log(`[PDF] Page ${i + 1}/${pageEls.length} captured`);
@@ -760,8 +790,7 @@
 						style="
 							background-image: {coverSettings.bgImageUrl ? `url(${coverSettings.bgImageUrl})` : 'none'};
 							background-color: {coverSettings.bgImageUrl ? 'transparent' : '#FAF7F2'};
-							background-size: cover;
-							background-position: center;
+							background-size: 100% 100%;
 							text-align: {coverSettings.alignment};
 						"
 					>

@@ -19,9 +19,13 @@ export async function getAsDataUrl(url: string): Promise<string> {
 		return url;
 	}
 	try {
-		// Fetch via server-side proxy to bypass CORS
-		const proxyUrl = `/api/proxy?url=${encodeURIComponent(url)}`;
-		const res = await fetch(proxyUrl);
+		// Fetch via server-side proxy to bypass CORS.
+		// AbortController ensures a slow or dead CDN doesn't stall the entire export.
+		const controller = new AbortController();
+		const timeoutId  = setTimeout(() => controller.abort(), 15_000);
+		const proxyUrl   = `/api/proxy?url=${encodeURIComponent(url)}`;
+		const res        = await fetch(proxyUrl, { signal: controller.signal });
+		clearTimeout(timeoutId);
 		if (!res.ok) throw new Error(`Fetch failed with status ${res.status}`);
 		const blob = await res.blob();
 		return new Promise((resolve, reject) => {
@@ -77,7 +81,7 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 			? dataUrls[rawBg]   // base64 string, or '' if fetch failed
 			: rawBg;            // not attempted — use remote URL as-is
 		const coverBg = bgImg
-			? `background-image:url('${bgImg}');background-size:cover;background-position:center;`
+			? `background-image:url('${bgImg}');background-size:100% 100%;`
 			: 'background:linear-gradient(135deg,#FAF7F2 0%,#EDE5D5 100%);';
 		const overlayOpacity = isBaked ? 0 : (cs.overlayOpacity ?? 0);
 		const coverBody = isBaked ? '' : `
@@ -287,15 +291,19 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 						/!\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g,
 						(_m, alt, url) => {
 							const b64 = dataUrls[url];
-							return b64 ? `![${alt}](${b64})` : `![${alt}](${url})`;
+							// If no data URL available, strip the image entirely rather than
+							// embedding a cross-origin URL that will cause html2canvas to hang.
+							return b64 ? `![${alt}](${b64})` : '';
 						}
 					);
 				}
 				const fullMd   = parseMarkdown(contentForPdf, c.id);
 				const rawIllust = c.illustrationUrl || '';
+				// Use base64 only — never embed a raw HTTP URL in the iframe HTML.
+				// A cross-origin <img> causes html2canvas to stall indefinitely.
 				const mappedIllust = rawIllust && Object.prototype.hasOwnProperty.call(dataUrls, rawIllust)
 					? dataUrls[rawIllust]  // base64 or '' if fetch failed
-					: rawIllust;           // not attempted
+					: '';                  // not attempted — omit rather than risk CORS hang
 				const illustHtml = mappedIllust
 					? `<div class="illustration"><img src="${mappedIllust}" alt="${c.title}" /></div>`
 					: '';
