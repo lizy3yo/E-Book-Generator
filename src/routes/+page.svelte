@@ -133,30 +133,40 @@
 		globalState.setPipelineStage(book.id, 2);
 
 		const keys = globalState.apiKeys;
-		const options: CoverOption[] = [];
 		const refClause = book.coverReferencePrompt?.trim()
 			? ` Visual reference & creative direction: ${book.coverReferencePrompt.trim()}.`
 			: '';
 
-		for (let i = 0; i < COVER_STYLES.length; i++) {
-			const styleInfo = COVER_STYLES[i];
-			const prompt = styleInfo.buildPrompt(book.title, book.subtitle ?? '', book.author ?? 'Unknown Author', book.genre, refClause);
+		// Pre-allocate slots so covers always render in style order regardless of
+		// which generation finishes first.
+		const slots: (CoverOption | null)[] = new Array(COVER_STYLES.length).fill(null);
 
-			try {
-				const imageUrl = await generateImage({
-					prompt,
-					apiKey:      keys.imageKey,
-					provider:    keys.imageProvider,
-					useMockMode: keys.useMockMode,
-					isCover:     true
-				});
-				options.push({ id: crypto.randomUUID(), prompt, imageUrl, style: styleInfo.style });
-			} catch {
-				options.push({ id: crypto.randomUUID(), prompt, imageUrl: '', style: styleInfo.style });
-			}
-		}
+		// Generate all styles concurrently — stream each cover to the UI the moment
+		// it's ready so the user sees results progressively.
+		await Promise.all(
+			COVER_STYLES.map(async (styleInfo, i) => {
+				const prompt = styleInfo.buildPrompt(
+					book.title, book.subtitle ?? '', book.author ?? 'Unknown Author', book.genre, refClause
+				);
 
-		globalState.setCoverOptions(book.id, options);
+				let imageUrl = '';
+				try {
+					imageUrl = await generateImage({
+						prompt,
+						apiKey:      keys.imageKey,
+						provider:    keys.imageProvider,
+						useMockMode: keys.useMockMode,
+						isCover:     true
+					});
+				} catch { /* continue — slot stays with empty imageUrl */ }
+
+				slots[i] = { id: crypto.randomUUID(), prompt, imageUrl, style: styleInfo.style };
+
+				// Push completed covers to the UI immediately (filter out pending slots)
+				globalState.setCoverOptions(book.id, slots.filter((s): s is CoverOption => s !== null));
+			})
+		);
+
 		isGeneratingCovers = false;
 	}
 
@@ -350,41 +360,58 @@
 
 		const chapters = [...globalState.books.find(b => b.id === book.id)!.chapters];
 
-		for (let i = 0; i < chapters.length; i++) {
-			const chap = chapters[i];
-			if (chap.status === 'completed') continue; // skip already done
+		// Build a queue of chapter indices that still need to be written.
+		const pending = chapters
+			.map((c, i) => i)
+			.filter(i => chapters[i].status !== 'completed');
 
-			// ── Step 2: Per-chapter targeted research ──────────────────────────
-			let chapterFacts = '';
-			try {
-				const cr = await fetch('/api/research', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({
-						query: `${chap.title} ${book.title} ${book.genre} ${chap.summary ?? ''}`.trim(),
-						apiKey: keys.exaKey,
-						useMockMode: useMock
-					})
-				});
-				const crd = await cr.json();
-				chapterFacts = crd.success
-					? (crd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
-					: '';
-				globalState.addLog(book.id, {
-					step: 'research', status: 'success',
-					message: `Research complete for Chapter ${chap.order}: "${chap.title}"`
-				});
-			} catch { /* non-fatal */ }
+		// ── Worker pool — process up to CONCURRENCY chapters simultaneously ──────
+		// Each worker claims the next available index from the shared queue,
+		// runs the full research → write → verify → illustrate pipeline for it,
+		// then immediately picks up the next. This means the user sees the first
+		// chapter appear as soon as it's done rather than waiting for all of them,
+		// while still limiting concurrent API pressure to CONCURRENCY slots.
+		const CONCURRENCY = 2;
 
-			// Merge: author brief + book-level facts + chapter-specific facts
-			const factsSummary = [
-				book.userContext?.trim() ? `[Author Brief]\n${book.userContext.trim()}` : '',
-				bookLevelFacts ? `[Book-Level Research]\n${bookLevelFacts}` : '',
-				chapterFacts   ? `[Chapter-Specific Research for "${chap.title}"]\n${chapterFacts}` : ''
-			].filter(Boolean).join('\n\n');
+		async function processNextChapter(): Promise<void> {
+			while (pending.length > 0) {
+				const i = pending.shift()!;
+				const chap = chapters[i];
 
-			await writeSingleChapter(book.id, i, chapters, factsSummary, keys, useMock);
+				// Per-chapter targeted research
+				let chapterFacts = '';
+				try {
+					const cr = await fetch('/api/research', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							query: `${chap.title} ${book.title} ${book.genre} ${chap.summary ?? ''}`.trim(),
+							apiKey: keys.exaKey,
+							useMockMode: useMock
+						})
+					});
+					const crd = await cr.json();
+					chapterFacts = crd.success
+						? (crd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
+						: '';
+					globalState.addLog(book.id, {
+						step: 'research', status: 'success',
+						message: `Research complete for Chapter ${chap.order}: "${chap.title}"`
+					});
+				} catch { /* non-fatal */ }
+
+				const factsSummary = [
+					book.userContext?.trim() ? `[Author Brief]\n${book.userContext.trim()}` : '',
+					bookLevelFacts ? `[Book-Level Research]\n${bookLevelFacts}` : '',
+					chapterFacts   ? `[Chapter-Specific Research for "${chap.title}"]\n${chapterFacts}` : ''
+				].filter(Boolean).join('\n\n');
+
+				await writeSingleChapter(book.id, i, chapters, factsSummary, keys, useMock);
+			}
 		}
+
+		// Spawn CONCURRENCY workers and let them race through the queue
+		await Promise.all(Array.from({ length: CONCURRENCY }, processNextChapter));
 
 		globalState.updateBookStatus(book.id, 'completed');
 		globalState.setPipelineStage(book.id, 5);

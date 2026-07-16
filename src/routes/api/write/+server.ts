@@ -379,12 +379,13 @@ Review, correct, and return in the required format.`;
 		const maxTokens =
 			action === 'write-chapter'  ? budgetForWrite(length) :
 			action === 'verify-chapter' ? budgetForVerify(chapterContent) :
-			/* outline */                  900;
+			/* outline — scale with book length; a long book needs more chapters */
+			budgetForOutline(length);
 
 		const controller = new AbortController();
 		// Streamed requests only need to survive gaps between chunks, so the
 		// ceiling can be generous without risking a silent HTTP timeout.
-		const timeoutMs = action === 'outline' ? 25_000 : 600_000;
+		const timeoutMs = action === 'outline' ? 60_000 : 600_000;
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
 
 		// Anthropic requires streaming once max_tokens is large enough that a
@@ -528,6 +529,19 @@ function estimateTokens(text: string): number {
 }
 
 /** A fresh chapter's ceiling scales with how long the book's chapters should be. */
+/**
+ * Outline output is a JSON array of chapter objects. Each entry is roughly
+ * 80–120 tokens. Long books can have 15+ chapters, so the old 900-token fixed
+ * ceiling truncated the JSON mid-array and caused a parse failure.
+ */
+function budgetForOutline(length: string): number {
+	const tokens =
+		length === 'short'  ? 1_500 :
+		length === 'medium' ? 2_500 :
+		/* long */            4_000;
+	return Math.min(tokens, MODEL_OUTPUT_CAP);
+}
+
 function budgetForWrite(length: string): number {
 	const target =
 		length === 'short'  ? 12_000 :
