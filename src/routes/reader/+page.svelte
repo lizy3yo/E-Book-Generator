@@ -3,6 +3,7 @@
 	import { globalState } from '$lib/state.svelte';
 	import type { Chapter } from '$lib/types';
 	import { generateImage } from '$lib/generateImage';
+	import { parseMarkdown } from '$lib/diagrams';
 	import {
 		BookMarked, Clipboard, ClipboardCheck, FileCode, FileDown,
 		Image as ImageIcon, PenLine, BookOpen,
@@ -593,102 +594,7 @@
 		};
 	});
 
-	// ── Markdown renderer ──────────────────────────────────────────────────────
-	function parseMarkdown(md: string): string {
-		if (!md) return '<p>No content written for this chapter yet.</p>';
 
-		let src = md.trim();
-
-		// ── Step 1: extract raw HTML blocks so we don't escape them ───────────
-		const rawBlocks: string[] = [];
-		
-		// Balance tags dynamically to correctly extract nested elements like divs and tables
-		while (true) {
-			const divMatch = src.match(/<(div|table|thead|tbody|tr|th|td|figure)[\s>]/i);
-			if (!divMatch || divMatch.index === undefined) break;
-
-			const tag = divMatch[1].toLowerCase();
-			const startIdx = divMatch.index;
-
-			let depth = 0;
-			let endIdx = -1;
-
-			const tagRegex = new RegExp(`<\\/?${tag}[\\s>]`, 'gi');
-			tagRegex.lastIndex = startIdx;
-
-			let match;
-			while ((match = tagRegex.exec(src)) !== null) {
-				const matchedTag = match[0].toLowerCase();
-				if (matchedTag.startsWith('</')) {
-					depth--;
-				} else {
-					depth++;
-				}
-
-				if (depth === 0) {
-					endIdx = tagRegex.lastIndex;
-					break;
-				}
-			}
-
-			if (endIdx !== -1) {
-				const fullBlock = src.substring(startIdx, endIdx);
-				const placeholder = `\x02RAWBLOCK${rawBlocks.length}\x03`;
-				rawBlocks.push(fullBlock);
-				src = src.substring(0, startIdx) + placeholder + src.substring(endIdx);
-			} else {
-				// Prevent infinite loop if tag is unbalanced in source content
-				src = src.substring(0, startIdx) + '\x01' + src.substring(startIdx + 1);
-			}
-		}
-
-		// Restore any temporarily renamed brackets
-		src = src.replace(/\x01/g, '<');
-
-		// ── Step 2: escape remaining text so inline HTML isn't injected ────────
-		let html = src
-			.replace(/&/g, '&amp;')
-			.replace(/</g, '&lt;')
-			.replace(/>/g, '&gt;');
-
-		// ── Step 3: standard markdown → HTML conversion ─────────────────────
-		// Headings (descending so #### is matched before ###)
-		html = html.replace(/^#### (.*?)$/gm, '<h4>$1</h4>');
-		html = html.replace(/^### (.*?)$/gm, '<h3>$1</h3>');
-		html = html.replace(/^## (.*?)$/gm, '<h2>$1</h2>');
-		html = html.replace(/^# (.*?)$/gm, '<h1>$1</h1>');
-		html = html.replace(/^\> (.*?)$/gm, '<blockquote>$1</blockquote>');
-		html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-		html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
-		html = html.replace(/^\* (.*?)$/gm, '<li>$1</li>');
-		html = html.replace(/^- (.*?)$/gm, '<li>$1</li>');
-
-		// Numbered lists: "1. item"
-		html = html.replace(/^\d+\.\s+(.*?)$/gm, '<li>$1</li>');
-
-		// Paragraph wrap — skip if line already contains a block element or placeholder
-		const paragraphs = html.split('\n\n');
-		html = paragraphs.map((p) => {
-			const trimmed = p.trim();
-			if (!trimmed) return '';
-			if (
-				trimmed.startsWith('<h') ||
-				trimmed.startsWith('<blockquote') ||
-				trimmed.startsWith('<li') ||
-				trimmed.startsWith('\x02RAWBLOCK')
-			) return trimmed;
-			return `<p>${trimmed}</p>`;
-		}).join('\n');
-
-		// Merge consecutive <li> into a single <ul>
-		html = html.replace(/(<li>.*?<\/li>)/gs, '<ul>$1</ul>');
-		html = html.replace(/<\/ul>\s*<ul>/g, '');
-
-		// ── Step 4: restore raw HTML blocks ───────────────────────────────
-		html = html.replace(/\x02RAWBLOCK(\d+)\x03/g, (_, i) => rawBlocks[parseInt(i)]);
-
-		return html;
-	}
 
 	// ── Copy Markdown ──────────────────────────────────────────────────────────
 	function handleCopyMarkdown() {

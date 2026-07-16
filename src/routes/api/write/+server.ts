@@ -133,7 +133,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				'Anchor each chapter in one or more real-world case studies or expert interviews. Open with the story, extract principles and lessons, then broaden to universal application. Use primary voices (quotes, dialogue) to ground the analysis in lived reality.'
 		};
 
-		const toneGuide     = toneInstructions[tone]     ?? `Write in a ${tone} voice.`;
+		const toneGuide = toneInstructions[tone] ?? `Write in a ${tone} voice.`;
 		const structureGuide = structureInstructions[structure] ?? `Follow a ${structure} format.`;
 
 		if (action === 'outline') {
@@ -298,28 +298,18 @@ CRITICAL RULE: Actively choose the RIGHT element for each content type. Do not d
      <div class="checklist-box__item"><span class="checklist-box__num">03</span><span>Document findings with photos</span></div>
    </div>
 
-7. DIAGRAMS & FLOWCHARTS: Where a sequence of steps, a loop/cycle, or visual anatomy is described, write a visual diagram block.
-   <div class="diagram-box">
-     <div class="diagram-box__title">Diagram Title</div>
-     <div class="diagram-box__subtitle">Sub-label detail</div>
-     <div class="diagram-flow">
-       <div class="diagram-step">
-         <div class="diagram-step__num">1. Inspect</div>
-         <div class="diagram-step__text">Look for visible damage</div>
-       </div>
-       <div class="diagram-arrow">➔</div>
-       <div class="diagram-step">
-         <div class="diagram-step__num">2. Assess</div>
-         <div class="diagram-step__text">Determine repair scope</div>
-       </div>
-       <div class="diagram-arrow">➔</div>
-       <div class="diagram-step">
-         <div class="diagram-step__num">3. Fix</div>
-         <div class="diagram-step__text">Apply the correct solution</div>
-       </div>
-     </div>
-     <div class="diagram-takeaway">Short summary takeaway about this diagram.</div>
-   </div>`;
+7. CUSTOM DIAGRAMS & CHARTS: For complex charts and diagrams, use this exact code block format:
+   \`\`\`diagram
+   type: [Choose from: SWOT Diagram, Balanced Scorecard, Business Model Canvas, Venn Diagram, Mind Map, Concept Map, Network Diagram, Flowchart, Swimlane Diagram, Sankey Diagram, Workflow Diagram, Data Flow Diagram (DFD), Tree Diagram / Dendrogram, Organizational Chart, Pyramid Diagram, Taxonomy Chart, Pie Chart / Donut Chart, Bar Chart / Column Chart, Line Graph / Sparkline, Scatter Plot / Bubble Chart, Cartesian Graph, Timeline / Gantt Chart, Matrix Diagram, Radar Chart (Spider Chart), Pareto Chart, Floor Plan, Blueprint / Architectural Diagram, Site Map, Heat Map, Class Diagram, Sequence Diagram, Activity Diagram, State Machine Diagram, Use Case Diagram, Circuit Diagram, P&ID, Histogram, Box-and-Whisker Plot, Q-Q Plot, Free Body Diagram, Lewis Dot Diagram, Phase Diagram, Molecular Model Diagram]
+   title: [Title of Diagram]
+   subtitle: [Optional Subtitle]
+   # Depending on the diagram type:
+   # - For Charts/Graphs/Plots: labels: Item A, Item B / values: 40, 20
+   # - For Venn Diagrams: leftLabel: X / rightLabel: Y / leftItems: A, B / rightItems: C / sharedItems: D
+   # - For SWOT: strengths: A, B / weaknesses: C / opportunities: D / threats: E
+   # - For Flowcharts/Timelines/Gantts/UML: steps: Step 1 -> Step 2 -> Step 3
+   # - For Mindmaps/Hierarchies/Org Charts: root: Main Topic / list nodes starting with '-'
+   \`\`\``;
 
 			userPrompt = `Write the complete content for the following ebook chapter:
 
@@ -400,7 +390,7 @@ Review, correct, and return in the required format.`;
 			// Extract JSON array
 			try {
 				let cleanJson = responseText.trim();
-				
+
 				// Robust array extraction to discard conversational filler
 				const arrayStart = cleanJson.indexOf('[');
 				const arrayEnd = cleanJson.lastIndexOf(']');
@@ -506,7 +496,7 @@ function getMockChapterSummary(bookTitle: string, index: number): string {
 }
 
 function getMockChapterContent(bookTitle: string, chapterTitle: string, order: number, tone: string, researchNotes: string): string {
-	const notesSnippet = researchNotes 
+	const notesSnippet = researchNotes
 		? `*Self-Grounding Integration: This chapter incorporates verified data metrics, specifically referencing the fact that neural grounding approaches yield up to a 92% improvement in reading flow parameters.*`
 		: '';
 

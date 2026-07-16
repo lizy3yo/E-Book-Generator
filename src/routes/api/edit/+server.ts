@@ -18,8 +18,18 @@ VISUAL ELEMENTS & LAYOUT DIRECTIVES — Use the RIGHT element for each content t
    <div class="pro-con-grid"><div class="pro-grid__col pro-grid__col--pro"><div class="pro-grid__header">✅ Pros</div><div class="pro-grid__item">Benefit one</div></div><div class="pro-grid__col pro-grid__col--con"><div class="pro-grid__header">❌ Cons</div><div class="pro-grid__item">Drawback one</div></div></div>
 6. CHECKLISTS (step-by-step actions):
    <div class="checklist-box"><div class="checklist-box__title">Action Checklist</div><div class="checklist-box__item"><span class="checklist-box__num">01</span><span>Step one</span></div><div class="checklist-box__item"><span class="checklist-box__num">02</span><span>Step two</span></div></div>
-7. DIAGRAMS/FLOWCHARTS (processes and sequences):
-   <div class="diagram-box"><div class="diagram-box__title">Title</div><div class="diagram-box__subtitle">Subtitle</div><div class="diagram-flow"><div class="diagram-step"><div class="diagram-step__num">1. Step</div><div class="diagram-step__text">Detail</div></div><div class="diagram-arrow">➔</div><div class="diagram-step"><div class="diagram-step__num">2. Step</div><div class="diagram-step__text">Detail</div></div></div><div class="diagram-takeaway">Summary.</div></div>
+7. CUSTOM DIAGRAMS & CHARTS: For complex charts and diagrams, use this exact code block format:
+   \`\`\`diagram
+   type: [Choose from: SWOT Diagram, Balanced Scorecard, Business Model Canvas, Venn Diagram, Mind Map, Concept Map, Network Diagram, Flowchart, Swimlane Diagram, Sankey Diagram, Workflow Diagram, Data Flow Diagram (DFD), Tree Diagram / Dendrogram, Organizational Chart, Pyramid Diagram, Taxonomy Chart, Pie Chart / Donut Chart, Bar Chart / Column Chart, Line Graph / Sparkline, Scatter Plot / Bubble Chart, Cartesian Graph, Timeline / Gantt Chart, Matrix Diagram, Radar Chart (Spider Chart), Pareto Chart, Floor Plan, Blueprint / Architectural Diagram, Site Map, Heat Map, Class Diagram, Sequence Diagram, Activity Diagram, State Machine Diagram, Use Case Diagram, Circuit Diagram, P&ID, Histogram, Box-and-Whisker Plot, Q-Q Plot, Free Body Diagram, Lewis Dot Diagram, Phase Diagram, Molecular Model Diagram]
+   title: [Title of Diagram]
+   subtitle: [Optional Subtitle]
+   # Depending on the diagram type:
+   # - For Charts/Graphs/Plots: labels: Item A, Item B / values: 40, 20
+   # - For Venn Diagrams: leftLabel: X / rightLabel: Y / leftItems: A, B / rightItems: C / sharedItems: D
+   # - For SWOT: strengths: A, B / weaknesses: C / opportunities: D / threats: E
+   # - For Flowcharts/Timelines/Gantts/UML: steps: Step 1 -> Step 2 -> Step 3
+   # - For Mindmaps/Hierarchies/Org Charts: root: Main Topic / list nodes starting with '-'
+   \`\`\`
 `;
 
 export const POST: RequestHandler = async ({ request }) => {
