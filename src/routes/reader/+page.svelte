@@ -1259,7 +1259,19 @@
 			activeBook.chapters.forEach((c, idx) => {
 				if (c.status !== 'completed' || !c.content) return;
 
-				const fullMd   = parseMarkdown(c.content, c.id);
+				// Replace inline markdown image URLs with their base64 equivalents
+				// before parsing so html2canvas captures them without CORS issues.
+				let contentForPdf = c.content;
+				if (Object.keys(dataUrls).length > 0) {
+					contentForPdf = contentForPdf.replace(
+						/!\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g,
+						(_m, alt, url) => {
+							const b64 = dataUrls[url];
+							return b64 ? `![${alt}](${b64})` : `![${alt}](${url})`;
+						}
+					);
+				}
+				const fullMd   = parseMarkdown(contentForPdf, c.id);
 				const rawIllust = c.illustrationUrl || '';
 				const mappedIllust = rawIllust && Object.prototype.hasOwnProperty.call(dataUrls, rawIllust)
 					? dataUrls[rawIllust]  // base64 or '' if fetch failed
@@ -1365,16 +1377,17 @@
 	}
 	@page { size: 8.5in 11in; margin: 0; }
 	.cover-page {
-	width: 8.5in;
-	height: 11in;
+	width: 816px;
+	height: 1056px;
 	position: relative;
 	display: flex;
 	flex-direction: column;
-	padding: 1.25in 1.25in;
+	padding: 80px 80px 80px 80px;
 	${coverBg}
 	text-align: ${alignment};
 	overflow: hidden;
 	page-break-after: always;
+	flex-shrink: 0;
 	}
 	.cover-overlay {
 	position: absolute; inset: 0;
@@ -1567,11 +1580,11 @@
 	table {
 		width: 100%;
 		border-collapse: collapse;
-		margin: 2rem 0;
-		font-size: 0.95rem;
+		margin: 1.5rem 0;
+		font-size: 10pt;
 		text-align: left;
-		line-height: 1.5;
-		table-layout: fixed;
+		line-height: 1.45;
+		table-layout: auto;
 	}
 	.table-container {
 		width: 100%;
@@ -1583,22 +1596,36 @@
 	}
 	th, td {
 		white-space: normal;
-		overflow-wrap: anywhere;
-		word-break: break-word;
+		overflow-wrap: break-word;
+		word-break: normal;
+		hyphens: none;
+		vertical-align: top;
 	}
 	th {
-		background-color: ${activeBook.interiorDesign?.['--r-table-header-bg'] ?? '#0F172A'};
+		background-color: ${activeBook.interiorDesign?.['--r-table-header-bg'] ?? '#1e3a5f'};
 		color: #ffffff;
 		font-weight: 600;
-		padding: 0.75rem 1rem;
+		padding: 0.6rem 0.75rem;
 		border: 1px solid ${activeBook.interiorDesign?.['--r-border'] ?? '#e2e8f0'};
+		font-size: 9.5pt;
 	}
 	td {
-		padding: 0.75rem 1rem;
+		padding: 0.6rem 0.75rem;
 		border: 1px solid ${activeBook.interiorDesign?.['--r-border'] ?? '#e2e8f0'};
+		font-size: 10pt;
 	}
-	tr:nth-child(even) {
+	tr:nth-child(even) td {
 		background-color: #f8fafc;
+	}
+	tr:nth-child(odd) td {
+		background-color: #ffffff;
+	}
+	.diagram-box--table {
+		padding: 0;
+		overflow: visible;
+	}
+	.diagram-box--table .table-container {
+		width: 100%;
 	}
 
 	.callout-box, .tip-box, .warning-box, .key-rule-box {
@@ -1714,59 +1741,20 @@
 		color: #475569;
 	}
 
+	/* Hide all interactive edit buttons — never visible in PDF */
+	.diagram-box__actions,
+	.edit-trigger,
+	.edit-trigger--diagram,
+	.edit-trigger--inline {
+		display: none !important;
+		visibility: hidden !important;
+		pointer-events: none !important;
+	}
+
 	@media print {
 	body { background: #fff; }
 	.cover-page, .toc-page, .chapter-section { page-break-after: always; page-break-inside: avoid; break-inside: avoid; }
 	table, .callout-box, .diagram-box, blockquote { page-break-inside: avoid; break-inside: avoid; }
-	.chapter-body :global(.diagram-box--table) {
-		width: 100% !important;
-		max-width: 100% !important;
-		page-break-inside: auto !important;
-		break-inside: auto !important;
-	}
-	.chapter-body :global(.diagram-box--table .table-container) {
-		overflow: visible !important;
-		width: 100% !important;
-		max-width: 100% !important;
-	}
-	.chapter-body :global(.diagram-box--table table) {
-		width: 100% !important;
-		min-width: 0 !important;
-		table-layout: fixed !important;
-		margin: 1rem 0 !important;
-	}
-	.chapter-body :global(.diagram-box--table--wide table) {
-		font-size: 0.84rem;
-	}
-	.chapter-body :global(.diagram-box--table--wide th),
-	.chapter-body :global(.diagram-box--table--wide td) {
-		padding: 0.5rem 0.6rem;
-	}
-	.chapter-body :global(.diagram-box--table tr),
-	.chapter-body :global(.diagram-box--table th),
-	.chapter-body :global(.diagram-box--table td) {
-		page-break-inside: auto !important;
-		break-inside: auto !important;
-		white-space: normal !important;
-		overflow-wrap: anywhere;
-		word-break: break-word;
-	}
-	.chapter-body :global(.diagram-box--table--wide tr:nth-child(even)) {
-		background-color: #f9fbfd !important;
-	}
-	.chapter-body :global(.diagram-box--table th),
-	.chapter-body :global(.diagram-box--table td) {
-		padding: 0.5rem 0.65rem !important;
-	}
-	.chapter-body :global(.diagram-box--table tr:nth-child(even)) {
-		background-color: #f8fafc !important;
-	}
-	.chapter-body :global(.diagram-box--table tr:nth-child(odd)) {
-		background-color: #ffffff !important;
-	}
-	.chapter-body :global(.diagram-box--table .table-container::-webkit-scrollbar) {
-		display: none;
-	}
 	}
 	</style>
 	</head>
@@ -1843,6 +1831,14 @@
 				if (cs.bgImageUrl) imageUrls.push(cs.bgImageUrl);
 				activeBook.chapters.forEach((c) => {
 					if (c.illustrationUrl) imageUrls.push(c.illustrationUrl);
+					// Also collect inline markdown images embedded in chapter content
+					if (c.content) {
+						const mdImgRe = /!\[[^\]]*\]\((https?:\/\/[^)]+)\)/g;
+						let m: RegExpExecArray | null;
+						while ((m = mdImgRe.exec(c.content)) !== null) {
+							if (!imageUrls.includes(m[1])) imageUrls.push(m[1]);
+						}
+					}
 				});
 
 				const dataUrls: Record<string, string> = {};
@@ -1853,7 +1849,8 @@
 				);
 
 				// ── Step 2: Build the self-contained HTML document ─────────────────
-				const fullHtml = buildFullHtml(dataUrls);
+				// Strip lazy-loading attributes so html2canvas can capture all images.
+				const fullHtml = buildFullHtml(dataUrls).replace(/\sloading="lazy"/g, '');
 
 				// ── Step 3: Mount a hidden iframe and write the document into it ───
 				// An iframe gives the document its own CSS scope — styles in the
@@ -1877,8 +1874,25 @@
 
 				// ── Step 4: Wait for fonts inside the iframe ───────────────────────
 				if (iDoc.fonts) await iDoc.fonts.ready;
+
+				// ── Step 4b: Wait for all <img> tags inside the iframe to load ────
+				// html2canvas captures a pixel snapshot — any image that hasn't
+				// finished loading will appear blank. Force-load all images first.
+				const iframeImgs = Array.from(iDoc.querySelectorAll<HTMLImageElement>('img'));
+				await Promise.all(
+					iframeImgs.map(
+						(img) =>
+							img.complete
+								? Promise.resolve()
+								: new Promise<void>((res) => {
+										img.onload = () => res();
+										img.onerror = () => res(); // still proceed if one fails
+									})
+					)
+				);
+
 				// Extra settle time for background-image paints and layout reflow
-				await new Promise((resolve) => setTimeout(resolve, 600));
+				await new Promise((resolve) => setTimeout(resolve, 800));
 
 				// ── Step 5: Collect page elements ─────────────────────────────────
 				const pageEls = Array.from(

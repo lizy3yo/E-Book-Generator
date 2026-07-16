@@ -893,7 +893,7 @@
 					<p>AI has structured the outline for <strong>{active.title}</strong>. Edit any chapter title or summary, then approve to begin writing.</p>
 				</div>
 
-				{#if isGeneratingPlan || active.chapters.length === 0}
+				{#if isGeneratingPlan || (active.chapters.length === 0 && active.status !== 'failed')}
 					<div class="plan-loading">
 						<div class="plan-skeleton">
 							{#each [1,2,3,4,5] as _}
@@ -901,6 +901,31 @@
 							{/each}
 						</div>
 						<p class="generating-label font-serif"><Loader size={14} class="spin-icon" /> Building chapter structure…</p>
+					</div>
+				{:else if active.status === 'failed' && active.chapters.length === 0}
+					<div class="plan-error">
+						<div class="plan-error-icon">
+							<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+								<circle cx="12" cy="12" r="10"/>
+								<line x1="12" y1="8" x2="12" y2="12"/>
+								<line x1="12" y1="16" x2="12.01" y2="16"/>
+							</svg>
+						</div>
+						<h3 class="font-serif plan-error-title">Chapter plan generation failed</h3>
+						<p class="plan-error-message">
+							{#if active.logs && active.logs.length > 0}
+								{active.logs[active.logs.length - 1].message}
+							{:else}
+								Something went wrong while building the outline. This is usually a network or API issue.
+							{/if}
+						</p>
+						<button
+							class="btn btn-primary plan-retry-btn"
+							onclick={() => generateChapterPlan(active)}
+							disabled={isGeneratingPlan}
+						>
+							<RefreshCw size={15} /> Retry Generation
+						</button>
 					</div>
 				{:else}
 					{@const cover = active.coverSettings}
@@ -1606,6 +1631,29 @@
 	.plan-loading { display: flex; flex-direction: column; gap: 1.5rem; align-items: center; }
 	.plan-skeleton { display: flex; flex-direction: column; gap: 0.75rem; width: 100%; }
 	.chapter-skeleton { height: 72px; border-radius: var(--radius-sm); background: var(--bg-inset); }
+
+	/* Error / retry state */
+	.plan-error {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 1rem;
+		padding: 3rem 2rem;
+		text-align: center;
+		background: var(--bg-inset);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-md);
+	}
+	.plan-error-icon { color: #c0392b; opacity: 0.85; }
+	.plan-error-title { font-size: 1.15rem; color: var(--text-primary); margin: 0; }
+	.plan-error-message {
+		font-size: 0.875rem;
+		color: var(--text-muted);
+		max-width: 480px;
+		line-height: 1.6;
+		margin: 0;
+	}
+	.plan-retry-btn { gap: 0.45rem; margin-top: 0.5rem; }
 
 	/* Wide variant for Stage 3 two-column layout */
 	.stage-workspace--wide { max-width: 1200px; }
