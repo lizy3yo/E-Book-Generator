@@ -475,6 +475,27 @@ export function parseMarkdown(md: string, chapterId: string = ''): string {
 		}
 	});
 
+	// ── Step 1.6: Extract markdown images before escaping ──────────────────
+	// AI-generated realistic images are written as ![alt](url). If we let them
+	// hit Step 2 the `!`, `[`, `(` characters get HTML-escaped and they render
+	// as raw text instead of <img> tags. We pull them out as raw blocks here so
+	// they survive escaping intact and display correctly in the reader / PDF.
+	//
+	// Handles both standalone image lines (own paragraph) and inline images
+	// embedded mid-sentence.  Standalone images get a centred figure wrapper
+	// with a caption; inline images are replaced with a plain <img> tag.
+	src = src.replace(/!\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g, (_fullMatch, alt, url) => {
+		const caption = alt ? `<figcaption style="text-align:center;font-size:0.78rem;color:var(--r-text-muted,#64748B);margin-top:0.35rem;font-style:italic;">${alt}</figcaption>` : '';
+		// Wrap in diagram-box so the edit overlay pattern is consistent with
+		// all other visual blocks and the edit drawer can splice it correctly.
+		const editBtn = `<button class="edit-trigger edit-trigger--diagram edit-trigger--inline" data-chapter-id="${chapterId}" data-table-index="${visualBlockCounter}" data-table-raw="${encodeURIComponent(`![${alt}](${url})`)}" title="Regenerate or edit this image" aria-label="Edit image"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pen-line"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg> Edit</button>`;
+		const figHtml = `<div class="diagram-box diagram-box--image"><div class="diagram-box__actions">${editBtn}</div><figure style="margin:0.5rem auto 0;text-align:center;max-width:100%;page-break-inside:avoid;"><img src="${url}" alt="${alt}" loading="lazy" style="max-width:100%;height:auto;border-radius:6px;display:block;margin:0 auto;box-shadow:0 2px 8px rgba(0,0,0,0.12);" />${caption}</figure></div>`;
+		visualBlockCounter++;
+		const placeholder = `\x02RAWBLOCK${rawBlocks.length}\x03`;
+		rawBlocks.push(figHtml);
+		return placeholder;
+	});
+
 	// ── Step 2: escape remaining text so inline HTML isn't injected ────────
 	let html = src
 		.replace(/&/g, '&amp;')

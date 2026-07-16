@@ -77,7 +77,8 @@
 		// 'fence'  = ```diagram``` code block
 		// 'table'  = markdown table (| col | col |)
 		// 'inline' = raw HTML visual element (callout-box, stat-block, etc.)
-		diagramKind?: 'fence' | 'table' | 'inline';
+		// 'image'  = AI-generated realistic image rendered via ![alt](url)
+		diagramKind?: 'fence' | 'table' | 'inline' | 'image';
 	}
 
 	let editTarget      = $state<EditTarget | null>(null);
@@ -90,7 +91,22 @@
 	// Which action triggered the current in-progress edit (for button loading state)
 	let activeAction    = $state<'apply' | 'redo' | 'reconstruct' | null>(null);
 
-	// ── Illustration-drawer: realistic image toggle ───────────────────────────
+	// ── Image style editor state ─────────────────────────────────────────────
+	// These are only active when editTarget.diagramKind === 'image'.
+	let imageFullPage    = $state(false);
+	let imageBorderColor = $state('#C9A84C');
+	let imageBorderWidth = $state('0');   // '0' = no border
+	let imageBorderStyle = $state('solid');
+	let imageBorderRadius = $state('6');  // px
+
+	/** Reset image style controls to neutral defaults */
+	function resetImageStyleState() {
+		imageFullPage     = false;
+		imageBorderColor  = '#C9A84C';
+		imageBorderWidth  = '0';
+		imageBorderStyle  = 'solid';
+		imageBorderRadius = '6';
+	}
 	// When true, the prompt is prefixed with a photorealistic boilerplate that
 	// steers the image model toward hyper-detailed, photograph-quality output.
 	let useRealisticIllustration = $state(false);
@@ -125,7 +141,7 @@
 	 */
 	function spliceVisualBlock(
 		fullMarkdown: string,
-		kind: 'fence' | 'table' | 'inline',
+		kind: 'fence' | 'table' | 'inline' | 'image',
 		original: string,
 		index: number,
 		replacement: string,
@@ -148,7 +164,7 @@
 				: `${fullMarkdown}\n\n\`\`\`diagram\n${replacement}\n\`\`\``;
 		}
 
-		if (kind === 'table' || kind === 'inline') {
+		if (kind === 'table' || kind === 'inline' || kind === 'image') {
 			// For tables and inline HTML, `original` is the raw string to search for.
 			// Use a simple string replace for the first occurrence — safe because
 			// identical raw blocks in the same chapter are genuinely unlikely.
@@ -175,14 +191,16 @@
 		//   'fence'  — data-diagram-index set, no data-table-raw   → ```diagram``` code block
 		//   'table'  — data-table-index set, data-table-raw starts with '|'  → markdown table
 		//   'inline' — data-table-index set, data-table-raw starts with '<'  → raw HTML element
+		//   'image'  — data-table-index set, data-table-raw starts with '!'  → ![alt](url) image
 		let raw  = '';
-		let kind: 'fence' | 'table' | 'inline' = 'fence';
+		let kind: 'fence' | 'table' | 'inline' | 'image' = 'fence';
 		let idx  = 0;
 
 		if (btn.dataset.tableRaw) {
 			raw  = decodeURIComponent(btn.dataset.tableRaw);
 			idx  = parseInt(btn.dataset.tableIndex ?? '0', 10);
-			kind = raw.trimStart().startsWith('<') ? 'inline' : 'table';
+			const trimmed = raw.trimStart();
+			kind = trimmed.startsWith('<') ? 'inline' : trimmed.startsWith('!') ? 'image' : 'table';
 		} else {
 			idx  = parseInt(btn.dataset.diagramIndex ?? '0', 10);
 			raw  = getDiagramBlockRaw(chap.content, idx);
@@ -220,6 +238,7 @@
 		editInstruction = '';
 		editSuccess = false;
 		editError = '';
+		resetImageStyleState();
 		// Seed the realistic toggle from the book-level setting so it remembers the
 		// author's preferred image style without requiring a manual toggle each time.
 		useRealisticIllustration =
@@ -236,6 +255,65 @@
 		lastInstruction = '';
 		activeAction = null;
 		useRealisticIllustration = false;
+		resetImageStyleState();
+	}
+
+	/**
+	 * Apply visual style changes (full-page, border, radius) to an image block
+	 * without any AI call — it's a pure in-place HTML patch on the chapter markdown.
+	 */
+	async function applyImageStyle() {
+		if (!editTarget || !activeBook || editTarget.diagramKind !== 'image') return;
+
+		const raw = editTarget.diagramRaw ?? '';
+		// Extract alt + url from the stored ![alt](url) raw string
+		const imgMatch = raw.match(/^!\[([^\]]*)\]\((https?:\/\/[^)]+)\)$/);
+		if (!imgMatch) return;
+
+		const [, alt, url] = imgMatch;
+
+		const bw   = parseInt(imageBorderWidth, 10) || 0;
+		const border = bw > 0 ? `${bw}px ${imageBorderStyle} ${imageBorderColor}` : 'none';
+		const radius = `${parseInt(imageBorderRadius, 10) || 6}px`;
+
+		const figStyle = imageFullPage
+			? `margin:0;padding:0;text-align:center;width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;page-break-inside:avoid;`
+			: `margin:1.25rem auto;text-align:center;max-width:100%;page-break-inside:avoid;`;
+
+		const imgStyle = imageFullPage
+			? `max-width:100%;max-height:100%;width:100%;object-fit:contain;border-radius:${radius};display:block;margin:0 auto;box-shadow:0 2px 8px rgba(0,0,0,0.12);border:${border};`
+			: `max-width:100%;height:auto;border-radius:${radius};display:block;margin:0 auto;box-shadow:0 2px 8px rgba(0,0,0,0.12);border:${border};`;
+
+		const caption = alt
+			? `<figcaption style="text-align:center;font-size:0.78rem;color:var(--r-text-muted,#64748B);margin-top:0.35rem;font-style:italic;">${alt}</figcaption>`
+			: '';
+
+		// Re-encode the raw markdown as the new data-table-raw anchor
+		const newTableRaw = encodeURIComponent(raw);
+		const editBtn = `<button class="edit-trigger edit-trigger--diagram edit-trigger--inline" data-chapter-id="${editTarget.chapterId}" data-table-index="${editTarget.diagramIndex ?? 0}" data-table-raw="${newTableRaw}" title="Regenerate or edit this image" aria-label="Edit image"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pen-line"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg> Edit</button>`;
+
+		const wrapperClass = imageFullPage
+			? 'diagram-box diagram-box--image diagram-box--image--fullpage'
+			: 'diagram-box diagram-box--image';
+
+		const newHtml = `<div class="${wrapperClass}"><div class="diagram-box__actions">${editBtn}</div><figure style="${figStyle}"><img src="${url}" alt="${alt}" loading="lazy" style="${imgStyle}" />${caption}</figure></div>`;
+
+		// The raw is ![alt](url), the chapter markdown contains exactly that string.
+		// Replace it with the new HTML block wrapped in a div (diagrams.ts Step 1.6
+		// already stored the original ![alt](url) as diagramRaw, so we can search for it).
+		const updatedContent = spliceVisualBlock(
+			editTarget.chapterContent,
+			'image',
+			raw,
+			editTarget.diagramIndex ?? 0,
+			newHtml,
+			true   // replacement is verbatim HTML, not a diagram fence
+		);
+
+		globalState.updateChapterContent(activeBook.id, editTarget.chapterId, updatedContent, 'completed');
+		editTarget = { ...editTarget, chapterContent: updatedContent };
+		editSuccess = true;
+		paginateAllChapters();
 	}
 
 	function getChapterOrderLabel(chap: { title: string; order: number }, idx: number): string {
@@ -1210,12 +1288,31 @@
 
 				for (const blk of blocks) {
 					measurer.innerHTML = blk;
-					const h = measurer.offsetHeight + 24;
+					// Images inside <figure> tags report 0px height until loaded.
+					// Substitute a realistic fixed height so the page-budget math
+					// reserves enough space and doesn't overflow the page.
+					const hasFigure = measurer.querySelector('figure') !== null;
+					const isFullPage = hasFigure && blk.includes('diagram-box--image--fullpage');
+					const h = isFullPage
+						? BODY_H          // full-page images consume the entire page budget
+						: hasFigure
+						? 260 + 24        // 220pt max-height + caption + margins
+						: measurer.offsetHeight + 24;
+					// Full-page images always start on their own page
+					if (isFullPage && cur.length > 0) {
+						pages.push({ blocks: cur, isFirst: pages.length === 0 });
+						cur = []; curH = 0; budget = BODY_H;
+					}
 					if (curH + h > budget && cur.length > 0) {
 						pages.push({ blocks: cur, isFirst: pages.length === 0 });
 						cur = []; curH = 0; budget = BODY_H;
 					}
 					cur.push(blk); curH += h;
+					// After a full-page image, flush immediately so nothing shares the page
+					if (isFullPage && cur.length > 0) {
+						pages.push({ blocks: cur, isFirst: pages.length === 0 });
+						cur = []; curH = 0; budget = BODY_H;
+					}
 				}
 				if (cur.length) pages.push({ blocks: cur, isFirst: pages.length === 0 });
 				document.body.removeChild(measurer);
@@ -1372,6 +1469,58 @@
 	.chapter-rule   { border: none; border-top: ${activeBook.interiorDesign?.['--r-rule-border'] ?? `1.5pt solid ${accent}`}; width: ${activeBook.interiorDesign?.['--r-rule-width'] ?? ruleW}; margin-left: ${ruleML}; margin-right: ${ruleMR}; }
 	.illustration { margin: 16pt 0; text-align: center; }
 	.illustration img { max-width: 100%; max-height: 240pt; border-radius: 3pt; }
+	/* AI-generated realistic images rendered via markdown ![alt](url) */
+	figure {
+		margin: 16pt 0;
+		text-align: center;
+		page-break-inside: avoid;
+		break-inside: avoid;
+	}
+	figure img {
+		max-width: 100%;
+		max-height: 220pt;
+		width: auto;
+		height: auto;
+		border-radius: 3pt;
+		display: block;
+		margin: 0 auto;
+		object-fit: contain;
+	}
+	figcaption {
+		margin-top: 5pt;
+		font-size: 8.5pt;
+		font-style: italic;
+		color: #6A6055;
+		text-indent: 0;
+	}
+	/* Full-page image variant: fills the entire body area of a chapter page */
+	.diagram-box--image--fullpage {
+		width: 100%;
+		height: 100%;
+		display: flex;
+		flex-direction: column;
+		align-items: stretch;
+		margin: 0;
+		padding: 0;
+		page-break-inside: avoid;
+		break-inside: avoid;
+	}
+	.diagram-box--image--fullpage figure {
+		flex: 1;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		justify-content: center;
+		align-items: center;
+	}
+	.diagram-box--image--fullpage figure img {
+		max-width: 100%;
+		max-height: 680pt;
+		width: 100%;
+		height: auto;
+		object-fit: contain;
+	}
 	p { margin: 0 0 10pt; text-indent: 1.4em; hyphens: auto; }
 	p:first-of-type { text-indent: 0; }
 	.has-drop-cap p:first-of-type::first-letter {
@@ -2265,7 +2414,7 @@
 								<div class="book-page-card style-{coverStyle.toLowerCase().replace(/\s+/g, '-')}" style="font-size: {fontSize}px;">
 
 									<!-- Running header — top of page, suppressed on page 1 of the chapter -->
-									<header class="running-header" style={pageIdx === 0 ? "visibility: hidden;" : ""} aria-hidden="true">
+									<header class="running-header" style={pageIdx === 0 ? "display: none;" : ""} aria-hidden="true">
 										<span class="running-header__book">{activeBook.title}</span>
 										<span class="running-header__chapter">{getChapterLabel(chap, chapIdx)} — {chap.title}</span>
 									</header>
@@ -2403,7 +2552,9 @@
 									<BookOpen size={11} /> Chapter
 								{:else if editTarget.scope === 'add-page'}
 									<Sparkles size={11} /> Add Page
-								{:else if editTarget.scope === 'diagram' && editTarget.diagramKind === 'table'}
+								{:else if editTarget.scope === 'diagram' && editTarget.diagramKind === 'image'}
+									<Camera size={11} /> Image
+							{:else if editTarget.scope === 'diagram' && editTarget.diagramKind === 'table'}
 									<Wand2 size={11} /> Table
 								{:else if editTarget.scope === 'diagram' && editTarget.diagramKind === 'inline'}
 									<Wand2 size={11} /> Visual Block
@@ -2420,6 +2571,8 @@
 									? `Edit Chapter ${editTarget.chapterOrder}`
 									: editTarget.scope === 'add-page'
 									? `Add Page After Page ${(editTarget.pageIndex ?? 0) + 1}`
+									: editTarget.scope === 'diagram' && editTarget.diagramKind === 'image'
+									? `Edit Image`
 									: editTarget.scope === 'diagram' && editTarget.diagramKind === 'table'
 									? `Edit Table`
 									: editTarget.scope === 'diagram' && editTarget.diagramKind === 'inline'
@@ -2520,6 +2673,109 @@
 								</button>
 							</div>
 						{/if}
+
+						{#if editTarget.scope === 'diagram' && editTarget.diagramKind === 'image'}
+							<!-- ── Image Style Controls ─────────────────────────────────── -->
+							<div class="edit-drawer__image-style" role="group" aria-label="Image display style">
+								<p class="edit-drawer__label" style="margin-bottom:0.5rem;">Display &amp; Style</p>
+
+								<!-- Full-page toggle -->
+								<div class="image-style__row">
+									<span class="image-style__row-label">Full page</span>
+									<button
+										type="button"
+										class="image-style__toggle"
+										class:image-style__toggle--on={imageFullPage}
+										onclick={() => (imageFullPage = !imageFullPage)}
+										disabled={isEditing}
+										aria-pressed={imageFullPage}
+										title="Stretch image to fill the entire page"
+									>
+										{imageFullPage ? 'On' : 'Off'}
+									</button>
+								</div>
+
+								<!-- Border width -->
+								<div class="image-style__row">
+									<span class="image-style__row-label">Border width</span>
+									<div class="image-style__select-wrap">
+										<select
+											bind:value={imageBorderWidth}
+											disabled={isEditing}
+											aria-label="Border width"
+										>
+											<option value="0">None</option>
+											<option value="1">1 px</option>
+											<option value="2">2 px</option>
+											<option value="3">3 px</option>
+											<option value="4">4 px</option>
+											<option value="6">6 px</option>
+										</select>
+									</div>
+								</div>
+
+								{#if imageBorderWidth !== '0'}
+									<!-- Border style -->
+									<div class="image-style__row">
+										<span class="image-style__row-label">Border style</span>
+										<div class="image-style__select-wrap">
+											<select
+												bind:value={imageBorderStyle}
+												disabled={isEditing}
+												aria-label="Border style"
+											>
+												<option value="solid">Solid</option>
+												<option value="dashed">Dashed</option>
+												<option value="dotted">Dotted</option>
+												<option value="double">Double</option>
+											</select>
+										</div>
+									</div>
+
+									<!-- Border color -->
+									<div class="image-style__row">
+										<span class="image-style__row-label">Border color</span>
+										<div class="image-style__color-wrap">
+											<input
+												type="color"
+												bind:value={imageBorderColor}
+												disabled={isEditing}
+												aria-label="Border color"
+												class="image-style__color-input"
+											/>
+											<span class="image-style__color-hex">{imageBorderColor}</span>
+										</div>
+									</div>
+								{/if}
+
+								<!-- Corner radius -->
+								<div class="image-style__row">
+									<span class="image-style__row-label">Corner radius</span>
+									<div class="image-style__select-wrap">
+										<select
+											bind:value={imageBorderRadius}
+											disabled={isEditing}
+											aria-label="Corner radius"
+										>
+											<option value="0">Square</option>
+											<option value="4">4 px</option>
+											<option value="6">6 px (default)</option>
+											<option value="12">12 px</option>
+											<option value="20">20 px</option>
+											<option value="9999">Pill</option>
+										</select>
+									</div>
+								</div>
+
+								<button
+									class="image-style__apply-btn"
+									onclick={applyImageStyle}
+									disabled={isEditing}
+								>
+									<Check size={13} /> Apply Style
+								</button>
+							</div>
+						{/if}
 					</div>
 
 					<!-- Footer -->
@@ -2532,6 +2788,8 @@
 								<Check size={14} />
 								{editTarget.scope === 'illustration' || (editTarget.scope === 'diagram' && useRealisticIllustration)
 									? 'New image generated.'
+									: editTarget.scope === 'diagram' && editTarget.diagramKind === 'image'
+									? 'Image style applied.'
 									: editTarget.scope === 'diagram' && editTarget.diagramKind === 'table'
 									? 'Table updated.'
 									: editTarget.scope === 'diagram' && editTarget.diagramKind === 'inline'
@@ -2578,6 +2836,8 @@
 								title={
 									editTarget.scope === 'illustration'
 										? 'Generate a completely new illustration from scratch'
+										: editTarget.scope === 'diagram' && editTarget.diagramKind === 'image'
+										? 'Generate a brand-new version of this image from scratch'
 										: editTarget.scope === 'diagram' && useRealisticIllustration
 										? 'Generate a brand-new realistic image from scratch, replacing this element'
 										: editTarget.scope === 'diagram' && editTarget.diagramKind === 'table'
@@ -3118,15 +3378,28 @@
 	}
 
 	.chapter-header {
-		margin-top: var(--r-chap-header-pad, 0.2in);
+		/* ── Full-bleed break-out ───────────────────────────────────────────────
+		 * The book-page-card has 1.5in left / 1.25in right printed margins.
+		 * Negative margins pull this stripe to the physical card edge;
+		 * the matching inner padding restores the visual text indent.
+		 * Industry-standard technique ("bleed" in book / magazine typesetting).
+		 * ──────────────────────────────────────────────────────────────────────── */
+		margin-left:  -1.5in;
+		margin-right: -1.25in;
+		padding-left:  1.5in;
+		padding-right: 1.25in;
+
+		margin-top: var(--r-chap-header-pad, 0.5rem);
 		margin-bottom: var(--r-chap-header-mb, 1.5rem);
+
 		display: flex;
 		flex-direction: column;
 		align-items: var(--r-header-align, var(--header-flex-align, center));
 		background: var(--r-chap-header-bg, transparent);
 		border-left: var(--r-chap-header-bd-left, none);
 		border-top: var(--r-chap-header-bd-top, none);
-		padding: var(--r-chap-header-pd, 0);
+		padding-top:    var(--r-chap-header-pd-v, 0.9rem);
+		padding-bottom: var(--r-chap-header-pd-v, 0.9rem);
 	}
 
 	.chapter-label {
@@ -3607,6 +3880,40 @@
 		position: relative;
 	}
 
+	/* ── Image block variants ── */
+	.chapter-body :global(.diagram-box--image) {
+		overflow: hidden;
+	}
+
+	.chapter-body :global(.diagram-box--image figure) {
+		margin: 0;
+	}
+
+	/* Full-page: image expands to fill the reader page block */
+	.chapter-body :global(.diagram-box--image--fullpage) {
+		width: 100%;
+		min-height: 600px;
+		display: flex;
+		flex-direction: column;
+		align-items: stretch;
+	}
+
+	.chapter-body :global(.diagram-box--image--fullpage figure) {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		justify-content: center;
+		align-items: center;
+		margin: 0;
+	}
+
+	.chapter-body :global(.diagram-box--image--fullpage figure img) {
+		width: 100%;
+		max-height: 700px;
+		height: auto;
+		object-fit: contain;
+	}
+
 	/* ── Inline visual element edit trigger (callout-box, stat-block, etc.) ── */
 	/* The button is injected as the first child of the element's root div.     */
 	.chapter-body :global(.callout-box),
@@ -3721,6 +4028,7 @@
 	.edit-drawer__scope-badge--diagram--fence  { background: #FFF7ED; color: #92400E; }
 	.edit-drawer__scope-badge--diagram--table  { background: #EFF6FF; color: #1D4ED8; }
 	.edit-drawer__scope-badge--diagram--inline { background: #FAF5FF; color: #7E22CE; }
+	.edit-drawer__scope-badge--diagram--image  { background: #F0FDF4; color: #0E7490; }
 
 	.edit-drawer__title {
 		font-size: 1rem;
@@ -3913,6 +4221,111 @@
 		opacity: 0.5;
 		cursor: not-allowed;
 	}
+
+	/* ── Image Style Controls ── */
+	.edit-drawer__image-style {
+		margin-top: 1rem;
+		padding: 0.85rem 1rem;
+		background: var(--bg-subtle, #F5F1EB);
+		border: 1px solid var(--border, #E5DFD3);
+		border-radius: 8px;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.image-style__row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem;
+	}
+
+	.image-style__row-label {
+		font-size: 0.78rem;
+		color: var(--text-muted, #6E6860);
+		font-weight: 500;
+		flex-shrink: 0;
+	}
+
+	.image-style__select-wrap select {
+		font-size: 0.78rem;
+		padding: 0.3rem 0.5rem;
+		border: 1px solid var(--border, #E5DFD3);
+		border-radius: 4px;
+		background: var(--surface, #FFFFFF);
+		color: var(--text-primary, #1A1612);
+		cursor: pointer;
+	}
+
+	.image-style__color-wrap {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+
+	.image-style__color-input {
+		width: 28px;
+		height: 28px;
+		border: 1px solid var(--border, #E5DFD3);
+		border-radius: 4px;
+		padding: 2px;
+		cursor: pointer;
+		background: none;
+	}
+
+	.image-style__color-hex {
+		font-size: 0.73rem;
+		font-family: monospace;
+		color: var(--text-muted, #6E6860);
+	}
+
+	.image-style__toggle {
+		font-size: 0.75rem;
+		font-weight: 600;
+		padding: 0.25rem 0.65rem;
+		border-radius: 4px;
+		border: 1px solid var(--border, #E5DFD3);
+		background: var(--surface, #FFFFFF);
+		color: var(--text-muted, #6E6860);
+		cursor: pointer;
+		transition: background 0.15s, color 0.15s;
+		min-width: 42px;
+	}
+
+	.image-style__toggle--on {
+		background: var(--accent, #8E7453);
+		color: #FFFFFF;
+		border-color: var(--accent, #8E7453);
+	}
+
+	.image-style__toggle:disabled,
+	.image-style__select-wrap select:disabled,
+	.image-style__color-input:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.image-style__apply-btn {
+		margin-top: 0.25rem;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.35rem;
+		padding: 0.45rem 1rem;
+		font-size: 0.78rem;
+		font-weight: 600;
+		border-radius: 5px;
+		border: none;
+		background: var(--accent, #8E7453);
+		color: #FFFFFF;
+		cursor: pointer;
+		transition: opacity 0.15s;
+		width: 100%;
+	}
+
+	.image-style__apply-btn:hover:not(:disabled) { opacity: 0.88; }
+	.image-style__apply-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 	/* ── Footer ── */
 	.edit-drawer__footer {
