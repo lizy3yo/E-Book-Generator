@@ -496,9 +496,21 @@
 
 		let illustUrl: string | null = null;
 		try {
+			// House style — match the editorial diagram plates: warm cream field,
+			// deep navy subject, amber accents. Honour the book's ultra-realistic
+			// flag the same way the cover and the reader's edit drawer do.
+			const ultraRealistic = book.useUltraRealistic || book.coverSettings?.useUltraRealistic;
+			const styleClause = ultraRealistic
+				? 'Ultra-realistic reference photograph, documentary product photography, sharp focus, ' +
+				  'natural directional lighting, shallow depth of field, 8k, highly detailed. ' +
+				  'Neutral warm cream backdrop, deep navy and amber colour accents. No text, no labels, no watermarks.'
+				: 'High-quality editorial illustration, clean flat vector style with subtle depth. ' +
+				  'Warm cream background (#FAF5EA), deep navy linework (#0F2231), amber accents (#E07B20). ' +
+				  'Restrained sophisticated palette. No text, no labels, no watermarks.';
+
 			const illustPrompt = chap.summary
-				? `High-quality editorial illustration for a chapter titled "${chap.title}". Topic: ${chap.summary}. From the book "${book.title}" (${book.genre}). Minimal flat vector style, cream background, sophisticated palette.`
-				: `Minimalist editorial illustration for chapter: "${chap.title}". Cream background, vector style.`;
+				? `${styleClause} Subject: a clear, instructive visual for a chapter titled "${chap.title}". Topic: ${chap.summary}. From the book "${book.title}" (${book.genre}).`
+				: `${styleClause} Subject: a clear, instructive visual for a chapter titled "${chap.title}". From the book "${book.title}" (${book.genre}).`;
 			illustUrl = await generateImage({
 				prompt:      illustPrompt,
 				apiKey:      keys.imageKey,

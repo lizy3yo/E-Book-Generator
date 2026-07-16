@@ -2,7 +2,6 @@
 	import { onMount, tick } from 'svelte';
 	import { globalState } from '$lib/state.svelte';
 	import type { Chapter } from '$lib/types';
-	import { parseMarkdown } from '$lib/diagrams';
 	import { INTERIOR_PRESETS } from '$lib/interiorDesigns';
 	import {
 		BookMarked, FileDown,
@@ -10,6 +9,10 @@
 		RefreshCcw
 	} from '@lucide/svelte';
 	import type { EditTarget, PageSlice } from '$lib/reader/types';
+	import {
+		paginateChapters,
+		calculateOverallPageNumber as calcOverallPageNumber
+	} from '$lib/reader/pagination';
 	import { getDiagramBlockRaw, spliceVisualBlock, getChapterLabel, htmlToPlainText, isLightColor } from '$lib/reader/utils';
 	import { buildFullHtml, getAsDataUrl } from '$lib/reader/exportHtml';
 	import EditDrawer from '$lib/components/reader/EditDrawer.svelte';
@@ -576,81 +579,28 @@
 	// Value: array of pages; each page is { blocks: string[], startIdx: number, endIdx: number }
 	let paginatedChapters = $state<Record<string, PageSlice[]>>({});
 
-	function splitHtmlIntoBlocks(html: string): string[] {
-		if (typeof document === 'undefined') return [html];
-		const temp = document.createElement('div');
-		temp.innerHTML = html;
-		return Array.from(temp.children).map(child => child.outerHTML);
-	}
-
+	/**
+	 * Thin wrapper so the markup can keep calling this with (chapIdx, pageIdx);
+	 * the shared implementation takes the book state explicitly rather than
+	 * closing over it, which is what makes it testable outside this component.
+	 */
 	function calculateOverallPageNumber(chapIdx: number, pageIdx: number): number {
 		if (!activeBook) return 1;
-		let total = 0;
-		for (let i = 0; i < chapIdx; i++) {
-			const chap = activeBook.chapters[i];
-			const pages = paginatedChapters[chap.id];
-			total += pages ? pages.length : 1;
-		}
-		return total + pageIdx + 1;
+		return calcOverallPageNumber(activeBook.chapters, paginatedChapters, chapIdx, pageIdx);
 	}
 
+	/**
+	 * Repaginate the whole book. The implementation lives in
+	 * $lib/reader/pagination so it is importable and testable — an inline copy
+	 * here previously drifted from the shared module and silently ignored a fix
+	 * applied to it. EditDrawer takes this as a prop to repaginate after edits.
+	 */
 	function paginateAllChapters() {
 		if (!activeBook) return;
-
-		const measureDiv = document.createElement('div');
-		measureDiv.style.position = 'absolute';
-		measureDiv.style.visibility = 'hidden';
-		measureDiv.style.width = 'calc(8.5in - 2.75in)';
-		measureDiv.style.fontSize = `${fontSize}px`;
-		measureDiv.style.lineHeight = '1.85';
-		measureDiv.style.fontFamily = designBodyFont;
-		measureDiv.className = 'chapter-body';
-		document.body.appendChild(measureDiv);
-
-		const maxPageHeight = 700;
-		const newPaginated: Record<string, PageSlice[]> = {};
-
-		for (const chap of activeBook.chapters) {
-			if (chap.status !== 'completed' || !chap.content) {
-				newPaginated[chap.id] = [{ blocks: ['<p>This chapter has not been written yet.</p>'], startIdx: 0, endIdx: 1 }];
-				continue;
-			}
-
-			const fullHtml = parseMarkdown(chap.content, chap.id);
-			const blocks = splitHtmlIntoBlocks(fullHtml);
-			const pages: PageSlice[] = [];
-			let currentBlocks: string[] = [];
-			let currentHeight = 0;
-			let currentStartIdx = 0;
-
-			const hasIllustration = !!chap.illustrationUrl;
-			currentHeight += hasIllustration ? 440 : 160;
-
-			for (let blockIdx = 0; blockIdx < blocks.length; blockIdx++) {
-				const block = blocks[blockIdx];
-				measureDiv.innerHTML = block;
-				const blockHeight = measureDiv.offsetHeight + 24;
-
-				if (currentHeight + blockHeight > maxPageHeight && currentBlocks.length > 0) {
-					pages.push({ blocks: currentBlocks, startIdx: currentStartIdx, endIdx: blockIdx });
-					currentBlocks = [block];
-					currentHeight = blockHeight;
-					currentStartIdx = blockIdx;
-				} else {
-					currentBlocks.push(block);
-					currentHeight += blockHeight;
-				}
-			}
-
-			if (currentBlocks.length > 0) {
-				pages.push({ blocks: currentBlocks, startIdx: currentStartIdx, endIdx: blocks.length });
-			}
-
-			newPaginated[chap.id] = pages;
-		}
-
-		document.body.removeChild(measureDiv);
-		paginatedChapters = newPaginated;
+		paginatedChapters = paginateChapters(activeBook.chapters, fontSize, designBodyFont, {
+			title: activeBook.title,
+			author: activeBook.author ?? ''
+		});
 	}
 
 	$effect(() => {
@@ -820,6 +770,13 @@
 			{#each activeBook.chapters as chap, chapIdx}
 				{@const chapPages = paginatedChapters[chap.id] || [{ blocks: ['<p>Loading…</p>'], startIdx: 0, endIdx: 1 }]}
 				{#each chapPages as pageSlice, pageIdx}
+					<!-- A page holding nothing but a full-page plate bleeds to the sheet
+					     edge: no printed margins, no running header or footer — the plate
+					     is the page. Never on a chapter's first page, which still has to
+					     carry the chapter title and illustration. -->
+					{@const isPlatePage = pageIdx > 0
+						&& pageSlice.blocks.length === 1
+						&& pageSlice.blocks[0].includes('--fullpage')}
 					<section
 						data-section-id="{chapIdx}-{pageIdx}"
 						use:registerSection={pageIdx === 0 ? chapIdx : `${chapIdx}-${pageIdx}`}
@@ -829,13 +786,19 @@
 						<div class="book-page-wrap">
 
 							<!-- US Letter sheet: 8.5 × 11 in — header, body, and footer all live inside -->
-							<div class="book-page-card style-{coverStyle.toLowerCase().replace(/\s+/g, '-')}" style="font-size: {fontSize}px;">
+							<div
+								class="book-page-card style-{coverStyle.toLowerCase().replace(/\s+/g, '-')}"
+								class:book-page-card--bleed={isPlatePage}
+								style="font-size: {fontSize}px;"
+							>
 
 								<!-- Running header — top of page, suppressed on page 1 of the chapter -->
-								<header class="running-header" style={pageIdx === 0 ? "display: none;" : ""} aria-hidden="true">
-									<span class="running-header__book">{activeBook.title}</span>
-									<span class="running-header__chapter">{_getChapterLabel(chap, chapIdx)} — {chap.title}</span>
-								</header>
+								{#if !isPlatePage}
+									<header class="running-header" style={pageIdx === 0 ? "display: none;" : ""} aria-hidden="true">
+										<span class="running-header__book">{activeBook.title}</span>
+										<span class="running-header__chapter">{_getChapterLabel(chap, chapIdx)} — {chap.title}</span>
+									</header>
+								{/if}
 
 								<!-- Body content area — scrolls between header and footer -->
 								<div class="page-body">
@@ -850,7 +813,10 @@
 									{/if}
 
 									{#if pageIdx === 0 && chap.illustrationUrl}
-										<!-- Illustration with its own edit trigger -->
+										<!-- Illustration with its own edit trigger. Deliberately NOT
+										     framed as a plate: the chapter opener sits under the
+										     chapter header, which already names the chapter. Plate
+										     chrome is for images inside the chapter content. -->
 										<div class="chapter-illust">
 											<img src={chap.illustrationUrl} alt="Illustration – {chap.title}" />
 											<button
@@ -884,7 +850,10 @@
 
 								</div>
 
-								<!-- Running footer — page number + contextual edit actions -->
+								<!-- Running footer — page number + contextual edit actions.
+								     Suppressed on a bleed plate page; the plate carries its
+								     own Edit button in .diagram-box__actions. -->
+								{#if !isPlatePage}
 								<footer class="page-footer" aria-label="Page {calculateOverallPageNumber(chapIdx, pageIdx)}">
 									<span class="page-footer__rule"></span>
 									<span class="page-footer__num">{calculateOverallPageNumber(chapIdx, pageIdx)}</span>
@@ -931,6 +900,7 @@
 										{/if}
 									</div>
 								</footer>
+								{/if}
 
 							</div>
 
@@ -1733,28 +1703,136 @@
 	}
 
 	/* ── Diagram and Flowchart Layouts ──────────────────────────────────────── */
+	/* ── Editorial diagram plate ──────────────────────────────────────────
+	   Navy header bar + amber rule + cream field. Padding lives on the
+	   header and body so the bar runs full-bleed to the plate's edges. */
 	.chapter-body :global(.diagram-box) {
-		background-color: var(--r-diagram-bg, #f8fafc);
-		border: 1.5px solid var(--r-border, #e2e8f0);
-		border-radius: 6px;
-		padding: 1.5rem;
+		background-color: var(--r-diagram-bg, #FAF5EA);
+		border: 1px solid var(--r-border, rgba(15, 34, 49, 0.15));
+		border-radius: 8px;
+		padding: 0;
 		margin: 2.5rem 0;
 		text-align: center;
-		box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+		overflow: hidden;
+		box-shadow: 0 1px 3px rgba(15, 34, 49, 0.08);
+	}
+	.chapter-body :global(.diagram-box__header) {
+		background-color: var(--r-diagram-header-bg, #0F2231);
+		border-bottom: 5px solid var(--r-accent, #E07B20);
+		padding: 0.9rem 1.25rem;
+		text-align: left;
 	}
 	.chapter-body :global(.diagram-box__title) {
 		font-family: var(--r-title-font, var(--font-serif));
-		font-size: 1.25rem;
-		font-weight: 600;
-		color: var(--r-title-color, var(--chapter-title-color, #0f172a));
-		margin-bottom: 0.25rem;
+		font-size: 2rem;
+		font-weight: 700;
+		color: var(--r-diagram-header-color, #FFFFFF);
+		line-height: 1.25;
+		margin: 0;
 	}
 	.chapter-body :global(.diagram-box__subtitle) {
-		font-size: 0.8rem;
-		color: var(--r-muted, #64748b);
-		margin-bottom: 1.5rem;
-		text-transform: uppercase;
-		letter-spacing: 1px;
+		font-size: 1.1rem;
+		font-weight: 400;
+		color: var(--r-diagram-header-muted, rgba(255, 255, 255, 0.72));
+		letter-spacing: 0.2px;
+		margin: 0.2rem 0 0;
+	}
+	/* Footer band: book title left, author right. A bleed page suppresses the
+	   running footer, so this is what keeps the book on the page. */
+	.chapter-body :global(.diagram-box__footer) {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		gap: 1rem;
+		flex-shrink: 0;
+		padding: 0.55rem 1.25rem 0.7rem;
+		border-top: 1px solid rgba(15, 34, 49, 0.18);
+		font-size: 0.72rem;
+		color: rgba(15, 34, 49, 0.65);
+		text-align: left;
+	}
+	.chapter-body :global(.diagram-box__footer-book) {
+		font-style: italic;
+	}
+	.chapter-body :global(.diagram-box__footer-author) {
+		font-family: var(--r-title-font, var(--font-serif));
+		color: var(--r-accent, #E07B20);
+		white-space: nowrap;
+	}
+	.chapter-body :global(.diagram-box__body) {
+		display: flex;
+		justify-content: center;
+		width: 100%;
+		box-sizing: border-box;
+		padding: 1.5rem 1.25rem;
+	}
+	/* Scales a tall diagram down to fit its page instead of clipping it.
+	   504px mirrors DIAGRAM_SVG_MAX_H in exportHtml.ts (page body 736, minus
+	   80 box margins, 80 header bar, 48 body padding, 24 slack) so the reader
+	   previews what the exported PDF actually produces. */
+	.chapter-body :global(.diagram-svg) {
+		width: 100%;
+		height: auto;
+		max-height: 504px;
+	}
+
+	/* Full-page diagram plate: owns the page, header bar down to the footer.
+	   700px is PAGE_BUDGET_PX from pagination.ts — the paginator charges a
+	   full-page plate the entire budget, so the plate has to actually fill it
+	   or the page shows dead space. margin:0 because it owns the page rather
+	   than sitting in prose. */
+	.chapter-body :global(.diagram-box--fullpage) {
+		min-height: 700px;
+		margin: 0;
+		display: flex;
+		flex-direction: column;
+	}
+	.chapter-body :global(.diagram-box--fullpage .diagram-box__header) {
+		flex-shrink: 0;
+	}
+	/* min-height:0 lets this flex child shrink, so the SVG's max-height is
+	   what binds rather than the content forcing overflow. */
+	.chapter-body :global(.diagram-box--fullpage .diagram-box__body) {
+		flex: 1;
+		min-height: 0;
+		align-items: center;
+	}
+	/* Caps against the flexed body rather than a pixel value mirrored from
+	   the export — the reader's page budget (700) and the export's (736)
+	   differ, so a shared constant here would be wrong for one of them. */
+	.chapter-body :global(.diagram-box--fullpage .diagram-svg) {
+		max-width: 100%;
+		max-height: 100%;
+	}
+
+	/* ── Bleed plate page ──────────────────────────────────────────────────
+	 * The plate IS the sheet: printed margins dropped so the navy bar meets
+	 * the physical page edge. Running header and footer aren't rendered on
+	 * these pages (see the isPlatePage branch in the markup), so page-body
+	 * is the card's only child and can take the full height. */
+	.book-page-card--bleed {
+		/* This is the green frame in devtools: the card's printed margins
+		   (1in / 1.25in / 1.5in). Dropping them is what lets the plate reach
+		   the sheet edge. overflow:hidden clips the plate's square corners to
+		   the card's 2px radius so they don't poke past the paper edge. */
+		padding: 0;
+		overflow: hidden;
+	}
+	.book-page-card--bleed .page-body {
+		height: 100%;
+	}
+	.book-page-card--bleed :global(.chapter-body) {
+		height: 100%;
+	}
+	/* Square off the plate — a radius or border would reveal the sheet
+	   underneath and break the bleed. min-height:0 releases the 700px
+	   in-flow floor so height:100% is what binds here. */
+	.book-page-card--bleed :global(.diagram-box--fullpage) {
+		height: 100%;
+		min-height: 0;
+		margin: 0;
+		border: 0;
+		border-radius: 0;
 	}
 	.chapter-body :global(.diagram-box--table) {
 		background: transparent;
@@ -1983,13 +2061,22 @@
 		margin: 0;
 	}
 
-	/* Full-page: image expands to fill the reader page block */
+	/* Full-page plate: navy header bar (from .diagram-box__header) sits above
+	   an image that fills the remaining cream field for the whole page block. */
 	.chapter-body :global(.diagram-box--image--fullpage) {
 		width: 100%;
 		min-height: 600px;
 		display: flex;
 		flex-direction: column;
 		align-items: stretch;
+	}
+
+	/* The bar keeps its intrinsic height; only the figure flexes. */
+	/* Bar and footer keep their intrinsic height; only the figure flexes.
+	   Without this the flexing figure squeezes the footer to nothing. */
+	.chapter-body :global(.diagram-box--image--fullpage .diagram-box__header),
+	.chapter-body :global(.diagram-box--image--fullpage .diagram-box__footer) {
+		flex-shrink: 0;
 	}
 
 	.chapter-body :global(.diagram-box--image--fullpage figure) {
@@ -1999,13 +2086,57 @@
 		justify-content: center;
 		align-items: center;
 		margin: 0;
+		padding: 1.25rem;
+		box-sizing: border-box;
 	}
 
+	/* width:auto (not 100%) so the box shrinks to the picture's aspect ratio.
+	   Pinning width:100% while max-height binds leaves a full-width box with a
+	   contain-scaled picture inside it — the leftover gutters showed as white
+	   strips, and the navy frame hugged the box rather than the photo. */
 	.chapter-body :global(.diagram-box--image--fullpage figure img) {
-		width: 100%;
+		max-width: 100%;
 		max-height: 700px;
+		width: auto;
 		height: auto;
-		object-fit: contain;
+	}
+
+	/* Photo matte — the image is mounted in a white frame on the cream field,
+	   the way a plate is mounted in a printed manual. Applies to the CSS-driven
+	   image paths only; the edit drawer writes its own inline border/radius so
+	   the reader can set those per-image. */
+	.chapter-body :global(.diagram-box--image figure img),
+	.chapter-body :global(.diagram-box--plate figure img) {
+		border: 2px solid var(--r-diagram-header-bg, #0F2231);
+		border-radius: 8px;
+		box-shadow: 0 2px 8px rgba(15, 34, 49, 0.14);
+		box-sizing: border-box;
+	}
+
+	/* Takeaway box closing a plate — white card, amber spine, cream field. */
+	.chapter-body :global(.plate-takeaway) {
+		flex-shrink: 0;
+		margin: 0 1.25rem 1.25rem;
+		padding: 0.75rem 1rem;
+		background-color: #FFFFFF;
+		border: 1px solid rgba(15, 34, 49, 0.15);
+		border-left: 4px solid var(--r-accent, #E07B20);
+		border-radius: 5px;
+		text-align: left;
+	}
+	.chapter-body :global(.plate-takeaway__title) {
+		font-family: var(--r-title-font, var(--font-serif));
+		font-size: 0.9rem;
+		font-weight: 700;
+		color: var(--r-title-color, #0F2231);
+		margin-bottom: 0.2rem;
+	}
+	.chapter-body :global(.plate-takeaway__body) {
+		font-size: 0.82rem;
+		line-height: 1.5;
+		color: var(--r-text, #1a1612);
+		margin: 0;
+		text-indent: 0;
 	}
 
 	/* ── Inline visual element edit trigger (callout-box, stat-block, etc.) ── */

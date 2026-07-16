@@ -104,11 +104,26 @@
 		const newTableRaw = encodeURIComponent(raw);
 		const editBtn = `<button class="edit-trigger edit-trigger--diagram edit-trigger--inline" data-chapter-id="${editTarget.chapterId}" data-table-index="${editTarget.diagramIndex ?? 0}" data-table-raw="${newTableRaw}" title="Regenerate or edit this image" aria-label="Edit image"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pen-line"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg> Edit</button>`;
 
+		// diagram-box--fullpage is the canonical "owns its page" hook that the
+		// page-filling CSS keys on; --image--fullpage only drives the figure/img
+		// layout. Carrying just the latter wins a bleed page without the styles
+		// that fill it, so both are required here.
 		const wrapperClass = imageFullPage
-			? 'diagram-box diagram-box--image diagram-box--image--fullpage'
+			? 'diagram-box diagram-box--image diagram-box--image--fullpage diagram-box--fullpage'
 			: 'diagram-box diagram-box--image';
 
-		const newHtml = `<div class="${wrapperClass}"><div class="diagram-box__actions">${editBtn}</div><figure style="${figStyle}"><img src="${url}" alt="${alt}" loading="lazy" style="${imgStyle}" />${caption}</figure></div>`;
+		// Every image in the chapter content is framed as a plate: the alt text
+		// is promoted into the navy header bar. This is NOT gated on
+		// imageFullPage — an inline image is still a plate and still carries the
+		// bar; full-page only decides whether it gets a page to itself.
+		// The figcaption would just restate the bar, so it only appears when
+		// there is no alt to title the plate with.
+		const header = alt
+			? `<div class="diagram-box__header"><div class="diagram-box__title">${alt}</div></div>`
+			: '';
+		const figCaption = alt ? '' : caption;
+
+		const newHtml = `<div class="${wrapperClass}"><div class="diagram-box__actions">${editBtn}</div>${header}<figure style="${figStyle}"><img src="${url}" alt="${alt}" loading="lazy" style="${imgStyle}" />${figCaption}</figure></div>`;
 
 		const updatedContent = spliceVisualBlock(
 			editTarget.chapterContent,

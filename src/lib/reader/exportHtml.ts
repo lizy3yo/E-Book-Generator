@@ -110,6 +110,27 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 			const BODY_H = PAGE_H_PX - PAD_TOP - PAD_BOTTOM - HDR_H - FTR_H - 48; // Subtract 48px for .chapter-content padding-top (0.5in)
 			const BODY_W = PAGE_W_PX - PAD_LEFT - PAD_RIGHT;
 
+			// A diagram SVG carries a viewBox, so it scales to whatever box it is
+			// given. Cap it at what remains of the page body once the plate's own
+			// chrome is paid for, otherwise a tall diagram (a 10-step flowchart
+			// computes to ~880px) overflows the page and gets clipped mid-node.
+			const DIAGRAM_BOX_MARGIN_H = 80; // .diagram-box margin: 2.5rem 0
+			const DIAGRAM_HEADER_H     = 100; // navy bar: 29 padding + 40 title (2rem) + 25 subtitle (1.1rem) + 5 rule
+			const DIAGRAM_FOOTER_H     = 40; // footer band: 19 padding + 17 text + 2 rule
+			const DIAGRAM_BODY_PAD_H   = 48; // .diagram-box__body padding: 1.5rem
+			const DIAGRAM_SLACK_H      = 24; // headroom for a title that wraps to two lines
+			// Every one of these is subtracted from the SVG's ceiling, so growing
+			// the title or adding the footer band without growing these constants
+			// would push the plate back off the page.
+			const DIAGRAM_CHROME_H =
+				DIAGRAM_HEADER_H + DIAGRAM_FOOTER_H + DIAGRAM_BODY_PAD_H + DIAGRAM_SLACK_H;
+
+			const DIAGRAM_SVG_MAX_H = BODY_H - DIAGRAM_BOX_MARGIN_H - DIAGRAM_CHROME_H;
+
+			// A full-page plate owns the page: no box margins to pay for, so the
+			// SVG gets everything left after the plate's own chrome.
+			const DIAGRAM_FULLPAGE_SVG_MAX_H = BODY_H - DIAGRAM_CHROME_H;
+
 			let chapHtml = '';
 			let pageCounter = 1;
 
@@ -215,27 +236,62 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 					line-height: 1.6;
 					color: #1a1612;
 				}
+				/* Must stay identical to the .diagram-box rules in the export
+				   stylesheet below, or measured height diverges from rendered
+				   height and pagination drifts. */
 				.pdf-measurer-container .diagram-box {
-					background-color: #f8fafc;
-					border: 1.5px solid #e2e8f0;
-					border-radius: 6px;
-					padding: 1.5rem;
+					background-color: #FAF5EA;
+					border: 1px solid rgba(15, 34, 49, 0.15);
+					border-radius: 8px;
+					padding: 0;
 					margin: 2.5rem 0;
 					text-align: center;
+					overflow: hidden;
+				}
+				.pdf-measurer-container .diagram-box__header {
+					background-color: #0F2231;
+					border-bottom: 5px solid #E07B20;
+					padding: 0.9rem 1.25rem;
+					text-align: left;
 				}
 				.pdf-measurer-container .diagram-box__title {
 					font-family: ${titleFontCss};
-					font-size: 1.25rem;
-					font-weight: 600;
-					color: ${titleColor};
-					margin-bottom: 0.25rem;
+					font-size: 2rem;
+					font-weight: 700;
+					color: #FFFFFF;
+					line-height: 1.25;
+					margin: 0;
 				}
 				.pdf-measurer-container .diagram-box__subtitle {
-					font-size: 0.8rem;
-					color: #64748b;
-					margin-bottom: 1.5rem;
-					text-transform: uppercase;
-					letter-spacing: 1px;
+					font-size: 1.1rem;
+					font-weight: 400;
+					color: rgba(255, 255, 255, 0.72);
+					letter-spacing: 0.2px;
+					margin: 0.2rem 0 0;
+				}
+				.pdf-measurer-container .diagram-box__footer {
+					display: flex;
+					justify-content: space-between;
+					align-items: baseline;
+					gap: 1rem;
+					padding: 8pt 1.25rem 10pt;
+					border-top: 1px solid rgba(15, 34, 49, 0.18);
+					font-size: 8.5pt;
+				}
+				.pdf-measurer-container .diagram-box__body {
+					display: flex;
+					justify-content: center;
+					width: 100%;
+					box-sizing: border-box;
+					padding: 1.5rem 1.25rem;
+				}
+				/* The measurer MUST carry this clamp too — without it the block
+				   measures at its unclamped height and pagination reserves a page
+				   budget the rendered plate never uses. */
+				.pdf-measurer-container .diagram-svg {
+					width: 100%;
+					height: auto;
+					max-height: ${DIAGRAM_SVG_MAX_H}px;
 				}
 				.pdf-measurer-container .diagram-flow {
 					display: flex;
@@ -297,13 +353,19 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 						}
 					);
 				}
-				const fullMd   = parseMarkdown(contentForPdf, c.id);
+				const fullMd   = parseMarkdown(contentForPdf, c.id, {
+					title:  activeBook.title,
+					author: activeBook.author ?? ''
+				});
 				const rawIllust = c.illustrationUrl || '';
 				// Use base64 only — never embed a raw HTTP URL in the iframe HTML.
 				// A cross-origin <img> causes html2canvas to stall indefinitely.
 				const mappedIllust = rawIllust && Object.prototype.hasOwnProperty.call(dataUrls, rawIllust)
 					? dataUrls[rawIllust]  // base64 or '' if fetch failed
 					: '';                  // not attempted — omit rather than risk CORS hang
+				// Deliberately NOT framed as a plate: the chapter opener sits under
+				// the chapter header, which already names the chapter. Plate chrome
+				// is for images inside the chapter content.
 				const illustHtml = mappedIllust
 					? `<div class="illustration"><img src="${mappedIllust}" alt="${c.title}" /></div>`
 					: '';
@@ -332,13 +394,18 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 					// Substitute a realistic fixed height so the page-budget math
 					// reserves enough space and doesn't overflow the page.
 					const hasFigure = measurer.querySelector('figure') !== null;
-					const isFullPage = hasFigure && blk.includes('diagram-box--image--fullpage');
+					// Any plate carrying a --fullpage class takes a whole page:
+					// diagram-box--fullpage (diagrams, whose body is an <svg>) and
+					// diagram-box--image--fullpage (image plates, a <figure>).
+					// This must NOT be gated on hasFigure — a diagram has no
+					// <figure>, so that gate silently denied diagrams a full page.
+					const isFullPage = blk.includes('--fullpage');
 					const h = isFullPage
-						? BODY_H          // full-page images consume the entire page budget
+						? BODY_H          // full-page plates consume the entire page budget
 						: hasFigure
 						? 260 + 24        // 220pt max-height + caption + margins
 						: measurer.offsetHeight + 24;
-					// Full-page images always start on their own page
+					// Full-page plates always start on their own page
 					if (isFullPage && cur.length > 0) {
 						pages.push({ blocks: cur, isFirst: pages.length === 0 });
 						cur = []; curH = 0; budget = BODY_H;
@@ -358,6 +425,22 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 				document.body.removeChild(measurer);
 
 				pages.forEach(({ blocks: pBlocks, isFirst }) => {
+					// A page holding nothing but a full-page plate bleeds to the sheet
+					// edge: no printed margins, no running header or footer — the plate
+					// is the page. Never on a chapter's first page, which still has to
+					// carry the chapter title and illustration.
+					const isPlatePage = !isFirst
+						&& pBlocks.length === 1
+						&& pBlocks[0].includes('--fullpage');
+					if (isPlatePage) {
+						pageCounter++;
+						chapHtml += `
+							<section class="chapter-section chapter-section--bleed ${coverStyleClass}">
+								${pBlocks[0]}
+							</section>`;
+						return;
+					}
+
 					const chapHeader = isFirst ? `
 						<div class="chapter-header">
 							<span class="chapter-label">${getChapterLabel(c, idx)}</span>
@@ -534,7 +617,9 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 		color: #6A6055;
 		text-indent: 0;
 	}
-	/* Full-page image variant: fills the entire body area of a chapter page */
+	/* Full-page plate: navy header bar (from .diagram-box__header) above an
+	   image filling the rest of the chapter page's body area. Pagination
+	   assigns these the full BODY_H budget rather than measuring them. */
 	.diagram-box--image--fullpage {
 		width: 100%;
 		height: 100%;
@@ -542,25 +627,72 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 		flex-direction: column;
 		align-items: stretch;
 		margin: 0;
-		padding: 0;
 		page-break-inside: avoid;
 		break-inside: avoid;
+	}
+	/* The bar keeps its intrinsic height; only the figure flexes. */
+	/* Bar and footer keep their intrinsic height; only the figure flexes.
+	   Without this the flexing figure squeezes the footer to nothing. */
+	.diagram-box--image--fullpage .diagram-box__header,
+	.diagram-box--image--fullpage .diagram-box__footer {
+		flex-shrink: 0;
 	}
 	.diagram-box--image--fullpage figure {
 		flex: 1;
 		margin: 0;
-		padding: 0;
+		padding: 14pt;
+		box-sizing: border-box;
 		display: flex;
 		flex-direction: column;
 		justify-content: center;
 		align-items: center;
 	}
+	/* width:auto (not 100%) so the box shrinks to the picture's aspect ratio.
+	   Pinning width:100% while max-height binds leaves a full-width box with a
+	   contain-scaled picture inside it — the leftover gutters showed as white
+	   strips, and the navy frame hugged the box rather than the photo. */
 	.diagram-box--image--fullpage figure img {
 		max-width: 100%;
-		max-height: 680pt;
-		width: 100%;
+		max-height: 640pt;
+		width: auto;
 		height: auto;
-		object-fit: contain;
+	}
+	/* Photo matte — the image is mounted in a white frame on the cream field,
+	   the way a plate is mounted in a printed manual. Applies to the CSS-driven
+	   image paths only; the edit drawer writes its own inline border/radius so
+	   the reader can set those per-image. */
+	.diagram-box--image figure img,
+	.diagram-box--plate figure img {
+		border: 2px solid #0F2231;
+		border-radius: 8px;
+		box-shadow: 0 2px 8px rgba(15, 34, 49, 0.14);
+		box-sizing: border-box;
+	}
+
+	/* Takeaway box closing a plate — white card, amber spine, cream field. */
+	.plate-takeaway {
+		flex-shrink: 0;
+		margin: 0 14pt 14pt;
+		padding: 8pt 10pt;
+		background-color: #FFFFFF;
+		border: 1px solid rgba(15, 34, 49, 0.15);
+		border-left: 4px solid #E07B20;
+		border-radius: 5px;
+		text-align: left;
+	}
+	.plate-takeaway__title {
+		font-family: ${titleFontCss};
+		font-size: 10pt;
+		font-weight: 700;
+		color: #0F2231;
+		margin-bottom: 2pt;
+	}
+	.plate-takeaway__body {
+		font-size: 9pt;
+		line-height: 1.5;
+		color: #1a1612;
+		margin: 0;
+		text-indent: 0;
 	}
 	p { margin: 0 0 10pt; text-indent: 1.4em; hyphens: auto; }
 	p:first-of-type { text-indent: 0; }
@@ -705,27 +837,121 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 		color: #1a1612;
 	}
 
+	/* Editorial diagram plate — keep in sync with .pdf-measurer-container
+	   .diagram-box rules above so pagination measures what it renders. */
 	.diagram-box {
-		background-color: #f8fafc;
-		border: 1.5px solid #e2e8f0;
-		border-radius: 6px;
-		padding: 1.5rem;
+		background-color: #FAF5EA;
+		border: 1px solid rgba(15, 34, 49, 0.15);
+		border-radius: 8px;
+		padding: 0;
 		margin: 2.5rem 0;
 		text-align: center;
+		overflow: hidden;
+	}
+	.diagram-box__header {
+		background-color: #0F2231;
+		border-bottom: 5px solid #E07B20;
+		padding: 0.9rem 1.25rem;
+		text-align: left;
 	}
 	.diagram-box__title {
 		font-family: ${titleFontCss};
-		font-size: 1.25rem;
-		font-weight: 600;
-		color: ${titleColor};
-		margin-bottom: 0.25rem;
+		font-size: 2rem;
+		font-weight: 700;
+		color: #FFFFFF;
+		line-height: 1.25;
+		margin: 0;
 	}
 	.diagram-box__subtitle {
-		font-size: 0.8rem;
-		color: #64748b;
-		margin-bottom: 1.5rem;
-		text-transform: uppercase;
-		letter-spacing: 1px;
+		font-size: 1.1rem;
+		font-weight: 400;
+		color: rgba(255, 255, 255, 0.72);
+		letter-spacing: 0.2px;
+		margin: 0.2rem 0 0;
+	}
+	.diagram-box__body {
+		display: flex;
+		justify-content: center;
+		width: 100%;
+		box-sizing: border-box;
+		padding: 1.5rem 1.25rem;
+	}
+	/* Footer band: book title left, author right. A bleed page suppresses the
+	   running footer, so this is what keeps the book on the page. */
+	.diagram-box__footer {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		gap: 1rem;
+		padding: 8pt 1.25rem 10pt;
+		border-top: 1px solid rgba(15, 34, 49, 0.18);
+		font-size: 8.5pt;
+		color: rgba(15, 34, 49, 0.65);
+	}
+	.diagram-box__footer-book {
+		font-style: italic;
+	}
+	.diagram-box__footer-author {
+		font-family: ${titleFontCss};
+		color: #E07B20;
+		white-space: nowrap;
+	}
+	/* Scales a tall diagram down to fit its page instead of clipping it.
+	   Keep in sync with the .pdf-measurer-container rule above. */
+	.diagram-svg {
+		width: 100%;
+		height: auto;
+		max-height: ${DIAGRAM_SVG_MAX_H}px;
+	}
+
+	/* Full-page diagram plate: fills the page body from the header bar down.
+	   margin:0 because the plate owns the page rather than sitting in prose. */
+	.diagram-box--fullpage {
+		height: 100%;
+		margin: 0;
+		display: flex;
+		flex-direction: column;
+		page-break-inside: avoid;
+		break-inside: avoid;
+	}
+	.diagram-box--fullpage .diagram-box__header {
+		flex-shrink: 0;
+	}
+	/* min-height:0 lets this flex child actually shrink so the SVG's
+	   max-height is what binds, rather than the content forcing overflow. */
+	.diagram-box--fullpage .diagram-box__body {
+		flex: 1;
+		min-height: 0;
+		align-items: center;
+	}
+	/* The plate spans the page width, so lift the 480px authoring cap and
+	   let the viewBox scale the diagram up to fill it. */
+	.diagram-box--fullpage .diagram-svg {
+		max-width: 100%;
+		max-height: ${DIAGRAM_FULLPAGE_SVG_MAX_H}px;
+	}
+
+	/* ── Bleed plate page ──────────────────────────────────────────────────
+	   The plate IS the sheet: the section's 1in/1.25in/1.5in printed margins
+	   are dropped so the navy bar meets the physical page edge, and no
+	   running header or footer is emitted (see the isPlatePage branch). */
+	.chapter-section--bleed {
+		padding: 0;
+		display: block;
+	}
+	/* Square off the plate — a radius or border would reveal the sheet
+	   underneath and break the bleed. */
+	.chapter-section--bleed .diagram-box--fullpage {
+		height: 100%;
+		margin: 0;
+		border: 0;
+		border-radius: 0;
+	}
+	/* Bleeding reclaims the printed margins, so the SVG gets the whole
+	   11in sheet minus the plate's own chrome (not the smaller BODY_H).
+	   Three classes deep so it beats the .diagram-box--fullpage rule above. */
+	.chapter-section--bleed .diagram-box--fullpage .diagram-svg {
+		max-height: ${PAGE_H_PX - DIAGRAM_CHROME_H}px;
 	}
 	.diagram-flow {
 		display: flex;
