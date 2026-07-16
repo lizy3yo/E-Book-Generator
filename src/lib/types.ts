@@ -34,6 +34,21 @@ export interface CoverOption {
 }
 
 
+/**
+ * One fact the book has committed to. Chapters are written in parallel batches
+ * and never see each other's prose, so this is the only record of what earlier
+ * chapters actually SAID (as opposed to what the outline planned for them).
+ */
+export interface BibleEntry {
+	kind: 'term' | 'claim' | 'example' | 'stat';
+	/** The thing itself — the term, the position, the example, the figure. */
+	label: string;
+	/** Definition / statement / what it illustrated. One sentence. */
+	detail: string;
+	/** Chapter order that introduced it — used to drop oldest when over cap. */
+	chapter: number;
+}
+
 export interface Chapter {
 	id: string;
 	title: string;
@@ -61,7 +76,14 @@ export interface Book {
 	subtitle: string;
 	author: string;
 	genre: string;
+	/**
+	 * @deprecated Superseded by `pageCount`. Retained so books persisted before
+	 * the page-count control still resolve — see `resolvePageCount` in
+	 * $lib/bookPlan, which prefers `pageCount` and falls back to this.
+	 */
 	length: 'short' | 'medium' | 'long';
+	/** Target page count, 50–600. Drives chapter count via $lib/bookPlan. */
+	pageCount?: number;
 	tone: string;
 	structure: string;
 	useUltraRealistic: boolean;
@@ -87,6 +109,12 @@ export interface Book {
 
 	coverSettings: CoverSettings;
 	chapters: Chapter[];
+	/**
+	 * Rolling "book bible" — bounded (see $lib/bookBible), folded in after each
+	 * batch of chapters, sent to the next batch. Optional: books written before
+	 * it simply generate without one.
+	 */
+	bible?: BibleEntry[];
 	interiorDesign?: Record<string, string>;
 
 	status: 'idle' | 'researching' | 'outlining' | 'writing' | 'verifying' | 'illustrating' | 'completed' | 'failed';

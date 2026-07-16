@@ -1,5 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
+import { planForBook } from '$lib/bookPlan';
+import { renderBibleBlock } from '$lib/bookBible';
 import {
 	CLAUDE_WRITING_MODEL,
 	CLAUDE_OPUS_MODEL,
@@ -23,6 +25,9 @@ export const POST: RequestHandler = async ({ request }) => {
 			chapterTitle,
 			chapterOrder,
 			chapterSummary,
+			bookOutline,
+			bookBible,
+			pageCount,
 			chapterContent
 		} = await request.json();
 
@@ -33,6 +38,12 @@ export const POST: RequestHandler = async ({ request }) => {
 			? (CLAUDE_OPUS_MODEL || 'claude-opus-4-8')
 			: (CLAUDE_WRITING_MODEL || 'claude-sonnet-5');
 
+		// One plan, derived from pageCount (or the legacy length for books that
+		// predate it), so the outline prompt, the mock path and both token
+		// budgets can never disagree about how big this book is. Declared here
+		// because the prompts below read it.
+		const plan = planForBook({ pageCount, length });
+
 		// Handle Mock Mode
 		if (useMockMode || !activeApiKey) {
 			const serverClaudeKey = ANTHROPIC_API_KEY?.trim();
@@ -41,7 +52,7 @@ export const POST: RequestHandler = async ({ request }) => {
 
 				if (action === 'outline') {
 					// Generate typical outlines based on book title
-					const numChapters = length === 'short' ? 3 : length === 'medium' ? 5 : 8;
+					const numChapters = plan.chapterCount;
 					const chapters = [];
 
 					for (let i = 1; i <= numChapters; i++) {
@@ -69,6 +80,16 @@ export const POST: RequestHandler = async ({ request }) => {
 					return json({
 						success: true,
 						content,
+						source: 'mock'
+					});
+				}
+
+				if (action === 'distill-chapter') {
+					return json({
+						success: true,
+						entries: [
+							{ kind: 'term', label: `Mock Term ${chapterOrder}`, detail: 'A placeholder definition introduced by mock mode.', chapter: chapterOrder || 1 }
+						],
 						source: 'mock'
 					});
 				}
@@ -152,7 +173,8 @@ Each element: {"title": "string", "order": number, "summary": "string (2–3 sen
 
 Title: "${bookTitle}"
 Genre / Subject: ${genre}
-Target Length: ${length === 'short' ? '3 chapters (~10–15k words total)' : length === 'medium' ? '5 chapters (~25–35k words total)' : '8 chapters (~50–60k words total)'}
+Target Length: EXACTLY ${plan.chapterCount} chapters — ${plan.pageCount} pages, ~${plan.totalWords.toLocaleString()} words total (~${plan.wordsPerChapter.toLocaleString()} words per chapter).
+Return all ${plan.chapterCount} chapters. Give each one a distinct remit so no two chapters cover the same ground — this outline is the only thing preventing overlap, because chapters are written independently of one another.
 Writing Tone: ${tone}
   → ${toneGuide}
 Book Structure: ${structure}
@@ -316,12 +338,35 @@ CRITICAL RULE: Actively choose the RIGHT element for each content type. Do not d
    # - For Mindmaps/Hierarchies/Org Charts: root: Main Topic / list nodes starting with '-'
    \`\`\``;
 
+			// The full plan, so this chapter knows what the rest of the book
+			// covers. Chapters are written concurrently and never see each
+			// other's prose — without this every chapter is blind to the others
+			// and re-explains the same foundations, which is what makes a long
+			// book read as repetitive even when each chapter is individually good.
+			const outlineBlock = Array.isArray(bookOutline) && bookOutline.length > 1
+				? `\nFULL BOOK OUTLINE — every chapter in this book:\n` +
+				  bookOutline
+					.map((c: any) => `${c.order === chapterOrder ? '>>' : '  '} Ch ${c.order}: "${c.title}" — ${c.summary ?? ''}`)
+					.join('\n') +
+				  `\n\nThe chapter marked >> is the one you are writing. Rules for using this outline:\n` +
+				  `- Every other chapter listed WILL be written. Do not explain what they cover — assume the reader gets it there.\n` +
+				  `- Do not restate foundations covered by an earlier chapter. Build on them.\n` +
+				  `- You may reference other chapters by number ("as Chapter 3 established", "Chapter 9 takes this further") — only where genuinely relevant, and only for chapters that exist above.\n` +
+				  `- Stay strictly inside your own brief. Material belonging to another chapter is that chapter's job.\n`
+				: '';
+
+			// The outline says what other chapters are PLANNED to cover. This says
+			// what the already-written ones actually SAID — the gap the outline
+			// alone cannot close, and where contradictions and re-derivations live.
+			// Bounded to ~2.5k tokens at any book length; see $lib/bookBible.
+			const bibleBlock = renderBibleBlock(bookBible);
+
 			userPrompt = `Write the complete content for the following ebook chapter:
 
 Book Title: "${bookTitle}"
 Genre: ${genre}
 Book Structure: ${structure}
-
+${outlineBlock}${bibleBlock}
 Chapter ${chapterOrder}: "${chapterTitle}"
 Chapter Brief: ${chapterSummary}
 
@@ -332,6 +377,32 @@ Grounding Research & Author Notes (integrate seamlessly — do not list these as
 ${researchNotes || 'None provided.'}
 
 Write the full chapter now. Be thorough, substantive, and publication-ready.`;
+
+		} else if (action === 'distill-chapter') {
+			systemPrompt = `You are a continuity editor building a "book bible" — the record of what a book has already committed to, used by the authors of later chapters so they do not contradict, redefine, or repeat what came before.
+
+Read the chapter and extract ONLY what a LATER chapter's author must not get wrong:
+- "term": a term or concept this chapter DEFINED. detail = its definition, compressed to one sentence.
+- "claim": a substantive position or conclusion this chapter ARGUED. detail = the claim in one sentence.
+- "example": a specific case study, anecdote, company, or scenario used to illustrate a point. detail = what it illustrated.
+- "stat": a specific number, percentage, dollar amount, or date cited. detail = the figure and what it measures.
+
+Rules:
+- Be ruthless. Extract at most 8 entries. Only what is load-bearing for continuity — skip anything a later author could not plausibly collide with.
+- "label" must be short (under 8 words). "detail" must be ONE sentence.
+- Do NOT summarise the chapter. This is not a summary; it is a list of commitments.
+- If the chapter defines nothing and cites nothing, return an empty array.
+
+Respond ONLY with a valid JSON array — no markdown fences, no commentary.
+Each element: {"kind": "term"|"claim"|"example"|"stat", "label": "string", "detail": "string"}`;
+
+			userPrompt = `Book: "${bookTitle}"
+Chapter ${chapterOrder}: "${chapterTitle}"
+
+Chapter content:
+${chapterContent}
+
+Return ONLY the JSON array.`;
 
 		} else if (action === 'verify-chapter') {
 			systemPrompt = `You are a professional copy-editor, expert fact-checker, and reviewer at a publishing house.
@@ -366,9 +437,10 @@ Review, correct, and return in the required format.`;
 		}
 
 		// Make HTTP request to Anthropic
-		// Use a faster model for outline (structured JSON, not prose) and
-		// tighten max_tokens to match actual output size.
-		const outlineModel = action === 'outline'
+		// Use a faster model for the structured-JSON actions (outline, distill) and
+		// tighten max_tokens to match actual output size. Distilling runs once per
+		// chapter — 30 extra calls on a 600-page book — so it has to be cheap.
+		const requestModel = action === 'outline' || action === 'distill-chapter'
 			? (CLAUDE_CHAT_MODEL || 'claude-haiku-4-5-20251001')
 			: selectedModel;
 
@@ -377,20 +449,25 @@ Review, correct, and return in the required format.`;
 		// budget has to scale with the draft it is given or long chapters get
 		// truncated mid-sentence.
 		const maxTokens =
-			action === 'write-chapter'  ? budgetForWrite(length) :
+			action === 'write-chapter'  ? budgetForWrite(plan.wordsPerChapter) :
 			action === 'verify-chapter' ? budgetForVerify(chapterContent) :
-			/* outline — scale with book length; a long book needs more chapters */
-			budgetForOutline(length);
+			/* distill — at most 8 short entries; the cap is deliberate, an
+			   overlong distillation is a bug, not a feature. */
+			action === 'distill-chapter' ? 1_500 :
+			/* outline — scales with CHAPTER COUNT: a 600-page book plans ~30
+			   chapters, and a fixed ceiling truncates the JSON mid-array. */
+			budgetForOutline(plan.chapterCount);
 
 		const controller = new AbortController();
 		// Streamed requests only need to survive gaps between chunks, so the
 		// ceiling can be generous without risking a silent HTTP timeout.
-		const timeoutMs = action === 'outline' ? 60_000 : 600_000;
+		const timeoutMs = action === 'outline' || action === 'distill-chapter' ? 60_000 : 600_000;
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
 
 		// Anthropic requires streaming once max_tokens is large enough that a
-		// single buffered response could exceed the request timeout.
-		const useStream = action !== 'outline';
+		// single buffered response could exceed the request timeout. The small
+		// JSON actions are nowhere near it.
+		const useStream = action !== 'outline' && action !== 'distill-chapter';
 
 		let response: Response;
 		let responseText = '';
@@ -405,7 +482,7 @@ Review, correct, and return in the required format.`;
 					'anthropic-version': '2023-06-01'
 				},
 				body: JSON.stringify({
-					model: outlineModel,
+					model: requestModel,
 					max_tokens: maxTokens,
 					stream: useStream,
 					system: systemPrompt,
@@ -480,6 +557,32 @@ Review, correct, and return in the required format.`;
 				console.error('Failed to parse Claude outline JSON:', responseText);
 				throw new Error('Claude did not return a valid JSON outline. Please try again.');
 			}
+		} else if (action === 'distill-chapter') {
+			// A malformed distillation is a non-event: the caller treats any
+			// failure here as "no new bible entries" and writes on. So parse
+			// defensively and never let this action be the thing that breaks a book.
+			try {
+				const start = responseText.indexOf('[');
+				const end = responseText.lastIndexOf(']');
+				if (start === -1 || end <= start) throw new Error('no JSON array in response');
+
+				const raw = JSON.parse(responseText.substring(start, end + 1));
+				const kinds = ['term', 'claim', 'example', 'stat'];
+				const entries = (Array.isArray(raw) ? raw : [])
+					.filter((e: any) => e && kinds.includes(e.kind) && e.label && e.detail)
+					.slice(0, 8)
+					.map((e: any) => ({
+						kind: e.kind,
+						label: String(e.label).trim(),
+						detail: String(e.detail).trim(),
+						chapter: chapterOrder || 0
+					}));
+
+				return json({ success: true, entries, source: 'live' });
+			} catch (parseError) {
+				console.error('Failed to parse distill JSON:', responseText);
+				throw new Error('Claude did not return a valid JSON distillation.');
+			}
 		} else if (action === 'write-chapter') {
 			return json({
 				success: true,
@@ -534,20 +637,22 @@ function estimateTokens(text: string): number {
  * 80–120 tokens. Long books can have 15+ chapters, so the old 900-token fixed
  * ceiling truncated the JSON mid-array and caused a parse failure.
  */
-function budgetForOutline(length: string): number {
-	const tokens =
-		length === 'short'  ? 1_500 :
-		length === 'medium' ? 2_500 :
-		/* long */            4_000;
-	return Math.min(tokens, MODEL_OUTPUT_CAP);
+function budgetForOutline(chapterCount: number): number {
+	// Each chapter entry is a JSON object with a title and a 2-3 sentence
+	// summary — roughly 120 tokens, and they run long more often than short.
+	// A 30-chapter book therefore needs ~4.5k just for the array, which the
+	// old fixed 4k ceiling would have truncated mid-entry.
+	const needed = chapterCount * 160 + 800; // + framing/overhead
+	return Math.min(Math.max(needed, 1_500), MODEL_OUTPUT_CAP);
 }
 
-function budgetForWrite(length: string): number {
-	const target =
-		length === 'short'  ? 12_000 :
-		length === 'medium' ? 20_000 :
-		/* long */            32_000;
-	return Math.min(target, MODEL_OUTPUT_CAP);
+function budgetForWrite(wordsPerChapter: number): number {
+	// ~1.4 tokens/word, plus generous headroom so a chapter that runs long is
+	// never cut mid-sentence. Sized from the chapter's own target rather than
+	// the book's total: the output cap is per-response, so what matters is how
+	// much THIS chapter has to emit.
+	const target = Math.ceil(wordsPerChapter * 1.4 * 1.6);
+	return Math.min(Math.max(target, 8_000), MODEL_OUTPUT_CAP);
 }
 
 /**

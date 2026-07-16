@@ -1,4 +1,4 @@
-import type { Book, ApiKeys, StepLog, Chapter, CoverSettings, CoverOption, PipelineStage } from './types';
+import type { Book, ApiKeys, StepLog, Chapter, CoverSettings, CoverOption, PipelineStage, BibleEntry } from './types';
 import { supabase } from './supabase';
 
 class GlobalState {
@@ -182,6 +182,8 @@ class GlobalState {
 		author: string;
 		genre: string;
 		length: 'short' | 'medium' | 'long';
+		/** Target pages, 50–600. Drives the chapter plan; see $lib/bookPlan. */
+		pageCount?: number;
 		tone: string;
 		structure: string;
 		useUltraRealistic: boolean;
@@ -197,6 +199,7 @@ class GlobalState {
 			author: params.author || 'AI Automator',
 			genre: params.genre || 'General',
 			length: params.length,
+			pageCount: params.pageCount,
 			tone: params.tone || 'Informative',
 			structure: params.structure || 'Standard Chapters',
 			useUltraRealistic: params.useUltraRealistic,
@@ -291,6 +294,16 @@ class GlobalState {
 		if (bookIndex === -1) return;
 
 		const updatedBook: Book = { ...this.books[bookIndex], chapters, updatedAt: new Date().toISOString() };
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
+	}
+
+	/** Replace the rolling book bible — called once per batch fold. */
+	updateBookBible(bookId: string, bible: BibleEntry[]) {
+		const bookIndex = this.books.findIndex(b => b.id === bookId);
+		if (bookIndex === -1) return;
+
+		const updatedBook: Book = { ...this.books[bookIndex], bible, updatedAt: new Date().toISOString() };
 		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
 		this.persistBook(updatedBook);
 	}

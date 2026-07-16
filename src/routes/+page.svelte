@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { globalState } from '$lib/state.svelte';
-	import type { Book, Chapter, CoverOption } from '$lib/types';
+	import type { Book, Chapter, CoverOption, BibleEntry } from '$lib/types';
 	import {
 		BookMarked, Zap, Paintbrush, BookOpen, Trash2,
 		Loader, RefreshCw, CheckCircle, ChevronRight,
@@ -9,18 +9,27 @@
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import ChapterPlanError from '$lib/components/ChapterPlanError.svelte';
 	import { generateImage } from '$lib/generateImage';
+	import { planForPages, clampPageCount, PAGE_PRESETS, MIN_PAGES, MAX_PAGES, batched, BATCH_SIZE } from '$lib/bookPlan';
+	import { mergeBible, bibleTokens } from '$lib/bookBible';
 
 	// ── Stage 1: concept form ──────────────────────────────────────────────────
 	let title       = $state('');
 	let subtitle    = $state('');
 	let author      = $state('');
 	let genre       = $state('');
+	// Retained only to satisfy the legacy Book.length field on create; page
+	// count is what actually drives the plan now.
 	let length      = $state<'short' | 'medium' | 'long'>('medium');
-	let tone        = $state('Authoritative & Educational');
-	let structure   = $state('Standard Chapters');
+	let pageCount   = $state<number>(100);
+	const bookPlan  = $derived(planForPages(pageCount));
+	const DEFAULT_TONE      = 'Authoritative & Educational';
+	const DEFAULT_STRUCTURE = 'Standard Chapters';
+	let tone        = $state('');
+	let structure   = $state('');
 	let useUltraRealistic   = $state(false);
 	let researchDepth       = $state<'basic' | 'deep'>('basic');
-	let selfCorrectionLevel = $state<'standard' | 'rigorous'>('standard');
+	// Every book ships through the full fact-mesh cross-validation pass.
+	const selfCorrectionLevel: 'standard' | 'rigorous' = 'rigorous';
 	/** Optional background brief — injected into every AI call for deeper grounding */
 	let userContext = $state('');
 
@@ -116,8 +125,10 @@
 		if (!title.trim() || isGeneratingCovers) return;
 
 		const book = globalState.createBook({
-			title, subtitle, author, genre, length,
-			tone, structure, useUltraRealistic, researchDepth, selfCorrectionLevel,
+			title, subtitle, author, genre, length, pageCount,
+			tone: tone.trim() || DEFAULT_TONE,
+			structure: structure.trim() || DEFAULT_STRUCTURE,
+			useUltraRealistic, researchDepth, selfCorrectionLevel,
 			userContext, coverReferencePrompt: ''
 		});
 
@@ -262,6 +273,7 @@
 					bookTitle: book.title,
 					genre: book.genre,
 					length: book.length,
+					pageCount: book.pageCount,
 					tone: book.tone,
 					structure: book.structure,
 					researchNotes: factsSummary
@@ -335,6 +347,21 @@
 	async function runWritingPipeline(book: Book) {
 		if (isWriting) return;
 		isWriting = true;
+		// try/finally so isWriting always clears. It used to be reset only on
+		// the success path, so any throw left it stuck true and the pipeline
+		// refused to start again (the guard above) until a full page reload.
+		try {
+			await writeAllChapters(book);
+		} finally {
+			isWriting = false;
+		}
+	}
+
+	/** Chapters that threw during this run; reported at the end. */
+	let failedChapters: number[] = [];
+
+	async function writeAllChapters(book: Book) {
+		failedChapters = [];
 		globalState.updateBookStatus(book.id, 'writing');
 
 		const keys    = globalState.apiKeys;
@@ -360,10 +387,19 @@
 
 		const chapters = [...globalState.books.find(b => b.id === book.id)!.chapters];
 
-		// Build a queue of chapter indices that still need to be written.
-		const pending = chapters
+		// Build the list of chapter indices that still need to be written.
+		const allPending = chapters
 			.map((c, i) => i)
 			.filter(i => chapters[i].status !== 'completed');
+
+		// Start a run from a clean bible. Entries carry the chapter that wrote
+		// them, and a re-run rewrites those chapters — keeping the old ones would
+		// tell chapter 7's author that chapter 7 already said something.
+		let bible: BibleEntry[] = [];
+		globalState.updateBookBible(book.id, bible);
+
+		// The queue the workers drain. Refilled one batch at a time.
+		const pending: number[] = [];
 
 		// ── Worker pool — process up to CONCURRENCY chapters simultaneously ──────
 		// Each worker claims the next available index from the shared queue,
@@ -406,21 +442,120 @@
 					chapterFacts   ? `[Chapter-Specific Research for "${chap.title}"]\n${chapterFacts}` : ''
 				].filter(Boolean).join('\n\n');
 
-				await writeSingleChapter(book.id, i, chapters, factsSummary, keys, useMock);
+				// One chapter must never take the book down with it.
+				// writeSingleChapter throws on a failed draft; unguarded, that
+				// rejects this worker, rejects the Promise.all below, and aborts
+				// the whole run — discarding every chapter that already
+				// succeeded. Survivable at 5 chapters, fatal at 30, where ~120
+				// API calls make a transient 429 or timeout near-certain.
+				// Mark it failed, log it, keep going: the reader can regenerate
+				// the one chapter instead of losing the book.
+				try {
+					await writeSingleChapter(book.id, i, chapters, factsSummary, keys, useMock, bible);
+				} catch (err: any) {
+					failedChapters.push(chap.order);
+					const live = [...globalState.books.find(b => b.id === book.id)!.chapters];
+					live[i].status = 'failed';
+					globalState.updateBookChapters(book.id, live);
+					globalState.addLog(book.id, {
+						step: 'drafting', status: 'error',
+						message: `Chapter ${chap.order} failed: ${err?.message ?? err}. Continuing with the rest — regenerate it from the reader.`
+					});
+				}
 			}
 		}
 
-		// Spawn CONCURRENCY workers and let them race through the queue
-		await Promise.all(Array.from({ length: CONCURRENCY }, processNextChapter));
+		// ── Batched fan-out with a fold ───────────────────────────────────────
+		// Write a batch in parallel, distil what it actually said into the bible,
+		// then write the next batch WITH that bible. Chapters within a batch stay
+		// blind to each other — that's the price of parallelism, and it's bounded
+		// to BATCH_SIZE chapters rather than the whole book. Batch 1 runs with an
+		// empty bible; there is nothing written yet for it to know.
+		const batches = batched(allPending, BATCH_SIZE);
 
-		globalState.updateBookStatus(book.id, 'completed');
+		for (const [batchNum, batch] of batches.entries()) {
+			pending.push(...batch);
+			// Spawn CONCURRENCY workers and let them race through this batch.
+			await Promise.all(Array.from({ length: CONCURRENCY }, processNextChapter));
+
+			// No point distilling after the final batch — nobody reads it.
+			if (batchNum === batches.length - 1) break;
+
+			globalState.addLog(book.id, {
+				step: 'review', status: 'running',
+				message: `Folding batch ${batchNum + 1}/${batches.length} into the book bible…`
+			});
+
+			// Distil each chapter this batch actually wrote. Every failure mode
+			// here is non-fatal: a chapter that failed to write has nothing to
+			// distil, and a distillation that throws just means the next batch
+			// runs with a slightly thinner bible. Neither is worth losing a book
+			// over, so nothing in this fold is allowed to reject.
+			const live = globalState.books.find(b => b.id === book.id)!.chapters;
+			const distilled = await Promise.all(
+				batch.map(async (i) => {
+					const c = live[i];
+					if (c.status !== 'completed' || !c.content?.trim()) return [];
+					try {
+						return await distillChapter(book, c, keys, useMock);
+					} catch (err: any) {
+						globalState.addLog(book.id, {
+							step: 'review', status: 'error',
+							message: `Could not distil Chapter ${c.order} into the book bible: ${err?.message ?? err}. Continuing — later chapters just won't know about it.`
+						});
+						return [];
+					}
+				})
+			);
+
+			bible = mergeBible(bible, distilled.flat());
+			globalState.updateBookBible(book.id, bible);
+			globalState.addLog(book.id, {
+				step: 'review', status: 'success',
+				message: `Book bible now holds ${bible.length} entries (~${bibleTokens(bible)} tokens) for the next batch.`
+			});
+		}
+
+		const wrote = chapters.length - failedChapters.length;
+		globalState.updateBookStatus(book.id, failedChapters.length ? 'failed' : 'completed');
 		globalState.setPipelineStage(book.id, 5);
-		globalState.addLog(book.id, {
-			step: 'complete', status: 'success',
-			message: '🎉 All chapters complete. Ebook ready to read and export.'
-		});
+		globalState.addLog(book.id, failedChapters.length
+			? {
+				step: 'complete', status: 'error',
+				message: `${wrote}/${chapters.length} chapters written. Failed: ${failedChapters.join(', ')}. Regenerate those from the reader.`
+			}
+			: {
+				step: 'complete', status: 'success',
+				message: '🎉 All chapters complete. Ebook ready to read and export.'
+			});
+	}
 
-		isWriting = false;
+	/**
+	 * Ask the cheap model what a finished chapter committed to. Throws on
+	 * failure — every caller is expected to treat that as "no entries".
+	 */
+	async function distillChapter(
+		book: Book,
+		chap: Chapter,
+		keys: typeof globalState.apiKeys,
+		useMock: boolean
+	): Promise<BibleEntry[]> {
+		const res = await fetch('/api/write', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				action: 'distill-chapter',
+				apiKey: keys.anthropicKey,
+				useMockMode: useMock,
+				bookTitle: book.title,
+				chapterTitle: chap.title,
+				chapterOrder: chap.order,
+				chapterContent: chap.content
+			})
+		});
+		const data = await res.json();
+		if (!data.success) throw new Error(data.error || 'distillation failed');
+		return (data.entries ?? []) as BibleEntry[];
 	}
 
 	/** Write + illustrate exactly one chapter. Shared between pipeline and per-chapter regen. */
@@ -430,7 +565,8 @@
 		chaptersSnapshot: Chapter[],
 		factsSummary: string,
 		keys: typeof globalState.apiKeys,
-		useMock: boolean
+		useMock: boolean,
+		bookBible: BibleEntry[] = []
 	) {
 		const chap = chaptersSnapshot[chapIndex];
 		const book = globalState.books.find(b => b.id === bookId)!;
@@ -455,11 +591,29 @@
 				bookTitle: book.title,
 				genre: book.genre,
 				structure: book.structure,
+				// Sizes the per-chapter output budget on the server.
+				length: book.length,
+				pageCount: book.pageCount,
 				chapterTitle: chap.title,
 				chapterOrder: chap.order,
 				chapterSummary: chap.summary,
 				tone: book.tone,
-				researchNotes: factsSummary
+				researchNotes: factsSummary,
+				// The whole plan, so a chapter knows its place in the book.
+				// Chapters are written concurrently and never see each other's
+				// output, so without this each one is blind to the rest and
+				// re-explains the same foundations. ~40 tokens per chapter
+				// against a 200k window — it is what makes long books cohere.
+				bookOutline: chaptersSnapshot.map(c => ({
+					order:   c.order,
+					title:   c.title,
+					summary: c.summary
+				})),
+				// What the already-written chapters SAID, as opposed to what the
+				// outline planned for them. Bounded to ~2.5k tokens however long
+				// the book is — that bound is the whole reason this scales.
+				bookBible
+
 			})
 		});
 		const draftData = await draftRes.json();
@@ -587,7 +741,11 @@
 
 		try {
 			const snapshot = [...active.chapters];
-			await writeSingleChapter(active.id, chapIndex, snapshot, factsSummary, keys, useMock);
+			// Regenerate against the book bible so the new draft honours what the
+			// rest of the book already established — minus this chapter's own
+			// entries, which describe the draft we are about to throw away.
+			const bible = (active.bible ?? []).filter(e => e.chapter !== snapshot[chapIndex].order);
+			await writeSingleChapter(active.id, chapIndex, snapshot, factsSummary, keys, useMock, bible);
 		} catch (err: any) {
 			const current = [...globalState.books.find(b => b.id === active.id)!.chapters];
 			current[chapIndex].status = 'failed';
@@ -710,12 +868,43 @@
 
 					<div class="form-row grid-2-col">
 						<div class="form-group">
-							<label for="length">Target Length</label>
-							<select id="length" bind:value={length}>
-								<option value="short">Short — 3 chapters (~10–15k words)</option>
-								<option value="medium">Standard — 5 chapters (~25–35k words)</option>
-								<option value="long">Full-Length — 8 chapters (~50–60k words)</option>
-							</select>
+							<label for="pageCount">Target Length</label>
+							<!-- Presets carry the common choices in one click; the number
+							     input catches everything between them. A bare number input
+							     would accept meaningless values and hide what a choice
+							     costs — which the old dropdown at least made explicit. -->
+							<div class="page-presets" role="group" aria-label="Target page count presets">
+								{#each PAGE_PRESETS as preset}
+									<button
+										type="button"
+										class="page-chip"
+										class:page-chip--active={pageCount === preset}
+										aria-pressed={pageCount === preset}
+										onclick={() => (pageCount = preset)}
+									>
+										{preset}
+									</button>
+								{/each}
+								<div class="page-custom">
+									<input
+										id="pageCount"
+										type="number"
+										min={MIN_PAGES}
+										max={MAX_PAGES}
+										step="25"
+										bind:value={pageCount}
+										onblur={() => (pageCount = clampPageCount(pageCount))}
+										aria-label="Target page count"
+									/>
+									<span class="page-custom__unit">pages</span>
+								</div>
+							</div>
+							<p class="page-hint">
+								≈{bookPlan.totalWords.toLocaleString()} words · {bookPlan.chapterCount} chapters · ~{bookPlan.wordsPerChapter.toLocaleString()} words each
+								{#if bookPlan.chapterCount >= 20}
+									<span class="page-hint__warn">· long generation — expect this to take a while</span>
+								{/if}
+							</p>
 						</div>
 					</div>
 
@@ -723,42 +912,52 @@
 					<details class="advanced-settings">
 						<summary class="advanced-settings__toggle font-serif">
 							<span class="advanced-settings__label">Advanced Settings</span>
-							<span class="advanced-settings__hint">Writing tone, book structure, research depth, quality pass, illustrations</span>
+							<span class="advanced-settings__hint">Writing tone, book structure, research depth, illustrations</span>
 						</summary>
 						<div class="advanced-settings__body">
 							<div class="advanced-row grid-2-col">
 								<div class="form-group">
 									<label for="tone">Writing Tone</label>
-									<select id="tone" bind:value={tone}>
-										<optgroup label="Non-Fiction / Professional">
-											<option value="Authoritative & Educational">Authoritative & Educational</option>
-											<option value="Conversational & Accessible">Conversational & Accessible</option>
-											<option value="Practical & Action-Oriented">Practical & Action-Oriented</option>
-											<option value="Academic & Research-Driven">Academic & Research-Driven</option>
-											<option value="Journalistic & Investigative">Journalistic & Investigative</option>
-										</optgroup>
-										<optgroup label="Narrative / Inspirational">
-											<option value="Narrative & Storytelling">Narrative & Storytelling</option>
-											<option value="Inspirational & Motivational">Inspirational & Motivational</option>
-											<option value="Reflective & Philosophical">Reflective & Philosophical</option>
-										</optgroup>
-										<optgroup label="Technical">
-											<option value="Technical & Precise">Technical & Precise</option>
-											<option value="Instructional & Step-by-Step">Instructional & Step-by-Step</option>
-										</optgroup>
-									</select>
+									<input
+										id="tone"
+										type="text"
+										bind:value={tone}
+										list="tone-presets"
+										placeholder="e.g., {DEFAULT_TONE}"
+										autocomplete="off"
+									/>
+									<datalist id="tone-presets">
+										<option value="Authoritative & Educational"></option>
+										<option value="Conversational & Accessible"></option>
+										<option value="Practical & Action-Oriented"></option>
+										<option value="Academic & Research-Driven"></option>
+										<option value="Journalistic & Investigative"></option>
+										<option value="Narrative & Storytelling"></option>
+										<option value="Inspirational & Motivational"></option>
+										<option value="Reflective & Philosophical"></option>
+										<option value="Technical & Precise"></option>
+										<option value="Instructional & Step-by-Step"></option>
+									</datalist>
 								</div>
 								<div class="form-group">
 									<label for="structure">Book Structure</label>
-									<select id="structure" bind:value={structure}>
-										<option value="Standard Chapters">Standard Chapters</option>
-										<option value="Problem–Solution Framework">Problem–Solution Framework</option>
-										<option value="Step-by-Step Blueprint">Step-by-Step Blueprint</option>
-										<option value="Pillar & Chapter Framework">Pillar Framework</option>
-										<option value="Story Narrative">Story Narrative</option>
-										<option value="Academic Thesis">Academic Thesis</option>
-										<option value="Interview & Case Study">Interview & Case Study</option>
-									</select>
+									<input
+										id="structure"
+										type="text"
+										bind:value={structure}
+										list="structure-presets"
+										placeholder="e.g., {DEFAULT_STRUCTURE}"
+										autocomplete="off"
+									/>
+									<datalist id="structure-presets">
+										<option value="Standard Chapters"></option>
+										<option value="Problem–Solution Framework"></option>
+										<option value="Step-by-Step Blueprint"></option>
+										<option value="Pillar & Chapter Framework"></option>
+										<option value="Story Narrative"></option>
+										<option value="Academic Thesis"></option>
+										<option value="Interview & Case Study"></option>
+									</datalist>
 								</div>
 							</div>
 							<div class="advanced-row grid-2-col">
@@ -767,13 +966,6 @@
 									<select id="depth" bind:value={researchDepth}>
 										<option value="basic">Standard — Key facts & citations</option>
 										<option value="deep">Deep — Comprehensive source extraction</option>
-									</select>
-								</div>
-								<div class="form-group">
-									<label for="correction">Quality Pass</label>
-									<select id="correction" bind:value={selfCorrectionLevel}>
-										<option value="standard">Standard — Consistency & copy-edit pass</option>
-										<option value="rigorous">Rigorous — Full fact-mesh cross-validation</option>
 									</select>
 								</div>
 							</div>
@@ -1392,6 +1584,46 @@
 
 	.form-group { display: flex; flex-direction: column; gap: 0.35rem; }
 	.form-group label { font-size: 0.84rem; font-weight: 600; }
+
+	/* ── Target length: preset chips + number input ─────────────────── */
+	.page-presets { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+	.page-chip {
+		font: inherit;
+		font-size: 0.82rem;
+		font-weight: 600;
+		padding: 0.4rem 0.7rem;
+		border: 1px solid var(--border-color);
+		border-radius: var(--radius-md, 6px);
+		background: var(--bg-card, #fff);
+		color: var(--text-color, inherit);
+		cursor: pointer;
+		transition: background-color 0.12s, border-color 0.12s, color 0.12s;
+	}
+	.page-chip:hover { border-color: var(--accent-color, #8E7453); }
+	.page-chip--active {
+		background: var(--accent-color, #8E7453);
+		border-color: var(--accent-color, #8E7453);
+		color: #fff;
+	}
+	.page-custom { display: flex; align-items: center; gap: 0.35rem; margin-left: 0.15rem; }
+	.page-custom input {
+		width: 5.5rem;
+		font: inherit;
+		font-size: 0.82rem;
+		padding: 0.4rem 0.5rem;
+		border: 1px solid var(--border-color);
+		border-radius: var(--radius-md, 6px);
+		background: var(--bg-card, #fff);
+		color: inherit;
+	}
+	.page-custom__unit { font-size: 0.78rem; color: var(--text-muted, #6A6055); }
+	.page-hint {
+		margin: 0.15rem 0 0;
+		font-size: 0.76rem;
+		color: var(--text-muted, #6A6055);
+	}
+	/* A 20+ chapter book is a long, costly run — say so before they commit. */
+	.page-hint__warn { color: var(--accent-color, #8E7453); font-weight: 600; }
 
 	.parameters-section {
 		border: 1px solid var(--border-color); background-color: var(--bg-inset);
