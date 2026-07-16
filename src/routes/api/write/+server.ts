@@ -1,6 +1,11 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { CLAUDE_WRITING_MODEL, CLAUDE_OPUS_MODEL, ANTHROPIC_API_KEY } from '$env/static/private';
+import {
+	CLAUDE_WRITING_MODEL,
+	CLAUDE_OPUS_MODEL,
+	CLAUDE_CHAT_MODEL,
+	ANTHROPIC_API_KEY
+} from '$env/static/private';
 
 export const POST: RequestHandler = async ({ request }) => {
 	try {
@@ -364,7 +369,7 @@ Review, correct, and return in the required format.`;
 		// Use a faster model for outline (structured JSON, not prose) and
 		// tighten max_tokens to match actual output size.
 		const outlineModel = action === 'outline'
-			? 'claude-haiku-4-5'
+			? (CLAUDE_CHAT_MODEL || 'claude-haiku-4-5-20251001')
 			: selectedModel;
 
 		// Size the output budget from the actual work, not a fixed guess. A
