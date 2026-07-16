@@ -250,10 +250,20 @@
 			activeBook.chapters.forEach((c) => {
 				if (c.illustrationUrl) imageUrls.push(c.illustrationUrl);
 				if (c.content) {
-					const mdImgRe = /!\[[^\]]*\]\((https?:\/\/[^)]+)\)/g;
-					let m: RegExpExecArray | null;
-					while ((m = mdImgRe.exec(c.content)) !== null) {
-						if (!imageUrls.includes(m[1])) imageUrls.push(m[1]);
+					// Two forms live in chapter content and BOTH must be resolved:
+					// markdown images, and raw <img> tags — the edit drawer splices
+					// rendered HTML, not markdown. Anything missed here reaches
+					// html2canvas as a live cross-origin URL, which it requests with
+					// CORS (useCORS: true) and which then fails or stalls the export.
+					const patterns = [
+						/!\[[^\]]*\]\((https?:\/\/[^)]+)\)/g,
+						/<img\b[^>]*\bsrc="(https?:\/\/[^"]+)"/gi
+					];
+					for (const re of patterns) {
+						let m: RegExpExecArray | null;
+						while ((m = re.exec(c.content)) !== null) {
+							if (!imageUrls.includes(m[1])) imageUrls.push(m[1]);
+						}
 					}
 				}
 			});
@@ -1834,9 +1844,14 @@
 		border: 0;
 		border-radius: 0;
 	}
-	.chapter-body :global(.diagram-box--table) {
+	/* Doubled class so this beats the .diagram-box plate rule on specificity
+	   rather than on source order. It currently wins here only because it is
+	   declared later; the export stylesheet declares them the other way round
+	   and the cream field framed every table in the PDF. */
+	.chapter-body :global(.diagram-box.diagram-box--table) {
 		background: transparent;
 		border: none;
+		border-radius: 0;
 		box-shadow: none;
 		padding: 0;
 		margin: 2.5rem 0;

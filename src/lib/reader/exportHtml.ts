@@ -285,6 +285,17 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 					box-sizing: border-box;
 					padding: 1.5rem 1.25rem;
 				}
+				/* Tables reset the plate look — must match the export stylesheet
+				   or the measurer reserves height for a cream band that the PDF
+				   no longer renders. */
+				.pdf-measurer-container .diagram-box.diagram-box--table {
+					background: transparent;
+					border: none;
+					border-radius: 0;
+					box-shadow: none;
+					padding: 0;
+					overflow: visible;
+				}
 				/* The measurer MUST carry this clamp too — without it the block
 				   measures at its unclamped height and pagination reserves a page
 				   budget the rendered plate never uses. */
@@ -350,6 +361,20 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 							// If no data URL available, strip the image entirely rather than
 							// embedding a cross-origin URL that will cause html2canvas to hang.
 							return b64 ? `![${alt}](${b64})` : '';
+						}
+					);
+
+					// Same swap for raw <img> tags. Chapter content holds these too —
+					// the edit drawer splices rendered HTML rather than markdown — and
+					// the markdown pattern above never sees them. Missing this leaves a
+					// live cross-origin src in the iframe, which html2canvas requests
+					// with CORS and which fails on a host that sends no
+					// Access-Control-Allow-Origin.
+					contentForPdf = contentForPdf.replace(
+						/<img\b[^>]*\bsrc="(https?:\/\/[^"]+)"[^>]*>/gi,
+						(tag, url) => {
+							const b64 = dataUrls[url];
+							return b64 ? tag.replace(url, b64) : '';
 						}
 					);
 				}
@@ -780,7 +805,20 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 	tr:nth-child(odd) td {
 		background-color: #ffffff;
 	}
-	.diagram-box--table {
+	/* A table is wrapped in .diagram-box only to inherit the edit-overlay
+	   pattern — it is not a plate, so the plate's cream field, border and
+	   radius have to be reset or they frame the table as a cream band above
+	   and below it. Mirrors the .diagram-box--table reset in the reader. */
+	/* Doubled class (0,2,0) so this beats the .diagram-box plate rule (0,1,0)
+	   no matter where each lands in the sheet. Single-class here would tie and
+	   lose on source order — .diagram-box is declared later in this stylesheet,
+	   which is exactly why the cream field kept framing tables in the PDF while
+	   the reader (where the reset happens to come last) looked correct. */
+	.diagram-box.diagram-box--table {
+		background: transparent;
+		border: none;
+		border-radius: 0;
+		box-shadow: none;
 		padding: 0;
 		overflow: visible;
 	}
