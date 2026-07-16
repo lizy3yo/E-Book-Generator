@@ -51,60 +51,89 @@ async function getImageSource(imageUrl: string, origin: string): Promise<{ media
 }
 
 export const POST: RequestHandler = async ({ request, url }) => {
-	try {
-		const { coverSettings, coverStyle, bookTitle, apiKey, useMockMode, headerFooterPreset, customInstructions } = await request.json();
-		const claudeKey = apiKey || ANTHROPIC_API_KEY;
+	// Define variables outside try/catch so they are accessible to programmatic fallback in catch block
+	let coverSettings: any = null;
+	let coverStyle = '';
+	let bookTitle = '';
+	let headerFooterPreset = '';
+	let customInstructions = '';
+	let claudeKey = '';
 
-		// Fallback to mock design ONLY if no Claude API key is provided at all
+	const runProgrammaticFallback = () => {
+		const titleFont = coverSettings?.titleFont || 'Lora';
+		const isBold = headerFooterPreset === 'Bold Tech / Graphic' || coverStyle === 'Bold Graphic' || titleFont === 'Inter' || titleFont === 'Arial';
+		const isDark = coverStyle === 'Dark Minimalist' || (coverSettings?.titleColor === '#ffffff' && (coverSettings?.overlayOpacity ?? 0) > 0.4);
+		const isHidden = headerFooterPreset === 'Hidden / None';
+		const isMinimal = headerFooterPreset === 'Modern Minimalist';
+
+		const fontSerif = '"Lora", serif';
+		const fontSans = '"Inter", sans-serif';
+		const chosenFont = (titleFont === 'Inter' || titleFont === 'Arial') ? fontSans : fontSerif;
+
+		const primaryColor = coverSettings?.titleColor || (isBold ? '#0F172A' : '#3D2B1A');
+		const accentColor = coverSettings?.authorColor || '#8E7453';
+		const ruleStyle = isBold ? `4px solid ${accentColor}` : `1.5px solid ${accentColor}`;
+
+		return json({
+			success: true,
+			design: {
+				'--r-header-font': isBold ? fontSans : fontSerif,
+				'--r-header-color': primaryColor,
+				'--r-header-border': isHidden || isMinimal ? 'none' : `1.5px solid ${accentColor}`,
+				'--r-header-transform': 'uppercase',
+				'--r-header-letter-spacing': isMinimal ? '3px' : '2px',
+				'--r-header-opacity': isHidden ? '0' : '0.75',
+				'--r-footer-font': chosenFont,
+				'--r-footer-color': primaryColor,
+				'--r-footer-border': isHidden || isMinimal ? 'none' : `1.5px solid ${accentColor}`,
+				'--r-footer-letter-spacing': '1.5px',
+				'--r-footer-opacity': isHidden ? '0' : '0.75',
+				'--r-title-font': chosenFont,
+				'--r-title-color': primaryColor,
+				'--r-title-transform': isBold || isDark ? 'uppercase' : 'none',
+				'--r-title-letter-spacing': isBold ? '-0.5px' : isDark ? '2px' : '0px',
+				'--r-title-weight': isBold ? '800' : '300',
+				'--r-title-style': !isBold && !isDark ? 'italic' : 'normal',
+				'--r-body-font': isBold ? fontSans : fontSerif,
+				'--r-label-font': fontSans,
+				'--r-label-color': isBold ? '#ffffff' : accentColor,
+				'--r-label-transform': 'uppercase',
+				'--r-label-letter-spacing': '3px',
+				'--r-label-bg': isBold ? accentColor : 'transparent',
+				'--r-label-padding': isBold ? '0.2rem 0.6rem' : '0',
+				'--r-label-border-radius': '4px',
+				'--r-rule-border': ruleStyle,
+				'--r-rule-width': coverSettings?.alignment === 'center' ? '60px' : coverSettings?.alignment === 'right' ? '120px' : '100%',
+				'--r-dropcap-font': chosenFont,
+				'--r-dropcap-color': accentColor,
+				'--r-dropcap-weight': '700',
+				'--r-dropcap-style': !isBold && !isDark ? 'italic' : 'normal',
+				'--r-blockquote-border': `3.5px solid ${accentColor}`,
+				'--r-blockquote-color': '#555555',
+				'--r-blockquote-bg': isDark ? 'var(--r-active-bg)' : 'transparent',
+				'--r-blockquote-padding': isDark ? '1.2rem 1.8rem' : '0 0 0 1.8rem',
+				'--r-blockquote-border-radius': isDark ? '4px' : '0',
+				'--r-header-align': coverSettings?.alignment === 'center' ? 'center' : coverSettings?.alignment === 'right' ? 'flex-end' : 'flex-start',
+				'--r-table-header-bg': primaryColor,
+				'--r-border': '#e2e8f0'
+			}
+		});
+	};
+
+	try {
+		const body = await request.json();
+		coverSettings = body.coverSettings;
+		coverStyle = body.coverStyle;
+		bookTitle = body.bookTitle;
+		headerFooterPreset = body.headerFooterPreset;
+		customInstructions = body.customInstructions;
+		
+		const apiKey = body.apiKey;
+		claudeKey = apiKey || ANTHROPIC_API_KEY;
+
+		// Fallback to programmatic mock design if no Claude API key is provided at all
 		if (!claudeKey) {
-			const isBold = headerFooterPreset === 'Bold Tech / Graphic' || coverStyle === 'Bold Graphic' || coverSettings?.titleFont === 'Inter' || coverSettings?.titleFont === 'Arial';
-			const isDark = coverStyle === 'Dark Minimalist' || (coverSettings?.titleColor === '#ffffff' && (coverSettings?.overlayOpacity ?? 0) > 0.4);
-			const isHidden = headerFooterPreset === 'Hidden / None';
-			const isMinimal = headerFooterPreset === 'Modern Minimalist';
-			return json({
-				success: true,
-				design: {
-					'--r-header-font': isBold ? '"Inter", sans-serif' : '"Lora", serif',
-					'--r-header-color': isBold ? '#0F172A' : isDark ? '#1A1612' : '#3D2B1A',
-					'--r-header-border': isHidden || isMinimal ? 'none' : `1.5px solid ${coverSettings?.authorColor || '#8E7453'}`,
-					'--r-header-transform': 'uppercase',
-					'--r-header-letter-spacing': isMinimal ? '3px' : '2px',
-					'--r-header-opacity': isHidden ? '0' : '0.75',
-					'--r-footer-font': '"Lora", serif',
-					'--r-footer-color': isBold ? '#0F172A' : isDark ? '#1A1612' : '#3D2B1A',
-					'--r-footer-border': isHidden || isMinimal ? 'none' : `1.5px solid ${coverSettings?.authorColor || '#8E7453'}`,
-					'--r-footer-letter-spacing': '1.5px',
-					'--r-footer-opacity': isHidden ? '0' : '0.75',
-					'--r-title-font': isBold ? '"Inter", sans-serif' : '"Lora", serif',
-					'--r-title-color': isBold ? '#0F172A' : isDark ? '#1A1612' : '#3D2B1A',
-					'--r-title-transform': isBold || isDark ? 'uppercase' : 'none',
-					'--r-title-letter-spacing': isBold ? '-0.5px' : isDark ? '2px' : '0px',
-					'--r-title-weight': isBold ? '800' : '300',
-					'--r-title-style': !isBold && !isDark ? 'italic' : 'normal',
-					'--r-body-font': isBold ? '"Inter", sans-serif' : '"Lora", serif',
-					'--r-label-font': '"Inter", sans-serif',
-					'--r-label-color': isBold ? '#ffffff' : coverSettings?.authorColor || '#8E7453',
-					'--r-label-transform': 'uppercase',
-					'--r-label-letter-spacing': '3px',
-					'--r-label-bg': isBold ? (coverSettings?.authorColor || '#8E7453') : 'transparent',
-					'--r-label-padding': isBold ? '0.2rem 0.6rem' : '0',
-					'--r-label-border-radius': '4px',
-					'--r-rule-border': isBold ? `4px solid ${coverSettings?.authorColor || '#8E7453'}` : `1.5px solid ${coverSettings?.authorColor || '#8E7453'}`,
-					'--r-rule-width': coverSettings?.alignment === 'center' ? '60px' : coverSettings?.alignment === 'right' ? '120px' : '100%',
-					'--r-dropcap-font': '"Lora", serif',
-					'--r-dropcap-color': coverSettings?.authorColor || '#8E7453',
-					'--r-dropcap-weight': '700',
-					'--r-dropcap-style': !isBold && !isDark ? 'italic' : 'normal',
-					'--r-blockquote-border': isDark ? `2px solid ${coverSettings?.authorColor || '#8E7453'}` : `3.5px solid ${coverSettings?.authorColor || '#8E7453'}`,
-					'--r-blockquote-color': '#555555',
-					'--r-blockquote-bg': isDark ? 'var(--r-active-bg)' : 'transparent',
-					'--r-blockquote-padding': isDark ? '1.2rem 1.8rem' : '0 0 0 1.8rem',
-					'--r-blockquote-border-radius': isDark ? '4px' : '0',
-					'--r-header-align': coverSettings?.alignment === 'center' ? 'center' : coverSettings?.alignment === 'right' ? 'flex-end' : 'flex-start',
-					'--r-table-header-bg': isBold ? '#0F172A' : '#3D2B1A',
-					'--r-border': '#e2e8f0'
-				}
-			});
+			return runProgrammaticFallback();
 		}
 
 		const systemPrompt = `You are an elite, award-winning book interior designer and typography director.
@@ -255,7 +284,7 @@ Format: {"analysis": "...", "design": {...}}`;
 			throw new Error(`Claude design generation failed (${res.status}): ${errText}`);
 		}
 	} catch (err: any) {
-		console.error('[design-interior] Error:', err.message);
-		return json({ success: false, error: err.message }, { status: 500 });
+		console.warn('[design-interior] Claude design call failed or key is missing. Falling back to dynamic programmatic layout design. Reason:', err.message);
+		return runProgrammaticFallback();
 	}
 };
