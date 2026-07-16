@@ -288,6 +288,27 @@
 		editingChapterIdx = null;
 	}
 
+	function getChapterOrderLabel(chap: any, idx: number, chapters: any[]): string {
+		const lower = chap.title.toLowerCase();
+		if (lower.startsWith('preface')) return 'P';
+		if (lower.startsWith('introduction') || lower.startsWith('intro')) return 'I';
+		if (lower.startsWith('foreword')) return 'F';
+		
+		let prefaceCount = 0;
+		for (let i = 0; i < idx; i++) {
+			const titleLower = chapters[i].title.toLowerCase();
+			if (
+				titleLower.startsWith('preface') ||
+				titleLower.startsWith('introduction') ||
+				titleLower.startsWith('foreword') ||
+				titleLower.startsWith('intro')
+			) {
+				prefaceCount++;
+			}
+		}
+		return String(chap.order - prefaceCount);
+	}
+
 	function approveChapterPlan() {
 		if (!active) return;
 		globalState.setPipelineStage(active.id, 4);
@@ -893,7 +914,7 @@
 										{#if editingChapterIdx === idx}
 											<!-- Inline edit mode -->
 											<div class="chapter-edit-form">
-												<div class="chapter-edit-num font-serif">Ch. {chap.order}</div>
+												<div class="chapter-edit-num font-serif">Ch. {getChapterOrderLabel(chap, idx, active.chapters)}</div>
 												<div class="chapter-edit-fields">
 													<input
 														type="text"
@@ -919,7 +940,7 @@
 											</div>
 										{:else}
 											<!-- Read mode -->
-											<div class="chapter-plan-num font-serif">{chap.order}</div>
+											<div class="chapter-plan-num font-serif">{getChapterOrderLabel(chap, idx, active.chapters)}</div>
 											<div class="chapter-plan-info">
 												<span class="chapter-plan-title font-serif">{chap.title}</span>
 												<p class="chapter-plan-summary">{chap.summary}</p>
@@ -1052,7 +1073,7 @@
 					<div class="chapters-progress-list">
 						{#each active.chapters as chap, idx}
 							<div class="writing-chapter-row {chap.status}">
-								<div class="wc-badge">{chap.order}</div>
+								<div class="wc-badge">{getChapterOrderLabel(chap, idx, active.chapters)}</div>
 								<div class="wc-info">
 									<span class="wc-title font-serif">{chap.title}</span>
 									<span class="wc-status-label">
@@ -1158,7 +1179,7 @@
 						<h4 class="font-serif">Chapters</h4>
 						{#each active.chapters as chap, idx}
 							<div class="summary-row">
-								<span class="summary-num font-serif">{chap.order}</span>
+								<span class="summary-num font-serif">{getChapterOrderLabel(chap, idx, active.chapters)}</span>
 								<span class="summary-title font-serif">{chap.title}</span>
 								<div class="summary-actions">
 									<button

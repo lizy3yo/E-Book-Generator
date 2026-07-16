@@ -195,7 +195,7 @@ Format: {"reply":"...","variantIndex":null,"mutations":{}}`;
 
 		if (claudeRes.ok) {
 			const data = await claudeRes.json();
-			const raw = (data.content?.[0]?.text || '').trim();
+			const raw = (data.content?.find((c: any) => c.type === 'text')?.text || '').trim();
 			return json({ success: true, ...parseResponse(raw), source: 'claude' });
 		}
 

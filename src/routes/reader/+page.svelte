@@ -92,6 +92,40 @@
 		activeAction = null;
 	}
 
+	function getChapterOrderLabel(chap: { title: string; order: number }, idx: number): string {
+		const lower = chap.title.toLowerCase();
+		if (lower.startsWith('preface')) return 'P';
+		if (lower.startsWith('introduction') || lower.startsWith('intro')) return 'I';
+		if (lower.startsWith('foreword')) return 'F';
+		
+		let prefaceCount = 0;
+		if (activeBook?.chapters) {
+			for (let i = 0; i < idx; i++) {
+				const titleLower = activeBook.chapters[i].title.toLowerCase();
+				if (
+					titleLower.startsWith('preface') ||
+					titleLower.startsWith('introduction') ||
+					titleLower.startsWith('foreword') ||
+					titleLower.startsWith('intro')
+				) {
+					prefaceCount++;
+				}
+			}
+		}
+		return String(chap.order - prefaceCount);
+	}
+
+	function getChapterLabel(chap: { title: string; order: number }, idx: number): string {
+		const lower = chap.title.toLowerCase();
+		if (lower.startsWith('preface') || lower.startsWith('introduction') || lower.startsWith('foreword') || lower.startsWith('intro')) {
+			if (lower.startsWith('preface')) return 'Preface';
+			if (lower.startsWith('introduction') || lower.startsWith('intro')) return 'Introduction';
+			if (lower.startsWith('foreword')) return 'Foreword';
+			return 'Preface';
+		}
+		return `Chapter ${getChapterOrderLabel(chap, idx)}`;
+	}
+
 	/** Strip HTML tags to get plain text for sending to Claude as page context */
 	function htmlToPlainText(html: string): string {
 		const div = document.createElement('div');
@@ -243,11 +277,14 @@
 			} else if (editTarget.scope === 'illustration') {
 				// For illustrations, reconstruct = generate a fresh prompt from scratch
 				// using only the chapter title and summary, ignoring the old prompt
+				const isUltra = activeBook.useUltraRealistic || activeBook.coverSettings?.useUltraRealistic;
 				const freshPrompt = [
-					`A high-quality editorial illustration for a chapter titled "${editTarget.chapterTitle}"`,
+					isUltra 
+						? `A hyperrealistic, award-winning photograph, highly detailed photorealistic render, 8k resolution, cinematic lighting, professional composition`
+						: `A high-quality editorial illustration`,
+					`for a chapter titled "${editTarget.chapterTitle}"`,
 					editTarget.chapterSummary ? `about: ${editTarget.chapterSummary}` : '',
-					`from the book "${activeBook.title}" (${activeBook.genre}).`,
-					'Cinematic lighting, detailed composition, professional finish.'
+					`from the book "${activeBook.title}" (${activeBook.genre}).`
 				].filter(Boolean).join(' ');
 
 				const newIllustUrl = await generateImage({
@@ -370,12 +407,21 @@
 						chapterOrder: editTarget.chapterOrder,
 						chapterContent: editTarget.chapterContent,
 						editInstruction: instruction,
-						researchNotes: editTarget.researchNotes
+						researchNotes: editTarget.researchNotes,
+						coverSettings: activeBook.coverSettings,
+						coverStyle: coverStyle,
+						interiorDesign: activeBook.interiorDesign
 					})
 				});
 				const data = await res.json();
 				if (!data.success) throw new Error(data.error || 'Edit failed');
 				globalState.updateChapterContent(activeBook.id, editTarget.chapterId, data.content, 'completed');
+				if (data.design) {
+					globalState.updateBookInteriorDesign(activeBook.id, {
+						...activeBook.interiorDesign,
+						...data.design
+					});
+				}
 				// Keep editTarget in sync so a subsequent Redo has fresh content
 				editTarget = { ...editTarget, chapterContent: data.content };
 
@@ -395,7 +441,10 @@
 						chapterContent: editTarget.chapterContent,
 						pageContent: editTarget.pageText,
 						editInstruction: instruction,
-						researchNotes: editTarget.researchNotes
+						researchNotes: editTarget.researchNotes,
+						coverSettings: activeBook.coverSettings,
+						coverStyle: coverStyle,
+						interiorDesign: activeBook.interiorDesign
 					})
 				});
 				const data = await res.json();
@@ -407,6 +456,12 @@
 					data.pageContent
 				);
 				globalState.updateChapterContent(activeBook.id, editTarget.chapterId, updatedContent, 'completed');
+				if (data.design) {
+					globalState.updateBookInteriorDesign(activeBook.id, {
+						...activeBook.interiorDesign,
+						...data.design
+					});
+				}
 				editTarget = { ...editTarget, chapterContent: updatedContent, pageText: htmlToPlainText(data.pageContent) };
 
 			} else if (editTarget.scope === 'illustration') {
@@ -457,6 +512,7 @@
 	// Track which section is currently visible via IntersectionObserver
 	let activeSection = $state<'cover' | number>('cover');
 	let sectionEls: Map<string, HTMLElement> = new Map();
+	let intersectingSet = new Set<string>();
 	let observer: IntersectionObserver | null = null;
 
 	// Svelte action to register a section element
@@ -465,6 +521,10 @@
 		const key = String(id);
 		sectionEls.set(key, el);
 		el.setAttribute('data-section-id', key);
+
+		if (observer) {
+			observer.observe(el);
+		}
 
 		return {
 			destroy() {
@@ -482,23 +542,46 @@
 
 	onMount(() => {
 		tick().then(() => {
+			const scrollRoot = document.querySelector('.reader-scroll-area');
 			observer = new IntersectionObserver(
 				(entries) => {
-					// Pick the entry that is intersecting and has the largest intersection ratio
-					let best: IntersectionObserverEntry | null = null;
 					for (const entry of entries) {
-						if (entry.isIntersecting) {
-							if (!best || entry.intersectionRatio > best.intersectionRatio) {
-								best = entry;
+						const id = entry.target.getAttribute('data-section-id');
+						if (id) {
+							if (entry.isIntersecting) {
+								intersectingSet.add(id);
+							} else {
+								intersectingSet.delete(id);
 							}
 						}
 					}
-					if (best) {
-						const raw = (best.target as HTMLElement).getAttribute('data-section-id');
-						activeSection = raw === 'cover' ? 'cover' : parseInt(raw ?? '0');
+
+					let bestId: string | null = null;
+					let bestTop = Infinity;
+
+					const rootEl = document.querySelector('.reader-scroll-area');
+					const rootTop = rootEl ? rootEl.getBoundingClientRect().top : 0;
+
+					intersectingSet.forEach((id) => {
+						const el = sectionEls.get(id);
+						if (el) {
+							const rect = el.getBoundingClientRect();
+							const distance = Math.abs(rect.top - rootTop);
+							if (distance < bestTop) {
+								bestTop = distance;
+								bestId = id;
+							}
+						}
+					});
+
+					if (bestId !== null) {
+						activeSection = bestId === 'cover' ? 'cover' : parseInt(bestId);
 					}
 				},
-				{ threshold: [0.1, 0.25, 0.5] }
+				{
+					root: scrollRoot,
+					threshold: [0.0, 0.1, 0.25, 0.5]
+				}
 			);
 
 			sectionEls.forEach((el) => observer?.observe(el));
@@ -506,6 +589,7 @@
 
 		return () => {
 			observer?.disconnect();
+			intersectingSet.clear();
 		};
 	});
 
@@ -516,16 +600,50 @@
 		let src = md.trim();
 
 		// ── Step 1: extract raw HTML blocks so we don't escape them ───────────
-		// Matches block-level HTML tags that Claude emits: <div ...>, <table ...>
 		const rawBlocks: string[] = [];
-		src = src.replace(
-			/<(div|table|thead|tbody|tr|th|td|figure)(\s[^>]*)?>([\s\S]*?)<\/\1>/gi,
-			(match) => {
-				const placeholder = `\x02RAWBLOCK${rawBlocks.length}\x03`;
-				rawBlocks.push(match);
-				return placeholder;
+		
+		// Balance tags dynamically to correctly extract nested elements like divs and tables
+		while (true) {
+			const divMatch = src.match(/<(div|table|thead|tbody|tr|th|td|figure)[\s>]/i);
+			if (!divMatch || divMatch.index === undefined) break;
+
+			const tag = divMatch[1].toLowerCase();
+			const startIdx = divMatch.index;
+
+			let depth = 0;
+			let endIdx = -1;
+
+			const tagRegex = new RegExp(`<\\/?${tag}[\\s>]`, 'gi');
+			tagRegex.lastIndex = startIdx;
+
+			let match;
+			while ((match = tagRegex.exec(src)) !== null) {
+				const matchedTag = match[0].toLowerCase();
+				if (matchedTag.startsWith('</')) {
+					depth--;
+				} else {
+					depth++;
+				}
+
+				if (depth === 0) {
+					endIdx = tagRegex.lastIndex;
+					break;
+				}
 			}
-		);
+
+			if (endIdx !== -1) {
+				const fullBlock = src.substring(startIdx, endIdx);
+				const placeholder = `\x02RAWBLOCK${rawBlocks.length}\x03`;
+				rawBlocks.push(fullBlock);
+				src = src.substring(0, startIdx) + placeholder + src.substring(endIdx);
+			} else {
+				// Prevent infinite loop if tag is unbalanced in source content
+				src = src.substring(0, startIdx) + '\x01' + src.substring(startIdx + 1);
+			}
+		}
+
+		// Restore any temporarily renamed brackets
+		src = src.replace(/\x01/g, '<');
 
 		// ── Step 2: escape remaining text so inline HTML isn't injected ────────
 		let html = src
@@ -576,8 +694,8 @@
 	function handleCopyMarkdown() {
 		if (!activeBook) return;
 		let md = `# ${activeBook.title}\n## ${activeBook.subtitle}\nBy ${activeBook.author}\n\n`;
-		activeBook.chapters.forEach((c) => {
-			md += `\n# Chapter ${c.order}: ${c.title}\n\n${c.content}\n`;
+		activeBook.chapters.forEach((c, idx) => {
+			md += `\n# ${getChapterLabel(c, idx)}: ${c.title}\n\n${c.content}\n`;
 		});
 		navigator.clipboard.writeText(md).then(() => {
 			copySuccess = true;
@@ -676,7 +794,7 @@
 
 			// ─ TOC ─
 			const tocRows = activeBook.chapters
-				.map((c) => `<div class="toc-row">Chapter ${c.order} — ${c.title}</div>`)
+				.map((c, idx) => `<div class="toc-row">${getChapterLabel(c, idx)} — ${c.title}</div>`)
 				.join('');
 
 			// ─ Chapters: re-paginate synchronously from raw markdown ─
@@ -694,7 +812,7 @@
 			let chapHtml = '';
 			let pageCounter = 1;
 
-			activeBook.chapters.forEach((c) => {
+			activeBook.chapters.forEach((c, idx) => {
 				if (c.status !== 'completed' || !c.content) return;
 
 				const fullMd   = parseMarkdown(c.content);
@@ -738,7 +856,7 @@
 				pages.forEach(({ blocks: pBlocks, isFirst }) => {
 					const chapHeader = isFirst ? `
 						<div class="chapter-header">
-							<span class="chapter-label">Chapter ${c.order}</span>
+							<span class="chapter-label">${getChapterLabel(c, idx)}</span>
 							<h2 class="chapter-title">${c.title}</h2>
 							<hr class="chapter-rule">
 						</div>${illustHtml}` : '';
@@ -747,7 +865,7 @@
 						<section class="chapter-section ${coverStyleClass}">
 							<div class="running-header" ${isFirst ? 'style="visibility: hidden;"' : ''}>
 								<span class="rh-book">${activeBook.title}</span>
-								<span class="rh-chap">Chapter ${c.order} — ${c.title}</span>
+								<span class="rh-chap">${getChapterLabel(c, idx)} — ${c.title}</span>
 							</div>
 							<div class="chapter-content ${isFirst ? 'has-drop-cap' : ''}">
 								${chapHeader}
@@ -1543,7 +1661,7 @@
 								onclick={() => scrollTo(idx)}
 								disabled={chap.status !== 'completed'}
 							>
-								<span class="chap-num">Chapter {chap.order}</span>
+								<span class="chap-num">{getChapterLabel(chap, idx)}</span>
 								<span class="chap-title">{chap.title}</span>
 							</button>
 						{/each}
@@ -1669,7 +1787,7 @@
 									<!-- Running header — top of page, suppressed on page 1 of the chapter -->
 									<header class="running-header" style={pageIdx === 0 ? "visibility: hidden;" : ""} aria-hidden="true">
 										<span class="running-header__book">{activeBook.title}</span>
-										<span class="running-header__chapter">Chapter {chap.order} — {chap.title}</span>
+										<span class="running-header__chapter">{getChapterLabel(chap, chapIdx)} — {chap.title}</span>
 									</header>
 
 									<!-- Body content area — scrolls between header and footer -->
@@ -1678,7 +1796,7 @@
 										{#if pageIdx === 0}
 											<!-- Chapter header — label, title, rule -->
 											<div class="chapter-header">
-												<span class="chapter-label">Chapter {chap.order}</span>
+												<span class="chapter-label">{getChapterLabel(chap, chapIdx)}</span>
 												<h2 class="chapter-title">{chap.title}</h2>
 												<hr class="chapter-rule" />
 											</div>
@@ -1702,7 +1820,7 @@
 														researchNotes: chap.researchNotes,
 														illustrationUrl: chap.illustrationUrl ?? '',
 														illustrationPrompt: chap.summary
-															? `A high-quality editorial illustration for a chapter titled "${chap.title}" about: ${chap.summary}. Cinematic lighting, detailed, professional.`
+															? `${activeBook?.useUltraRealistic || activeBook?.coverSettings?.useUltraRealistic ? 'A hyperrealistic, award-winning photograph, highly detailed photorealistic render, 8k resolution, cinematic lighting, professional composition' : 'A high-quality editorial illustration'} for a chapter titled "${chap.title}" about: ${chap.summary}.`
 															: `Editorial illustration: "${chap.title}"`
 													})}
 												>

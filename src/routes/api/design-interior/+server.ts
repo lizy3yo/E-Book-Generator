@@ -274,7 +274,7 @@ Format: {"analysis": "...", "design": {...}}`;
 
 		if (res.ok) {
 			const data = await res.json();
-			const text = (data.content?.[0]?.text || '').trim();
+			const text = (data.content?.find((c: any) => c.type === 'text')?.text || '').trim();
 			const fullText = prefill + text;
 			const result = JSON.parse(fullText);
 			console.log('[design-interior] visual analysis of cover:', result.analysis);

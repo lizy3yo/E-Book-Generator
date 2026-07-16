@@ -88,7 +88,7 @@ Do not include any markdown formatting, code block markers (like \`\`\`json), or
 
 					if (response.ok) {
 						const data = await response.json();
-						responseText = (data.content?.[0]?.text || '').trim();
+						responseText = (data.content?.find((c: any) => c.type === 'text')?.text || '').trim();
 						
 						// Clean markdown formatting if any was returned
 						let cleanJson = responseText;

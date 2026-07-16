@@ -30,57 +30,60 @@ export const POST: RequestHandler = async ({ request }) => {
 
 		// Handle Mock Mode
 		if (useMockMode || !activeApiKey) {
-			await new Promise((resolve) => setTimeout(resolve, 3000)); // Simulate thinking
+			const serverClaudeKey = ANTHROPIC_API_KEY?.trim();
+			if (!serverClaudeKey) {
+				await new Promise((resolve) => setTimeout(resolve, 3000)); // Simulate thinking
 
-			if (action === 'outline') {
-				// Generate typical outlines based on book title
-				const numChapters = length === 'short' ? 3 : length === 'medium' ? 5 : 8;
-				const chapters = [];
+				if (action === 'outline') {
+					// Generate typical outlines based on book title
+					const numChapters = length === 'short' ? 3 : length === 'medium' ? 5 : 8;
+					const chapters = [];
 
-				for (let i = 1; i <= numChapters; i++) {
-					chapters.push({
-						id: crypto.randomUUID(),
-						title: getMockChapterTitle(bookTitle, i, numChapters),
-						order: i,
-						summary: getMockChapterSummary(bookTitle, i),
-						content: '',
-						researchNotes: `Facts retrieved: ${researchNotes ? 'Grounding applied.' : 'General knowledge applied.'}`,
-						illustrationUrl: null,
-						status: 'pending' as const
+					for (let i = 1; i <= numChapters; i++) {
+						chapters.push({
+							id: crypto.randomUUID(),
+							title: getMockChapterTitle(bookTitle, i, numChapters),
+							order: i,
+							summary: getMockChapterSummary(bookTitle, i),
+							content: '',
+							researchNotes: `Facts retrieved: ${researchNotes ? 'Grounding applied.' : 'General knowledge applied.'}`,
+							illustrationUrl: null,
+							status: 'pending' as const
+						});
+					}
+
+					return json({
+						success: true,
+						chapters,
+						source: 'mock'
 					});
 				}
 
-				return json({
-					success: true,
-					chapters,
-					source: 'mock'
-				});
-			}
+				if (action === 'write-chapter') {
+					const content = getMockChapterContent(bookTitle, chapterTitle || 'Introduction', chapterOrder || 1, tone, researchNotes);
+					return json({
+						success: true,
+						content,
+						source: 'mock'
+					});
+				}
 
-			if (action === 'write-chapter') {
-				const content = getMockChapterContent(bookTitle, chapterTitle || 'Introduction', chapterOrder || 1, tone, researchNotes);
-				return json({
-					success: true,
-					content,
-					source: 'mock'
-				});
-			}
-
-			if (action === 'verify-chapter') {
-				// Fact-checking/consistency report simulation
-				const validationReport = `[Self-Fact-Checking & Consistency Pass - Claude 3.5 Sonnet]
+				if (action === 'verify-chapter') {
+					// Fact-checking/consistency report simulation
+					const validationReport = `[Self-Fact-Checking & Consistency Pass - Claude 3.5 Sonnet]
 - Checked consistency of title: "${bookTitle}"
 - Checked chapter title: "${chapterTitle}"
 - Grounding verification: Verified against semantic facts provided.
 - Structural validation: No timeline anomalies or terminology contradictions found.
 - Verification status: PASSED.`;
 
-				return json({
-					success: true,
-					verifiedContent: chapterContent + `\n\n*(Verified for consistency & factual accuracy)*`,
-					report: validationReport,
-					source: 'mock'
-				});
+					return json({
+						success: true,
+						verifiedContent: chapterContent + `\n\n*(Verified for consistency & factual accuracy)*`,
+						report: validationReport,
+						source: 'mock'
+					});
+				}
 			}
 		}
 
@@ -136,6 +139,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		if (action === 'outline') {
 			systemPrompt = `You are a senior acquisitions editor at a major publishing house with 20 years of experience structuring bestselling non-fiction ebooks.
 Your task is to produce a publication-ready chapter outline.
+You MUST strictly follow any custom chapter requirements, structural requests (e.g. adding an Introduction/Preface chapter first, specific topics to cover, or particular formatting), and directions specified by the user in the "[Author Brief]" under Grounding Research & Author Notes.
 Respond ONLY with a valid JSON array — no markdown fences, no commentary.
 Each element: {"title": "string", "order": number, "summary": "string (2–3 sentences describing what the chapter covers and what the reader will gain)"}`;
 
@@ -162,6 +166,7 @@ Return ONLY a valid JSON array.`;
 		} else if (action === 'write-chapter') {
 			systemPrompt = `You are an expert researcher, technical writer, and editor writing for a commercial publishing house.
 Your task is to generate a professional-quality ebook chapter that is accurate, evidence-based, and thoroughly researched.
+You MUST incorporate and respect any specific guidelines, concepts, examples, focus areas, or narrative instructions specified in the "[Author Brief]" under Grounding Research & Author Notes to ensure the chapter aligns perfectly with the author's vision.
 
 Core Principle: Research comes before writing. Ground all your claims in the provided Exa AI research notes. Do not begin writing until you have fully analyzed and synthesized the facts.
 
@@ -389,20 +394,27 @@ Review, correct, and return in the required format.`;
 		}
 
 		const data = await response.json();
-		const responseText = data.content?.[0]?.text || '';
+		const responseText = data.content?.find((c: any) => c.type === 'text')?.text || '';
 
 		if (action === 'outline') {
 			// Extract JSON array
 			try {
-				// Clean potential markdown wrap
 				let cleanJson = responseText.trim();
-				if (cleanJson.startsWith('```json')) {
-					cleanJson = cleanJson.substring(7);
+				
+				// Robust array extraction to discard conversational filler
+				const arrayStart = cleanJson.indexOf('[');
+				const arrayEnd = cleanJson.lastIndexOf(']');
+				if (arrayStart !== -1 && arrayEnd !== -1 && arrayEnd > arrayStart) {
+					cleanJson = cleanJson.substring(arrayStart, arrayEnd + 1);
+				} else {
+					if (cleanJson.startsWith('```json')) {
+						cleanJson = cleanJson.substring(7);
+					}
+					if (cleanJson.endsWith('```')) {
+						cleanJson = cleanJson.substring(0, cleanJson.length - 3);
+					}
+					cleanJson = cleanJson.trim();
 				}
-				if (cleanJson.endsWith('```')) {
-					cleanJson = cleanJson.substring(0, cleanJson.length - 3);
-				}
-				cleanJson = cleanJson.trim();
 
 				const chapters = JSON.parse(cleanJson);
 				// Map chapters to include database-like fields
