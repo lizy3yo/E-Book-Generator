@@ -7,6 +7,7 @@
 		ArrowLeft, Info, RotateCcw
 	} from '@lucide/svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+	import ChapterPlanError from '$lib/components/ChapterPlanError.svelte';
 	import { generateImage } from '$lib/generateImage';
 
 	// ── Stage 1: concept form ──────────────────────────────────────────────────
@@ -52,8 +53,9 @@
 	}
 
 	// ── Stage 3: chapter plan ──────────────────────────────────────────────────
-	let isGeneratingPlan  = $state(false);
-	let editingChapterIdx = $state<number | null>(null);
+	let isGeneratingPlan   = $state(false);
+	let chapterPlanError   = $state<string | null>(null);
+	let editingChapterIdx  = $state<number | null>(null);
 	let editTitle   = $state('');
 	let editSummary = $state('');
 
@@ -208,6 +210,7 @@
 	// ─────────────────────────────────────────────────────────────────────────
 	async function generateChapterPlan(book: Book) {
 		isGeneratingPlan = true;
+		chapterPlanError = null;
 		globalState.setPipelineStage(book.id, 3);
 		globalState.updateBookStatus(book.id, 'researching');
 
@@ -261,6 +264,7 @@
 			const chapters: Chapter[] = outlineData.chapters;
 			globalState.updateBookChapters(book.id, chapters);
 		} catch (err: any) {
+			chapterPlanError = err.message || 'An unexpected error occurred. Please try again.';
 			globalState.updateBookStatus(book.id, 'failed');
 			globalState.addLog(book.id, { step: 'outline', status: 'error', message: err.message });
 		}
@@ -893,7 +897,13 @@
 					<p>AI has structured the outline for <strong>{active.title}</strong>. Edit any chapter title or summary, then approve to begin writing.</p>
 				</div>
 
-				{#if isGeneratingPlan || active.chapters.length === 0}
+				{#if chapterPlanError || (active.status === 'failed' && active.chapters.length === 0 && !isGeneratingPlan)}
+					<ChapterPlanError
+						error={chapterPlanError ?? 'Chapter plan generation failed. Please try again.'}
+						isRetrying={isGeneratingPlan}
+						onRetry={() => generateChapterPlan(active)}
+					/>
+				{:else if isGeneratingPlan || active.chapters.length === 0}
 					<div class="plan-loading">
 						<div class="plan-skeleton">
 							{#each [1,2,3,4,5] as _}
