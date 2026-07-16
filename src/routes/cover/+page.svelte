@@ -773,12 +773,21 @@
 		gap: 2rem;
 	}
 
-	.settings-panel h3, .assistant-chat-panel h3 {
+	/*
+	.settings-panel h3 {
+		font-size: 1.15rem;
+		margin-bottom: 1.25rem;
+		color: var(--text-main);
+	}
+	*/
+
+	.assistant-chat-panel h3 {
 		font-size: 1.15rem;
 		margin-bottom: 1.25rem;
 		color: var(--text-main);
 	}
 
+	/* Unused settings-panel styles commented out to resolve Svelte check warnings:
 	.control-row {
 		margin-bottom: 1.25rem;
 	}
@@ -830,6 +839,7 @@
 		border-radius: var(--radius-sm);
 		border: 1px solid var(--border-color);
 	}
+	*/
 
 	/* Assistant Chat Styling */
 	.assistant-chat-panel {

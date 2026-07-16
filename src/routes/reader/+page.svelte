@@ -3662,7 +3662,7 @@
 		position: fixed;
 		inset: 0;
 		background: rgba(26, 21, 16, 0.35);
-		z-index: 40;
+		z-index: 140;
 		animation: fadeIn 0.2s ease;
 	}
 
@@ -3680,7 +3680,7 @@
 		border-left: 1px solid var(--border, #E5DFD3);
 		display: flex;
 		flex-direction: column;
-		z-index: 50;
+		z-index: 150;
 		animation: slideIn 0.22s cubic-bezier(0.22, 0.61, 0.36, 1);
 		box-shadow: -8px 0 32px rgba(26, 21, 16, 0.12);
 	}
