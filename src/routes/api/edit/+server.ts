@@ -49,6 +49,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			chapterContent,
 			pageContent,
 			illustrationPrompt,
+			diagramRaw,
 			editInstruction,
 			researchNotes,
 			coverSettings,
@@ -57,7 +58,6 @@ export const POST: RequestHandler = async ({ request }) => {
 		} = await request.json();
 
 		const activeApiKey = (apiKey?.trim()) || ANTHROPIC_API_KEY;
-
 		const selectedModel =
 			model === 'claude-opus-4'
 				? (CLAUDE_OPUS_MODEL || 'claude-opus-4-8')
@@ -133,6 +133,20 @@ export const POST: RequestHandler = async ({ request }) => {
 					return json({
 						success: true,
 						prompt: `${illustrationPrompt}. ${editInstruction}`,
+						source: 'mock'
+					});
+				}
+				if (action === 'edit-diagram') {
+					return json({
+						success: true,
+						diagramRaw: `type: Flowchart\ntitle: ${chapterTitle} (edited)\nsubtitle: MOCK EDIT\nsteps:\n  - label: Step 1\n    text: ${editInstruction}\n  - label: Step 2\n    text: Further detail added\n`,
+						source: 'mock'
+					});
+				}
+				if (action === 'edit-html-block') {
+					return json({
+						success: true,
+						htmlBlock: diagramRaw || `<div class="callout-box"><strong>Mock edit applied:</strong> ${editInstruction}</div>`,
 						source: 'mock'
 					});
 				}
@@ -298,6 +312,46 @@ User's instruction:
 
 Write the improved image generation prompt now.`;
 
+		} else if (action === 'edit-diagram') {
+			systemPrompt = `You are an expert technical writer and information designer.
+Your task is to edit an existing diagram/chart data block according to the user's instruction and return the revised block.
+
+Rules:
+- Return ONLY the revised diagram data — no fences, no commentary, no explanation.
+- Preserve the existing diagram type and data format exactly.
+- Only change what the user asks for. Keep all other steps, labels, and values the same.
+- The diagram data format uses YAML-like key-value pairs (type:, title:, subtitle:, steps: etc.).`;
+
+			userPrompt = `Book: "${bookTitle}" | Chapter ${chapterOrder}: "${chapterTitle}"
+
+Current diagram data:
+${diagramRaw || '(no data)'}
+
+User's edit instruction:
+"${editInstruction}"
+
+Return only the revised diagram data block now.`;
+
+		} else if (action === 'edit-html-block') {
+			systemPrompt = `You are an expert technical writer and information designer for the ebook "${bookTitle}" (${genre}).
+Your task is to edit an existing HTML visual element (table, callout box, stat block, checklist, pro/con grid, etc.) according to the user's instruction.
+
+Rules:
+- Return ONLY the revised HTML — no commentary, no explanation, no markdown fences.
+- Preserve the existing HTML class names, structure, and element type exactly.
+- Only change the data/content the user asks for. Keep styling, class names, and layout the same.
+- The output must be valid, well-formed HTML.`;
+
+			userPrompt = `Book: "${bookTitle}" | Chapter ${chapterOrder}: "${chapterTitle}"
+
+Current HTML element:
+${diagramRaw || '(no data)'}
+
+User's edit instruction:
+"${editInstruction}"
+
+Return only the revised HTML element now.`;
+
 		} else if (action === 'add-page') {
 			systemPrompt = `You are a professional ebook author working on "${bookTitle}" (${genre}).
 The book is written in a "${tone}" voice.
@@ -401,6 +455,12 @@ COVER SETTINGS: ${JSON.stringify(coverSettings || {})}`;
 		}
 		if (action === 'edit-illustration') {
 			return json({ success: true, prompt: text, source: 'live' });
+		}
+		if (action === 'edit-diagram') {
+			return json({ success: true, diagramRaw: text, source: 'live' });
+		}
+		if (action === 'edit-html-block') {
+			return json({ success: true, htmlBlock: text, source: 'live' });
 		}
 
 		throw new Error('Unhandled action after API response.');

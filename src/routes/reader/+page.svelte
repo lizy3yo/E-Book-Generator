@@ -4,6 +4,7 @@
 	import type { Chapter } from '$lib/types';
 	import { generateImage } from '$lib/generateImage';
 	import { parseMarkdown } from '$lib/diagrams';
+	import { INTERIOR_PRESETS } from '$lib/interiorDesigns';
 	import {
 		BookMarked, Clipboard, ClipboardCheck, FileCode, FileDown,
 		Image as ImageIcon, PenLine, BookOpen,
@@ -19,11 +20,29 @@
 	let headerFooterPreset = $state('Classical Editorial');
 	let interiorCustomInstructions = $state('');
 
+	// Instantly apply a named preset from $lib/interiorDesigns without hitting the AI endpoint.
+	// Useful when the user just wants to swap layout style without regenerating from the cover.
+	function applyPresetInstantly(preset: string) {
+		if (!activeBook) return;
+		const cs = activeBook.coverSettings;
+		const primary = cs?.titleColor  || '#1A1612';
+		const accent  = cs?.authorColor || '#8E7453';
+		const alignment = cs?.alignment || 'left';
+		const titleFont = cs?.titleFont  || 'Lora';
+		const presetFn = INTERIOR_PRESETS[preset];
+		if (!presetFn) return;
+		const design = presetFn({ primary, accent, alignment, titleFont });
+		const current = activeBook.interiorDesign ?? {};
+		globalState.updateBookInteriorDesign(activeBook.id, { ...current, ...design });
+		designKey = Date.now();
+	}
+
 	let appliedPreset = $state('Classical Editorial');
 	let appliedCustomInstructions = $state('');
 
 	let copySuccess = $state(false);
 	let isPdfExporting = $state(false);
+	let readerScrollArea = $state<HTMLElement | null>(null);
 
 	let activeBook = $derived(globalState.activeBook);
 	let coverSettings = $derived(activeBook?.coverSettings);
@@ -33,7 +52,7 @@
 	);
 
 	// ── Content Editor state ──────────────────────────────────────────────────
-	type EditScope = 'page' | 'chapter' | 'illustration' | 'add-page';
+	type EditScope = 'page' | 'chapter' | 'illustration' | 'add-page' | 'diagram';
 
 	interface EditTarget {
 		scope: EditScope;
@@ -51,6 +70,13 @@
 		// illustration scope
 		illustrationUrl?: string;
 		illustrationPrompt?: string;
+		// diagram scope
+		diagramIndex?: number;   // which diagram block (0-based) within this chapter
+		diagramRaw?: string;     // raw content: diagram YAML, markdown table, or raw HTML
+		// 'fence'  = ```diagram``` code block
+		// 'table'  = markdown table (| col | col |)
+		// 'inline' = raw HTML visual element (callout-box, stat-block, etc.)
+		diagramKind?: 'fence' | 'table' | 'inline';
 	}
 
 	let editTarget      = $state<EditTarget | null>(null);
@@ -62,6 +88,119 @@
 	let lastInstruction = $state('');
 	// Which action triggered the current in-progress edit (for button loading state)
 	let activeAction    = $state<'apply' | 'redo' | 'reconstruct' | null>(null);
+
+	// ── Illustration-drawer: realistic image toggle ───────────────────────────
+	// When true, the prompt is prefixed with a photorealistic boilerplate that
+	// steers the image model toward hyper-detailed, photograph-quality output.
+	let useRealisticIllustration = $state(false);
+
+	// ── Diagram editor state ─────────────────────────────────────────────────────
+	/** Extract the Nth diagram code block content from chapter markdown */
+	function getDiagramBlockRaw(chapterContent: string, index: number): string {
+		const re = /```(?:diagram|mermaid)\r?\n([\s\S]*?)```/g;
+		let i = 0;
+		let m: RegExpExecArray | null;
+		while ((m = re.exec(chapterContent)) !== null) {
+			if (i === index) return m[1];
+			i++;
+		}
+		return '';
+	}
+
+	/**
+	 * Unified splice helper for all editable visual block kinds.
+	 *
+	 * Strategies:
+	 *  'fence'  – replaces the Nth ```diagram``` code fence with new YAML or image markdown
+	 *  'table'  – replaces the first occurrence of the original raw markdown table with the new one
+	 *  'inline' – replaces the first occurrence of the original raw HTML block with the new one
+	 *
+	 * @param fullMarkdown  The chapter's raw markdown string
+	 * @param kind          Which strategy to use
+	 * @param original      The original raw content (for table/inline: used as the search anchor)
+	 * @param index         For 'fence': the 0-based index of the code fence to replace
+	 * @param replacement   The new content to write in place of the old block
+	 * @param asImage       When true, `replacement` is verbatim markdown (no fence wrapper)
+	 */
+	function spliceVisualBlock(
+		fullMarkdown: string,
+		kind: 'fence' | 'table' | 'inline',
+		original: string,
+		index: number,
+		replacement: string,
+		asImage = false
+	): string {
+		if (kind === 'fence') {
+			// Find the Nth ```diagram / ```mermaid block and replace it
+			const re = /```(?:diagram|mermaid)\r?\n[\s\S]*?```/g;
+			let i = 0, m: RegExpExecArray | null;
+			while ((m = re.exec(fullMarkdown)) !== null) {
+				if (i === index) {
+					const block = asImage ? replacement : `\`\`\`diagram\n${replacement}\n\`\`\``;
+					return fullMarkdown.slice(0, m.index) + block + fullMarkdown.slice(m.index + m[0].length);
+				}
+				i++;
+			}
+			// Fallback: append
+			return asImage
+				? `${fullMarkdown}\n\n${replacement}`
+				: `${fullMarkdown}\n\n\`\`\`diagram\n${replacement}\n\`\`\``;
+		}
+
+		if (kind === 'table' || kind === 'inline') {
+			// For tables and inline HTML, `original` is the raw string to search for.
+			// Use a simple string replace for the first occurrence — safe because
+			// identical raw blocks in the same chapter are genuinely unlikely.
+			if (original && fullMarkdown.includes(original)) {
+				return fullMarkdown.replace(original, asImage ? replacement : replacement);
+			}
+			// Fallback: append
+			return `${fullMarkdown}\n\n${replacement}`;
+		}
+
+		return fullMarkdown;
+	}
+
+	/** Click-delegation handler for the reader scroll container */
+	function handleReaderClick(e: MouseEvent) {
+		const btn = (e.target as HTMLElement).closest('.edit-trigger--diagram') as HTMLElement | null;
+		if (!btn) return;
+		e.stopPropagation();
+		const chapId = btn.dataset.chapterId ?? '';
+		const chap   = activeBook?.chapters.find(c => c.id === chapId);
+		if (!chap || !activeBook) return;
+
+		// Determine the kind of visual block that was clicked:
+		//   'fence'  — data-diagram-index set, no data-table-raw   → ```diagram``` code block
+		//   'table'  — data-table-index set, data-table-raw starts with '|'  → markdown table
+		//   'inline' — data-table-index set, data-table-raw starts with '<'  → raw HTML element
+		let raw  = '';
+		let kind: 'fence' | 'table' | 'inline' = 'fence';
+		let idx  = 0;
+
+		if (btn.dataset.tableRaw) {
+			raw  = decodeURIComponent(btn.dataset.tableRaw);
+			idx  = parseInt(btn.dataset.tableIndex ?? '0', 10);
+			kind = raw.trimStart().startsWith('<') ? 'inline' : 'table';
+		} else {
+			idx  = parseInt(btn.dataset.diagramIndex ?? '0', 10);
+			raw  = getDiagramBlockRaw(chap.content, idx);
+			kind = 'fence';
+		}
+
+		openEditPanel({
+			scope:          'diagram',
+			chapterId:      chapId,
+			chapterTitle:   chap.title,
+			chapterOrder:   chap.order,
+			chapterSummary: chap.summary,
+			chapterContent: chap.content,
+			researchNotes:  chap.researchNotes,
+			diagramIndex:   idx,
+			diagramRaw:     raw,
+			diagramKind:    kind
+		});
+	}
 
 	// ── Per-book design color overrides (written into interiorDesign) ──────────
 	let designAccentOverride = $state('');
@@ -80,6 +219,10 @@
 		editInstruction = '';
 		editSuccess = false;
 		editError = '';
+		// Seed the realistic toggle from the book-level setting so it remembers the
+		// author's preferred image style without requiring a manual toggle each time.
+		useRealisticIllustration =
+			!!(activeBook?.useUltraRealistic || activeBook?.coverSettings?.useUltraRealistic);
 		// Keep lastInstruction — it's scoped to the drawer session intentionally
 		// so Redo works immediately after a successful edit without re-typing
 	}
@@ -91,6 +234,7 @@
 		editError = '';
 		lastInstruction = '';
 		activeAction = null;
+		useRealisticIllustration = false;
 	}
 
 	function getChapterOrderLabel(chap: { title: string; order: number }, idx: number): string {
@@ -174,7 +318,17 @@
 
 	async function applyEdit() {
 		if (!editTarget || !editInstruction.trim() || !activeBook) return;
-		const instruction = editInstruction.trim();
+		let instruction = editInstruction.trim();
+		// When the realistic toggle is active for illustrations or diagrams, prepend a
+		// photorealistic style directive so the image model outputs
+		// high-fidelity, photograph-quality renders regardless of what the
+		// user wrote.
+		if ((editTarget.scope === 'illustration' || editTarget.scope === 'diagram') && useRealisticIllustration) {
+			instruction =
+				`Hyperrealistic photographic render, 8k resolution, cinematic lighting, ` +
+				`award-winning professional photography quality, highly detailed. ` +
+				instruction;
+		}
 		await _runEdit(instruction, 'apply');
 	}
 
@@ -278,7 +432,7 @@
 			} else if (editTarget.scope === 'illustration') {
 				// For illustrations, reconstruct = generate a fresh prompt from scratch
 				// using only the chapter title and summary, ignoring the old prompt
-				const isUltra = activeBook.useUltraRealistic || activeBook.coverSettings?.useUltraRealistic;
+				const isUltra = useRealisticIllustration || activeBook.useUltraRealistic || activeBook.coverSettings?.useUltraRealistic;
 				const freshPrompt = [
 					isUltra 
 						? `A hyperrealistic, award-winning photograph, highly detailed photorealistic render, 8k resolution, cinematic lighting, professional composition`
@@ -297,6 +451,72 @@
 				});
 				globalState.updateChapterIllustration(activeBook.id, editTarget.chapterId, newIllustUrl);
 				editTarget = { ...editTarget, illustrationUrl: newIllustUrl, illustrationPrompt: freshPrompt };
+
+			} else if (editTarget.scope === 'diagram') {
+				const kind = editTarget.diagramKind ?? 'fence';
+				const isUltra = useRealisticIllustration || activeBook.useUltraRealistic || activeBook.coverSettings?.useUltraRealistic;
+				if (isUltra) {
+					// ── Realistic path: generate a fresh image replacing this visual block ──
+					const freshPrompt = [
+						'Hyperrealistic photographic render, 8k resolution, cinematic lighting,',
+						'award-winning professional photography quality, highly detailed.',
+						`Visual representation of: ${editTarget.diagramRaw || editTarget.chapterSummary || editTarget.chapterTitle}`,
+						`From the book "${activeBook.title}" (${activeBook.genre}).`
+					].join(' ');
+					const imgUrl = await generateImage({
+						prompt:      freshPrompt,
+						apiKey:      globalState.apiKeys.imageKey,
+						provider:    globalState.apiKeys.imageProvider,
+						useMockMode: globalState.apiKeys.useMockMode,
+						isCover:     false
+					});
+					const imgMarkdown = `![${editTarget.chapterTitle}](${imgUrl})`;
+					const updatedContent = spliceVisualBlock(
+						editTarget.chapterContent, kind,
+						editTarget.diagramRaw ?? '',
+						editTarget.diagramIndex ?? 0,
+						imgMarkdown, true
+					);
+					globalState.updateChapterContent(activeBook.id, editTarget.chapterId, updatedContent, 'completed');
+					editTarget = {
+						...editTarget,
+						chapterContent: updatedContent,
+						illustrationUrl: imgUrl,
+						illustrationPrompt: freshPrompt,
+						scope: 'illustration'
+					};
+				} else {
+					// ── Standard path: reconstruct the visual block from scratch ──────
+					const isHtmlBlock = kind === 'table' || kind === 'inline';
+					const apiAction   = isHtmlBlock ? 'edit-html-block' : 'edit-diagram';
+					const res = await fetch('/api/edit', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							action:        apiAction,
+							apiKey:        globalState.apiKeys.anthropicKey,
+							useMockMode:   globalState.apiKeys.useMockMode,
+							bookTitle:     activeBook.title,
+							genre:         activeBook.genre,
+							tone:          activeBook.tone,
+							chapterTitle:  editTarget.chapterTitle,
+							chapterOrder:  editTarget.chapterOrder,
+							diagramRaw:    editTarget.diagramRaw,
+							editInstruction: `Reconstruct this from scratch. Make it richer, more detailed, and more visually informative.`
+						})
+					});
+					const data = await res.json();
+					if (!data.success) throw new Error(data.error || 'Reconstruct failed');
+					const newRaw = data.diagramRaw ?? data.htmlBlock ?? editTarget.diagramRaw ?? '';
+					const updatedContent = spliceVisualBlock(
+						editTarget.chapterContent, kind,
+						editTarget.diagramRaw ?? '',
+						editTarget.diagramIndex ?? 0,
+						newRaw, false
+					);
+					globalState.updateChapterContent(activeBook.id, editTarget.chapterId, updatedContent, 'completed');
+					editTarget = { ...editTarget, chapterContent: updatedContent, diagramRaw: newRaw };
+				}
 			}
 
 			lastInstruction = '';   // reconstruct has no re-runnable instruction; clear Redo
@@ -495,6 +715,74 @@
 				});
 				globalState.updateChapterIllustration(activeBook.id, editTarget.chapterId, newIllustUrl);
 				editTarget = { ...editTarget, illustrationUrl: newIllustUrl, illustrationPrompt: promptData.prompt };
+
+			} else if (editTarget.scope === 'diagram') {
+				const kind = editTarget.diagramKind ?? 'fence';
+				if (useRealisticIllustration) {
+					// ── Realistic path: AI image replaces the visual block ──────────
+					const diagramContext = editTarget.diagramRaw || editTarget.chapterSummary || editTarget.chapterTitle;
+					const imagePrompt = [
+						'Hyperrealistic photographic render, 8k resolution, cinematic lighting,',
+						'award-winning professional photography quality, highly detailed.',
+						instruction.trim() || `Visual representation of: ${diagramContext}`,
+						`Context: Chapter "${editTarget.chapterTitle}" from "${activeBook.title}" (${activeBook.genre}).`
+					].join(' ');
+					const imgUrl = await generateImage({
+						prompt:      imagePrompt,
+						apiKey:      globalState.apiKeys.imageKey,
+						provider:    globalState.apiKeys.imageProvider,
+						useMockMode: globalState.apiKeys.useMockMode,
+						isCover:     false
+					});
+					const imgMarkdown = `![${editTarget.chapterTitle}](${imgUrl})`;
+					const updatedContent = spliceVisualBlock(
+						editTarget.chapterContent, kind,
+						editTarget.diagramRaw ?? '',
+						editTarget.diagramIndex ?? 0,
+						imgMarkdown, true
+					);
+					globalState.updateChapterContent(activeBook.id, editTarget.chapterId, updatedContent, 'completed');
+					editTarget = {
+						...editTarget,
+						chapterContent: updatedContent,
+						illustrationUrl: imgUrl,
+						illustrationPrompt: imagePrompt,
+						scope: 'illustration'
+					};
+				} else {
+					// ── Standard path: AI rewrites / edits the visual block ─────────
+					// For table/inline blocks, send the raw HTML/markdown as context;
+					// Claude rewrites it and we splice the new version back in.
+					const isHtmlBlock = kind === 'table' || kind === 'inline';
+					const apiAction   = isHtmlBlock ? 'edit-html-block' : 'edit-diagram';
+					const res = await fetch('/api/edit', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							action:        apiAction,
+							apiKey:        globalState.apiKeys.anthropicKey,
+							useMockMode:   globalState.apiKeys.useMockMode,
+							bookTitle:     activeBook.title,
+							genre:         activeBook.genre,
+							tone:          activeBook.tone,
+							chapterTitle:  editTarget.chapterTitle,
+							chapterOrder:  editTarget.chapterOrder,
+							diagramRaw:    editTarget.diagramRaw,
+							editInstruction: instruction
+						})
+					});
+					const data = await res.json();
+					if (!data.success) throw new Error(data.error || 'Edit failed');
+					const newRaw = data.diagramRaw ?? data.htmlBlock ?? editTarget.diagramRaw ?? '';
+					const updatedContent = spliceVisualBlock(
+						editTarget.chapterContent, kind,
+						editTarget.diagramRaw ?? '',
+						editTarget.diagramIndex ?? 0,
+						newRaw, false
+					);
+					globalState.updateChapterContent(activeBook.id, editTarget.chapterId, updatedContent, 'completed');
+					editTarget = { ...editTarget, chapterContent: updatedContent, diagramRaw: newRaw };
+				}
 			}
 
 			lastInstruction = instruction;
@@ -543,7 +831,9 @@
 
 	onMount(() => {
 		tick().then(() => {
-			const scrollRoot = document.querySelector('.reader-scroll-area');
+			const scrollRoot = readerScrollArea;
+			if (!scrollRoot) return;
+
 			observer = new IntersectionObserver(
 				(entries) => {
 					for (const entry of entries) {
@@ -586,9 +876,11 @@
 			);
 
 			sectionEls.forEach((el) => observer?.observe(el));
+			scrollRoot.addEventListener('click', handleReaderClick);
 		});
 
 		return () => {
+			readerScrollArea?.removeEventListener('click', handleReaderClick);
 			observer?.disconnect();
 			intersectingSet.clear();
 		};
@@ -766,13 +1058,30 @@
 				.pdf-measurer-container tr:nth-child(even) {
 					background-color: #f8fafc;
 				}
-				.pdf-measurer-container .callout-box {
-					background-color: #faf7f2;
-					border-left: 3.5px solid ${accent};
+				.pdf-measurer-container .callout-box,
+				.pdf-measurer-container .tip-box,
+				.pdf-measurer-container .warning-box,
+				.pdf-measurer-container .key-rule-box {
 					border-radius: 4px;
 					padding: 1.25rem 1.5rem;
 					margin: 2rem 0;
 					box-sizing: border-box;
+				}
+				.pdf-measurer-container .callout-box {
+					background-color: #faf7f2;
+					border-left: 3.5px solid ${accent};
+				}
+				.pdf-measurer-container .tip-box {
+					background-color: #ecfdf5;
+					border-left: 3.5px solid #10b981;
+				}
+				.pdf-measurer-container .warning-box {
+					background-color: #fef2f2;
+					border-left: 3.5px solid #ef4444;
+				}
+				.pdf-measurer-container .key-rule-box {
+					background-color: #fffbeb;
+					border-left: 3.5px solid #f59e0b;
 				}
 				.pdf-measurer-container .callout-box__title {
 					font-family: 'Inter',sans-serif;
@@ -780,9 +1089,23 @@
 					font-size: 0.85rem;
 					text-transform: uppercase;
 					letter-spacing: 1.5px;
-					color: ${accent};
 					margin-bottom: 0.5rem;
 					display: block;
+				}
+				.pdf-measurer-container .callout-box {
+					color: ${accent};
+				}
+				.pdf-measurer-container .callout-box .callout-box__title {
+					color: ${accent};
+				}
+				.pdf-measurer-container .tip-box .callout-box__title {
+					color: #047857;
+				}
+				.pdf-measurer-container .warning-box .callout-box__title {
+					color: #b91c1c;
+				}
+				.pdf-measurer-container .key-rule-box .callout-box__title {
+					color: #b45309;
 				}
 				.pdf-measurer-container .callout-box__content {
 					font-size: 0.95rem;
@@ -857,7 +1180,7 @@
 			activeBook.chapters.forEach((c, idx) => {
 				if (c.status !== 'completed' || !c.content) return;
 
-				const fullMd   = parseMarkdown(c.content);
+				const fullMd   = parseMarkdown(c.content, c.id);
 				const rawIllust = c.illustrationUrl || '';
 				const mappedIllust = rawIllust && Object.prototype.hasOwnProperty.call(dataUrls, rawIllust)
 					? dataUrls[rawIllust]  // base64 or '' if fetch failed
@@ -1010,8 +1333,18 @@
 	}
 	.rh-book  { font-weight: 600; }
 	.rh-chap  { font-style: italic; font-family: ${titleFontCss}; text-transform: none; letter-spacing: 0; }
-	.chapter-content { flex: 1; overflow: hidden; padding-top: 0.5in; }
-	.chapter-header { margin-bottom: 2rem; text-align: ${alignment}; display: flex; flex-direction: column; align-items: ${activeBook.interiorDesign?.['--r-header-align'] ?? flexAlign}; }
+	.chapter-content { flex: 1; overflow: hidden; padding-top: ${activeBook.interiorDesign?.['--r-chap-header-pad'] ?? '0.35in'}; }
+	.chapter-header {
+	margin-bottom: ${activeBook.interiorDesign?.['--r-chap-header-mb'] ?? '1.5rem'};
+	text-align: ${alignment};
+	display: flex;
+	flex-direction: column;
+	align-items: ${activeBook.interiorDesign?.['--r-header-align'] ?? flexAlign};
+	background: ${activeBook.interiorDesign?.['--r-chap-header-bg'] ?? 'transparent'};
+	border-left: ${activeBook.interiorDesign?.['--r-chap-header-bd-left'] ?? 'none'};
+	border-top: ${activeBook.interiorDesign?.['--r-chap-header-bd-top'] ?? 'none'};
+	padding: ${activeBook.interiorDesign?.['--r-chap-header-pd'] ?? '0'};
+	}
 	.chapter-label  {
 		font-family: ${activeBook.interiorDesign?.['--r-label-font'] ?? `'Inter',sans-serif`};
 		font-size: 8pt;
@@ -1026,7 +1359,7 @@
 	}
 	.chapter-title  {
 		font-family: ${activeBook.interiorDesign?.['--r-title-font'] ?? titleFontCss};
-		font-size: 20pt;
+		font-size: ${activeBook.interiorDesign?.['--r-chap-title-size'] ?? '20pt'};
 		font-weight: ${activeBook.interiorDesign?.['--r-title-weight'] ?? '700'};
 		text-transform: ${activeBook.interiorDesign?.['--r-title-transform'] ?? 'none'};
 		letter-spacing: ${activeBook.interiorDesign?.['--r-title-letter-spacing'] ?? '0'};
@@ -1088,6 +1421,20 @@
 		font-size: 0.95rem;
 		text-align: left;
 		line-height: 1.5;
+		table-layout: fixed;
+	}
+	.table-container {
+		width: 100%;
+		overflow: visible;
+	}
+	.table-container table {
+		margin-left: 0;
+		margin-right: 0;
+	}
+	th, td {
+		white-space: normal;
+		overflow-wrap: anywhere;
+		word-break: break-word;
 	}
 	th {
 		background-color: ${activeBook.interiorDesign?.['--r-table-header-bg'] ?? '#0F172A'};
@@ -1104,13 +1451,27 @@
 		background-color: #f8fafc;
 	}
 
-	.callout-box {
-		background-color: #faf7f2;
-		border-left: 3.5px solid ${accent};
+	.callout-box, .tip-box, .warning-box, .key-rule-box {
 		border-radius: 4px;
 		padding: 1.25rem 1.5rem;
 		margin: 2rem 0;
 		box-sizing: border-box;
+	}
+	.callout-box {
+		background-color: #faf7f2;
+		border-left: 3.5px solid ${accent};
+	}
+	.tip-box {
+		background-color: #ecfdf5;
+		border-left: 3.5px solid #10b981;
+	}
+	.warning-box {
+		background-color: #fef2f2;
+		border-left: 3.5px solid #ef4444;
+	}
+	.key-rule-box {
+		background-color: #fffbeb;
+		border-left: 3.5px solid #f59e0b;
 	}
 	.callout-box__title {
 		font-family: 'Inter',sans-serif;
@@ -1118,9 +1479,20 @@
 		font-size: 0.85rem;
 		text-transform: uppercase;
 		letter-spacing: 1.5px;
-		color: ${accent};
 		margin-bottom: 0.5rem;
 		display: block;
+	}
+	.callout-box .callout-box__title {
+		color: ${accent};
+	}
+	.tip-box .callout-box__title {
+		color: #047857;
+	}
+	.warning-box .callout-box__title {
+		color: #b91c1c;
+	}
+	.key-rule-box .callout-box__title {
+		color: #b45309;
 	}
 	.callout-box__content {
 		font-size: 0.95rem;
@@ -1196,6 +1568,55 @@
 	body { background: #fff; }
 	.cover-page, .toc-page, .chapter-section { page-break-after: always; page-break-inside: avoid; break-inside: avoid; }
 	table, .callout-box, .diagram-box, blockquote { page-break-inside: avoid; break-inside: avoid; }
+	.chapter-body :global(.diagram-box--table) {
+		width: 100% !important;
+		max-width: 100% !important;
+		page-break-inside: auto !important;
+		break-inside: auto !important;
+	}
+	.chapter-body :global(.diagram-box--table .table-container) {
+		overflow: visible !important;
+		width: 100% !important;
+		max-width: 100% !important;
+	}
+	.chapter-body :global(.diagram-box--table table) {
+		width: 100% !important;
+		min-width: 0 !important;
+		table-layout: fixed !important;
+		margin: 1rem 0 !important;
+	}
+	.chapter-body :global(.diagram-box--table--wide table) {
+		font-size: 0.84rem;
+	}
+	.chapter-body :global(.diagram-box--table--wide th),
+	.chapter-body :global(.diagram-box--table--wide td) {
+		padding: 0.5rem 0.6rem;
+	}
+	.chapter-body :global(.diagram-box--table tr),
+	.chapter-body :global(.diagram-box--table th),
+	.chapter-body :global(.diagram-box--table td) {
+		page-break-inside: auto !important;
+		break-inside: auto !important;
+		white-space: normal !important;
+		overflow-wrap: anywhere;
+		word-break: break-word;
+	}
+	.chapter-body :global(.diagram-box--table--wide tr:nth-child(even)) {
+		background-color: #f9fbfd !important;
+	}
+	.chapter-body :global(.diagram-box--table th),
+	.chapter-body :global(.diagram-box--table td) {
+		padding: 0.5rem 0.65rem !important;
+	}
+	.chapter-body :global(.diagram-box--table tr:nth-child(even)) {
+		background-color: #f8fafc !important;
+	}
+	.chapter-body :global(.diagram-box--table tr:nth-child(odd)) {
+		background-color: #ffffff !important;
+	}
+	.chapter-body :global(.diagram-box--table .table-container::-webkit-scrollbar) {
+		display: none;
+	}
 	}
 	</style>
 	</head>
@@ -1622,7 +2043,7 @@
 				continue;
 			}
 
-			const fullHtml = parseMarkdown(chap.content);
+			const fullHtml = parseMarkdown(chap.content, chap.id);
 			const blocks = splitHtmlIntoBlocks(fullHtml);
 			const pages: PageSlice[] = [];
 			let currentBlocks: string[] = [];
@@ -1725,13 +2146,26 @@
 							<select
 								class="preset-select"
 								value={headerFooterPreset}
-								onchange={(e: Event) => headerFooterPreset = (e.target as HTMLSelectElement).value}
+								onchange={(e: Event) => {
+									headerFooterPreset = (e.target as HTMLSelectElement).value;
+									applyPresetInstantly(headerFooterPreset);
+								}}
 								style="width: 100%; padding: 0.4rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color); font-size: 0.85rem;"
 							>
-								<option value="Classical Editorial">Classical Editorial (Serif, thin rules)</option>
-								<option value="Modern Minimalist">Modern Minimalist (Sans, no rules)</option>
-								<option value="Bold Tech / Graphic">Bold Tech / Graphic (Bold sans, thick rules)</option>
-								<option value="Hidden / None">Hidden / None (No headers/footers)</option>
+								<optgroup label="Serif / Literary">
+									<option value="Classical Editorial">Classical Editorial — Serif, thin rules</option>
+									<option value="Royal Elegance">Royal Elegance — Italic serif, double rules</option>
+									<option value="Vintage Academic">Vintage Academic — Georgia, dotted rules</option>
+									<option value="Aesthetic Literary">Aesthetic Literary — Light italic, no lines</option>
+								</optgroup>
+								<optgroup label="Sans-Serif / Modern">
+									<option value="Modern Minimalist">Modern Minimalist — Sans, no rules</option>
+									<option value="Bold Tech / Graphic">Bold Tech / Graphic — Heavy sans, thick rules</option>
+								</optgroup>
+								<optgroup label="Specialty">
+									<option value="Technical Mono">Technical Mono — Monospace, dashed rules</option>
+									<option value="Hidden / None">Hidden / None — No headers or footers</option>
+								</optgroup>
 							</select>
 						</div>
 
@@ -1774,7 +2208,7 @@
 				</aside>
 
 				<!-- Continuous scroll reader -->
-				<main class="reader-scroll-area">
+				<main class="reader-scroll-area" bind:this={readerScrollArea}>
 
 					<section
 						data-section-id="cover"
@@ -1948,8 +2382,8 @@
 
 			</main>
 
-			<!-- ── AI Content Editor Drawer ──────────────────────────────────── -->
 			{#if editTarget}
+				<!-- ── AI Content Editor Drawer ──────────────────────────────────── -->
 				<!-- Backdrop -->
 				<div
 					class="edit-backdrop"
@@ -1961,13 +2395,19 @@
 					<!-- Header -->
 					<div class="edit-drawer__header">
 						<div class="edit-drawer__title-row">
-							<span class="edit-drawer__scope-badge edit-drawer__scope-badge--{editTarget.scope}">
+							<span class="edit-drawer__scope-badge edit-drawer__scope-badge--{editTarget.scope}{editTarget.scope === 'diagram' ? '--' + (editTarget.diagramKind ?? 'fence') : ''}">
 								{#if editTarget.scope === 'page'}
 									<PenLine size={11} /> Page
 								{:else if editTarget.scope === 'chapter'}
 									<BookOpen size={11} /> Chapter
 								{:else if editTarget.scope === 'add-page'}
 									<Sparkles size={11} /> Add Page
+								{:else if editTarget.scope === 'diagram' && editTarget.diagramKind === 'table'}
+									<Wand2 size={11} /> Table
+								{:else if editTarget.scope === 'diagram' && editTarget.diagramKind === 'inline'}
+									<Wand2 size={11} /> Visual Block
+								{:else if editTarget.scope === 'diagram'}
+									<Wand2 size={11} /> Diagram
 								{:else}
 									<ImageIcon size={11} /> Illustration
 								{/if}
@@ -1979,6 +2419,12 @@
 									? `Edit Chapter ${editTarget.chapterOrder}`
 									: editTarget.scope === 'add-page'
 									? `Add Page After Page ${(editTarget.pageIndex ?? 0) + 1}`
+									: editTarget.scope === 'diagram' && editTarget.diagramKind === 'table'
+									? `Edit Table`
+									: editTarget.scope === 'diagram' && editTarget.diagramKind === 'inline'
+									? `Edit Visual Block`
+									: editTarget.scope === 'diagram'
+									? `Edit Diagram`
 									: `Edit Illustration`}
 							</h3>
 						</div>
@@ -1994,6 +2440,16 @@
 							<p class="edit-drawer__hint">AI will rewrite the entire chapter based on your instruction. Structure and tone are maintained unless you specify otherwise.</p>
 						{:else if editTarget.scope === 'add-page'}
 							<p class="edit-drawer__hint">AI will generate a brand-new page and insert it <strong>after</strong> page {(editTarget.pageIndex ?? 0) + 1}. Describe exactly what content you want — tables, stat blocks, diagrams, comparisons, and more.</p>
+						{:else if editTarget.scope === 'diagram'}
+							{#if useRealisticIllustration}
+								<p class="edit-drawer__hint">AI will generate a <strong>realistic image</strong> that replaces this element. Describe the visual scene, mood, or subject you want.</p>
+							{:else if editTarget.diagramKind === 'table'}
+								<p class="edit-drawer__hint">AI will rewrite this table. Describe what to change — rows, columns, values, or structure.</p>
+							{:else if editTarget.diagramKind === 'inline'}
+								<p class="edit-drawer__hint">AI will rewrite this element. Describe what to update — items, labels, values, or emphasis.</p>
+							{:else}
+								<p class="edit-drawer__hint">AI will rewrite the diagram. Describe what to change — steps, labels, type, or structure.</p>
+							{/if}
 						{:else}
 							<p class="edit-drawer__hint">AI will generate a new illustration. Be specific about style, mood, subject, and composition.</p>
 						{/if}
@@ -2010,6 +2466,14 @@
 									? 'e.g. "Make this more concise" or "Rewrite in a more formal tone"'
 									: editTarget.scope === 'chapter'
 									? 'e.g. "Add more real-world examples" or "Strengthen the opening hook"'
+									: editTarget.scope === 'diagram' && useRealisticIllustration
+									? 'e.g. "A sunlit Mediterranean kitchen" or "Close-up of hands kneading dough"'
+									: editTarget.scope === 'diagram' && editTarget.diagramKind === 'table'
+									? 'e.g. "Add a Total row" or "Change column 3 header to Outcome"'
+									: editTarget.scope === 'diagram' && editTarget.diagramKind === 'inline'
+									? 'e.g. "Add two more stat items" or "Change the title to Key Results"'
+									: editTarget.scope === 'diagram'
+									? 'e.g. "Add two more steps" or "Change type to SWOT"'
 									: 'e.g. "Dark, moody atmosphere with dramatic lighting" or "Watercolour, warm earth tones"'
 							}
 							rows={5}
@@ -2029,6 +2493,32 @@
 								<img src={editTarget.illustrationUrl} alt="Current illustration" />
 							</div>
 						{/if}
+
+						{#if editTarget.scope === 'illustration' || editTarget.scope === 'diagram'}
+							<!-- Realistic image toggle ── industry-standard photorealism switch -->
+							<div class="edit-drawer__realistic-toggle" role="group" aria-label="Image realism setting">
+								<button
+									type="button"
+									class="realistic-toggle__btn"
+									class:realistic-toggle__btn--active={!useRealisticIllustration}
+									onclick={() => (useRealisticIllustration = false)}
+									disabled={isEditing}
+									aria-pressed={!useRealisticIllustration}
+								>
+									🎨 Illustrated
+								</button>
+								<button
+									type="button"
+									class="realistic-toggle__btn"
+									class:realistic-toggle__btn--active={useRealisticIllustration}
+									onclick={() => (useRealisticIllustration = true)}
+									disabled={isEditing}
+									aria-pressed={useRealisticIllustration}
+								>
+									📷 Realistic
+								</button>
+							</div>
+						{/if}
 					</div>
 
 					<!-- Footer -->
@@ -2038,64 +2528,55 @@
 						{/if}
 						{#if editSuccess}
 							<p class="edit-drawer__success" role="status">
-								{editTarget.scope === 'illustration' ? '🎨 New illustration generated.' : '✓ Content updated.'}
+								{editTarget.scope === 'illustration' || (editTarget.scope === 'diagram' && useRealisticIllustration)
+									? '🎨 New image generated.'
+									: editTarget.scope === 'diagram' && editTarget.diagramKind === 'table'
+									? '✓ Table updated.'
+									: editTarget.scope === 'diagram' && editTarget.diagramKind === 'inline'
+									? '✓ Visual block updated.'
+									: editTarget.scope === 'diagram'
+									? '✓ Diagram updated.'
+									: '✓ Content updated.'}
 							</p>
 						{/if}
 
 						<!-- Primary action row: Apply + Redo -->
 						<div class="edit-drawer__actions">
-							<button
-								class="edit-drawer__cancel"
-								onclick={closeEditPanel}
-								disabled={isEditing}
-							>Cancel</button>
-
-							<!-- Redo: replay last instruction — visible only after first successful edit -->
+							<button class="edit-drawer__cancel" onclick={closeEditPanel} disabled={isEditing}>Cancel</button>
 							{#if lastInstruction}
-								{@const redoTitle = `Re-run: "${lastInstruction.slice(0, 60)}${lastInstruction.length > 60 ? '…' : ''}"`}
-								<button
-									class="edit-drawer__redo"
-									onclick={applyRedo}
-									disabled={isEditing}
-									title={redoTitle}
-									aria-label="Redo last edit"
-								>
-									{#if isEditing && activeAction === 'redo'}
-										<span class="spinner spinner--dark"></span>
-									{:else}
-										↺
-									{/if}
-									Redo
+								{@const redoTitle = `Re-run: ""`}
+								<button class="edit-drawer__redo" onclick={applyRedo} disabled={isEditing} title={redoTitle} aria-label="Redo last edit">
+									{#if isEditing && activeAction === 'redo'}<span class="spinner spinner--dark"></span>{:else}↺{/if} Redo
 								</button>
 							{/if}
-
-							<button
-								class="edit-drawer__apply"
-								onclick={applyEdit}
-								disabled={isEditing || !editInstruction.trim()}
-							>
+							<button class="edit-drawer__apply" onclick={applyEdit} disabled={isEditing || !editInstruction.trim()}>
 								{#if isEditing && activeAction === 'apply'}
 									<span class="spinner"></span>
-									{editTarget.scope === 'illustration' ? 'Generating…' : 'Applying…'}
+									{editTarget.scope === 'illustration' || (editTarget.scope === 'diagram' && useRealisticIllustration) ? 'Generating…' : 'Applying…'}
 								{:else}
-									{editTarget.scope === 'illustration' ? '🎨 Generate' : '✨ Apply Edit'}
+									{editTarget.scope === 'illustration' ? '🎨 Generate' : (editTarget.scope === 'diagram' && useRealisticIllustration) ? '📷 Generate Image' : '✨ Apply Edit'}
 								{/if}
 							</button>
 						</div>
 
-						<!-- Secondary action: Reconstruct (full AI rewrite, no prompt needed) -->
+						<!-- Secondary action: Reconstruct -->
 						<div class="edit-drawer__secondary-actions">
-							<button
-								class="edit-drawer__reconstruct"
-								onclick={applyReconstruct}
-								disabled={isEditing}
-								title={editTarget.scope === 'illustration'
-									? 'Generate a completely new illustration from scratch'
-									: 'Discard current content and rewrite from scratch using the original chapter brief'}
-							>
+							<button class="edit-drawer__reconstruct" onclick={applyReconstruct} disabled={isEditing}
+								title={
+									editTarget.scope === 'illustration'
+										? 'Generate a completely new illustration from scratch'
+										: editTarget.scope === 'diagram' && useRealisticIllustration
+										? 'Generate a brand-new realistic image from scratch, replacing this element'
+										: editTarget.scope === 'diagram' && editTarget.diagramKind === 'table'
+										? 'Rebuild this table from scratch based on the chapter content'
+										: editTarget.scope === 'diagram' && editTarget.diagramKind === 'inline'
+										? 'Rebuild this visual block from scratch based on the chapter content'
+										: editTarget.scope === 'diagram'
+										? 'Rebuild this diagram from scratch based on the chapter content'
+										: 'Discard current content and rewrite from scratch using the original chapter brief'
+								}>
 								{#if isEditing && activeAction === 'reconstruct'}
-									<span class="spinner spinner--accent"></span>
-									Reconstructing…
+									<span class="spinner spinner--accent"></span> Reconstructing…
 								{:else}
 									⟳ Reconstruct from Scratch
 								{/if}
@@ -2481,7 +2962,7 @@
 		height: 11in;
 		margin: 0 auto;
 		background-color: var(--r-viewport);
-		border: 1px solid var(--r-border);
+		border: 1px solid var(--r-page-border, #E5DFD3);
 		border-radius: 2px;
 		box-shadow:
 			0 1px 4px rgba(36,34,32,0.06),
@@ -2624,10 +3105,15 @@
 	}
 
 	.chapter-header {
-		margin-bottom: 2.5rem;
+		margin-top: var(--r-chap-header-pad, 0.2in);
+		margin-bottom: var(--r-chap-header-mb, 1.5rem);
 		display: flex;
 		flex-direction: column;
 		align-items: var(--r-header-align, var(--header-flex-align, center));
+		background: var(--r-chap-header-bg, transparent);
+		border-left: var(--r-chap-header-bd-left, none);
+		border-top: var(--r-chap-header-bd-top, none);
+		padding: var(--r-chap-header-pd, 0);
 	}
 
 	.chapter-label {
@@ -2646,7 +3132,7 @@
 	}
 
 	.chapter-title {
-		font-size: 2rem;
+		font-size: var(--r-chap-title-size, 2rem);
 		font-weight: var(--r-title-weight, 700);
 		line-height: 1.25;
 		margin: 0 0 1.5rem;
@@ -2800,11 +3286,11 @@
 		color: #ffffff;
 		font-weight: 600;
 		padding: 0.75rem 1rem;
-		border: 1px solid var(--r-border, #e2e8f0);
+		border: 1px solid var(--r-table-border, var(--r-border, #e2e8f0));
 	}
 	.chapter-body :global(td) {
 		padding: 0.75rem 1rem;
-		border: 1px solid var(--r-border, #e2e8f0);
+		border: 1px solid var(--r-table-border, var(--r-border, #e2e8f0));
 	}
 	.chapter-body :global(tr:nth-child(even)) {
 		background-color: var(--r-table-stripe, #f8fafc);
@@ -2814,13 +3300,30 @@
 	}
 
 	/* ── Callout Boxes ──────────────────────────────────────────────────────── */
-	.chapter-body :global(.callout-box) {
-		background-color: var(--r-callout-bg, #faf7f2);
-		border-left: var(--r-callout-border-width, 3.5px) solid var(--r-callout-border-color, var(--chapter-accent-color, #8e7453));
+	.chapter-body :global(.callout-box),
+	.chapter-body :global(.tip-box),
+	.chapter-body :global(.warning-box),
+	.chapter-body :global(.key-rule-box) {
 		border-radius: var(--r-callout-border-radius, 4px);
 		padding: 1.25rem 1.5rem;
 		margin: 2rem 0;
 		box-sizing: border-box;
+	}
+	.chapter-body :global(.callout-box) {
+		background-color: var(--r-callout-bg, #faf7f2);
+		border-left: var(--r-callout-border-width, 3.5px) solid var(--r-callout-border-color, var(--chapter-accent-color, #8e7453));
+	}
+	.chapter-body :global(.tip-box) {
+		background-color: #ecfdf5;
+		border-left: var(--r-callout-border-width, 3.5px) solid #10b981;
+	}
+	.chapter-body :global(.warning-box) {
+		background-color: #fef2f2;
+		border-left: var(--r-callout-border-width, 3.5px) solid #ef4444;
+	}
+	.chapter-body :global(.key-rule-box) {
+		background-color: #fffbeb;
+		border-left: var(--r-callout-border-width, 3.5px) solid #f59e0b;
 	}
 	.chapter-body :global(.callout-box__title) {
 		font-family: var(--r-label-font, var(--font-sans));
@@ -2828,9 +3331,20 @@
 		font-size: 0.85rem;
 		text-transform: uppercase;
 		letter-spacing: 1.5px;
-		color: var(--r-callout-title-color, var(--chapter-accent-color, #8e7453));
 		margin-bottom: 0.5rem;
 		display: block;
+	}
+	.chapter-body :global(.callout-box .callout-box__title) {
+		color: var(--r-callout-title-color, var(--chapter-accent-color, #8e7453));
+	}
+	.chapter-body :global(.tip-box .callout-box__title) {
+		color: #047857;
+	}
+	.chapter-body :global(.warning-box .callout-box__title) {
+		color: #b91c1c;
+	}
+	.chapter-body :global(.key-rule-box .callout-box__title) {
+		color: #b45309;
 	}
 	.chapter-body :global(.callout-box__content) {
 		font-size: 0.95rem;
@@ -2861,6 +3375,29 @@
 		margin-bottom: 1.5rem;
 		text-transform: uppercase;
 		letter-spacing: 1px;
+	}
+	.chapter-body :global(.diagram-box--table) {
+		background: transparent;
+		border: none;
+		box-shadow: none;
+		padding: 0;
+		margin: 2.5rem 0;
+		text-align: left;
+		display: flex;
+		flex-direction: column;
+	}
+	.chapter-body :global(.diagram-box--table .table-container) {
+		background: transparent;
+	}
+	.chapter-body :global(.diagram-box--table .edit-trigger--diagram) {
+		position: static;
+		opacity: 1;
+		pointer-events: auto;
+		margin-top: 0.85rem;
+		align-self: flex-end;
+	}
+	.chapter-body :global(.diagram-box--table .edit-trigger--diagram:hover) {
+		background: rgba(142,116,83,0.15);
 	}
 	.chapter-body :global(.diagram-flow) {
 		display: flex;
@@ -2999,6 +3536,100 @@
 		background: rgba(26,21,16,0.82);
 	}
 
+	/* ── Diagram edit trigger (shown on diagram-box hover) ── */
+	.chapter-body :global(.diagram-box__actions) {
+		position: absolute;
+		top: 0.5rem;
+		right: 0.5rem;
+		display: flex;
+		gap: 0.35rem;
+		flex-wrap: wrap;
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity 0.18s ease;
+		z-index: 5;
+	}
+
+	.chapter-body :global(.diagram-box:hover .diagram-box__actions) {
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	.chapter-body :global(.diagram-box:hover .edit-trigger--diagram),
+	.chapter-body :global(.diagram-box:focus-within .edit-trigger--diagram) {
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	.chapter-body :global(.edit-trigger--diagram) {
+		font-family: var(--font-sans);
+		font-size: 0.68rem;
+		font-weight: 600;
+		padding: 0.3rem 0.65rem;
+		border-radius: 5px;
+		border: 1px solid rgba(142,116,83,0.5);
+		background: rgba(250,248,244,0.9);
+		color: var(--r-accent, #8E7453);
+		cursor: pointer;
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity 0.18s ease, background 0.15s;
+		backdrop-filter: blur(4px);
+		-webkit-backdrop-filter: blur(4px);
+		white-space: nowrap;
+		letter-spacing: 0.02em;
+	}
+
+	.chapter-body :global(.edit-trigger--diagram:hover) {
+		background: rgba(142,116,83,0.15);
+		border-color: var(--r-accent, #8E7453);
+	}
+
+	/* Position diagram-box relative so the trigger can be absolutely placed */
+	.chapter-body :global(.diagram-box) {
+		position: relative;
+	}
+
+	/* ── Inline visual element edit trigger (callout-box, stat-block, etc.) ── */
+	/* The button is injected as the first child of the element's root div.     */
+	.chapter-body :global(.callout-box),
+	.chapter-body :global(.stat-block),
+	.chapter-body :global(.checklist-box),
+	.chapter-body :global(.pro-con-grid),
+	.chapter-body :global(.quote-box),
+	.chapter-body :global(.tip-box),
+	.chapter-body :global(.warning-box),
+	.chapter-body :global(.key-takeaway) {
+		position: relative;
+	}
+
+	.chapter-body :global(.edit-trigger--inline) {
+		position: absolute;
+		top: 0.4rem;
+		right: 0.4rem;
+		z-index: 10;
+		opacity: 0;
+		pointer-events: none;
+	}
+
+	.chapter-body :global(.callout-box:hover .edit-trigger--inline),
+	.chapter-body :global(.stat-block:hover .edit-trigger--inline),
+	.chapter-body :global(.checklist-box:hover .edit-trigger--inline),
+	.chapter-body :global(.pro-con-grid:hover .edit-trigger--inline),
+	.chapter-body :global(.quote-box:hover .edit-trigger--inline),
+	.chapter-body :global(.tip-box:hover .edit-trigger--inline),
+	.chapter-body :global(.warning-box:hover .edit-trigger--inline),
+	.chapter-body :global(.key-takeaway:hover .edit-trigger--inline) {
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	/* Hide diagram edit triggers during print / PDF export */
+	@media print {
+		.chapter-body :global(.diagram-box__actions) { display: none !important; }
+		.chapter-body :global(.edit-trigger--diagram) { display: none !important; }
+	}
+
 	/* ── Edit drawer ────────────────────────────────────────────────────────── */
 
 	/*
@@ -3070,6 +3701,9 @@
 	.edit-drawer__scope-badge--page        { background: #EEF2FF; color: #4F46E5; }
 	.edit-drawer__scope-badge--chapter     { background: #FFF7ED; color: #C2410C; }
 	.edit-drawer__scope-badge--illustration { background: #F0FDF4; color: #15803D; }
+	.edit-drawer__scope-badge--diagram--fence  { background: #FFF7ED; color: #92400E; }
+	.edit-drawer__scope-badge--diagram--table  { background: #EFF6FF; color: #1D4ED8; }
+	.edit-drawer__scope-badge--diagram--inline { background: #FAF5FF; color: #7E22CE; }
 
 	.edit-drawer__title {
 		font-size: 1rem;
@@ -3217,6 +3851,46 @@
 		object-fit: contain;
 		display: block;
 		margin: 0 auto;
+	}
+
+	/* ── Realistic image toggle ── */
+	.edit-drawer__realistic-toggle {
+		display: flex;
+		gap: 0;
+		border: 1px solid var(--border, #E5DFD3);
+		border-radius: 6px;
+		overflow: hidden;
+		background: var(--bg-subtle, #F5F1EB);
+	}
+
+	.realistic-toggle__btn {
+		flex: 1;
+		padding: 0.45rem 0.75rem;
+		font-size: 0.78rem;
+		font-weight: 500;
+		letter-spacing: 0.01em;
+		background: transparent;
+		border: none;
+		cursor: pointer;
+		color: var(--text-muted, #9C8E7A);
+		transition: background 0.15s ease, color 0.15s ease;
+		line-height: 1.4;
+	}
+
+	.realistic-toggle__btn:not(:last-child) {
+		border-right: 1px solid var(--border, #E5DFD3);
+	}
+
+	.realistic-toggle__btn--active {
+		background: var(--surface, #FFFFFF);
+		color: var(--text-primary, #1A1612);
+		font-weight: 600;
+		box-shadow: inset 0 0 0 1px rgba(0,0,0,0.06);
+	}
+
+	.realistic-toggle__btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 
 	/* ── Footer ── */

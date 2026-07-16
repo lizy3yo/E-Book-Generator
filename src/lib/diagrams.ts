@@ -59,16 +59,52 @@ function parseDiagramLines(content: string): DiagramData {
 	return data;
 }
 
-function renderDiagram(data: DiagramData, rawBlocksLength: number, rawBlocks: string[]): string {
+function hexToRgbA(color: string, alpha = 0.1): string {
+	if (!color || !color.startsWith('#')) return color;
+	try {
+		let c = color.substring(1);
+		if (c.length === 3) {
+			c = c[0] + c[0] + c[1] + c[1] + c[2] + c[2];
+		}
+		const num = parseInt(c, 16);
+		const r = (num >> 16) & 255;
+		const g = (num >> 8) & 255;
+		const b = num & 255;
+		return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+	} catch {
+		return color;
+	}
+}
+
+function renderDiagram(
+	data: DiagramData,
+	rawBlocksLength: number,
+	rawBlocks: string[],
+	chapterId: string = '',
+	diagramIndex: number = 0
+): string {
 	const type = data.type.toLowerCase().replace(/[^a-z0-9]/g, '');
 	const title = data.title || 'Diagram';
 	const subtitle = data.subtitle || '';
 
 	let body = '';
 
+	// Parse custom color inputs (fallback to theme defaults if not specified)
+	const customColors = [
+		data.color1,
+		data.color2,
+		data.color3,
+		data.color4,
+		data.color5,
+		data.color6
+	].filter(Boolean) as string[];
+
 	// 1. BAR CHART / COLUMN CHART
 	if (type.includes('barchart') || type.includes('columnchart')) {
 		const maxVal = Math.max(...data.values, 1);
+		const c1 = data.color1 || 'var(--r-accent, #C9A84C)';
+		const c2 = data.color2 || 'var(--r-title-color, #1E293B)';
+
 		const rows = data.labels.map((lbl, idx) => {
 			const val = data.values[idx] || 0;
 			const pct = (val / maxVal) * 100;
@@ -76,7 +112,7 @@ function renderDiagram(data: DiagramData, rawBlocksLength: number, rawBlocks: st
 				<div style="display: flex; align-items: center; margin-bottom: 0.5rem; width: 100%;">
 					<div style="width: 100px; font-size: 0.8rem; text-align: right; padding-right: 0.75rem; color: var(--r-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${lbl}</div>
 					<div style="flex: 1; background-color: var(--r-table-stripe, #f1f5f9); height: 24px; border-radius: 4px; overflow: hidden; position: relative;">
-						<div style="background: linear-gradient(90deg, var(--r-accent, #C9A84C) 0%, var(--r-title-color, #1E293B) 100%); width: ${pct}%; height: 100%; display: flex; align-items: center; justify-content: flex-end; padding-right: 0.5rem; box-sizing: border-box; color: #fff; font-size: 0.75rem; font-weight: bold;">
+						<div style="background: linear-gradient(90deg, ${c1} 0%, ${c2} 100%); width: ${pct}%; height: 100%; display: flex; align-items: center; justify-content: flex-end; padding-right: 0.5rem; box-sizing: border-box; color: #fff; font-size: 0.75rem; font-weight: bold;">
 							${val}
 						</div>
 					</div>
@@ -85,13 +121,14 @@ function renderDiagram(data: DiagramData, rawBlocksLength: number, rawBlocks: st
 		}).join('');
 		body = `<div style="width: 100%;">${rows}</div>`;
 	}
-	
+
 	// 2. PIE CHART / DONUT CHART
 	else if (type.includes('piechart') || type.includes('donutchart')) {
 		const total = data.values.reduce((a, b) => a + b, 0) || 1;
 		let currentAngle = 0;
-		const colors = ['#C9A84C', '#1E293B', '#475569', '#64748B', '#94A3B8', '#CBD5E1'];
-		
+		const defaultColors = ['#C9A84C', '#1E293B', '#475569', '#64748B', '#94A3B8', '#CBD5E1'];
+		const colors = customColors.length > 0 ? customColors : defaultColors;
+
 		const slices = data.values.map((val, idx) => {
 			const angle = (val / total) * 360;
 			const x1 = 100 + 80 * Math.cos((currentAngle - 90) * Math.PI / 180);
@@ -101,7 +138,7 @@ function renderDiagram(data: DiagramData, rawBlocksLength: number, rawBlocks: st
 			const y2 = 100 + 80 * Math.sin((currentAngle - 90) * Math.PI / 180);
 			const largeArc = angle > 180 ? 1 : 0;
 			const color = colors[idx % colors.length];
-			
+
 			if (angle >= 360) {
 				return `<circle cx="100" cy="100" r="80" fill="${color}" stroke="#fff" stroke-width="1" />`;
 			}
@@ -140,23 +177,28 @@ function renderDiagram(data: DiagramData, rawBlocksLength: number, rawBlocks: st
 			return items.map((x: string) => `<li style="margin-bottom: 0.25rem;">${x}</li>`).join('');
 		};
 
+		const c1 = data.color1 || '#10B981';
+		const c2 = data.color2 || '#EF4444';
+		const c3 = data.color3 || '#3B82F6';
+		const c4 = data.color4 || '#F59E0B';
+
 		body = `
 			<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; width: 100%; box-sizing: border-box;">
-				<div style="background-color: #ECFDF5; border-left: 4px solid #10B981; padding: 0.75rem; border-radius: 4px;">
-					<h5 style="color: #065F46; margin: 0 0 0.5rem 0; font-weight: bold; font-size: 0.9rem;">💪 Strengths</h5>
-					<ul style="margin: 0; padding-left: 1rem; font-size: 0.8rem; color: #065F46; list-style-type: disc;">${mapList(s)}</ul>
+				<div style="background-color: ${hexToRgbA(c1, 0.08)}; border-left: 4px solid ${c1}; padding: 0.75rem; border-radius: 4px;">
+					<h5 style="color: ${c1}; margin: 0 0 0.5rem 0; font-weight: bold; font-size: 0.9rem;">💪 Strengths</h5>
+					<ul style="margin: 0; padding-left: 1rem; font-size: 0.8rem; color: ${c1}; list-style-type: disc;">${mapList(s)}</ul>
 				</div>
-				<div style="background-color: #FEF2F2; border-left: 4px solid #EF4444; padding: 0.75rem; border-radius: 4px;">
-					<h5 style="color: #991B1B; margin: 0 0 0.5rem 0; font-weight: bold; font-size: 0.9rem;">⚠️ Weaknesses</h5>
-					<ul style="margin: 0; padding-left: 1rem; font-size: 0.8rem; color: #991B1B; list-style-type: disc;">${mapList(w)}</ul>
+				<div style="background-color: ${hexToRgbA(c2, 0.08)}; border-left: 4px solid ${c2}; padding: 0.75rem; border-radius: 4px;">
+					<h5 style="color: ${c2}; margin: 0 0 0.5rem 0; font-weight: bold; font-size: 0.9rem;">⚠️ Weaknesses</h5>
+					<ul style="margin: 0; padding-left: 1rem; font-size: 0.8rem; color: ${c2}; list-style-type: disc;">${mapList(w)}</ul>
 				</div>
-				<div style="background-color: #EFF6FF; border-left: 4px solid #3B82F6; padding: 0.75rem; border-radius: 4px;">
-					<h5 style="color: #1E40AF; margin: 0 0 0.5rem 0; font-weight: bold; font-size: 0.9rem;">🌟 Opportunities</h5>
-					<ul style="margin: 0; padding-left: 1rem; font-size: 0.8rem; color: #1E40AF; list-style-type: disc;">${mapList(o)}</ul>
+				<div style="background-color: ${hexToRgbA(c3, 0.08)}; border-left: 4px solid ${c3}; padding: 0.75rem; border-radius: 4px;">
+					<h5 style="color: ${c3}; margin: 0 0 0.5rem 0; font-weight: bold; font-size: 0.9rem;">🌟 Opportunities</h5>
+					<ul style="margin: 0; padding-left: 1rem; font-size: 0.8rem; color: ${c3}; list-style-type: disc;">${mapList(o)}</ul>
 				</div>
-				<div style="background-color: #FFFBEB; border-left: 4px solid #F59E0B; padding: 0.75rem; border-radius: 4px;">
-					<h5 style="color: #92400E; margin: 0 0 0.5rem 0; font-weight: bold; font-size: 0.9rem;">⚡ Threats</h5>
-					<ul style="margin: 0; padding-left: 1rem; font-size: 0.8rem; color: #92400E; list-style-type: disc;">${mapList(t)}</ul>
+				<div style="background-color: ${hexToRgbA(c4, 0.08)}; border-left: 4px solid ${c4}; padding: 0.75rem; border-radius: 4px;">
+					<h5 style="color: ${c4}; margin: 0 0 0.5rem 0; font-weight: bold; font-size: 0.9rem;">⚡ Threats</h5>
+					<ul style="margin: 0; padding-left: 1rem; font-size: 0.8rem; color: ${c4}; list-style-type: disc;">${mapList(t)}</ul>
 				</div>
 			</div>
 		`;
@@ -167,13 +209,14 @@ function renderDiagram(data: DiagramData, rawBlocksLength: number, rawBlocks: st
 		const layers = data.layers || data.levels || [];
 		const layerList = Array.isArray(layers) ? layers : [layers];
 		const len = layerList.length;
-		const colors = ['#C9A84C', '#D4AF37', '#E5A93B', '#F1B82D', '#F9C94C', '#FFD875'];
-		
+		const defaultColors = ['#C9A84C', '#D4AF37', '#E5A93B', '#F1B82D', '#F9C94C', '#FFD875'];
+		const colors = customColors.length > 0 ? customColors : defaultColors;
+
 		const svgs = layerList.map((layer, idx) => {
 			const widthPctTop = (idx / len) * 160;
 			const widthPctBottom = ((idx + 1) / len) * 160;
 			const color = colors[idx % colors.length];
-			
+
 			const topY = 20 + idx * (160 / len);
 			const botY = 20 + (idx + 1) * (160 / len);
 			const x1 = 100 - widthPctTop / 2;
@@ -207,22 +250,25 @@ function renderDiagram(data: DiagramData, rawBlocksLength: number, rawBlocks: st
 			return items.map((x: string) => `<div>• ${x}</div>`).join('');
 		};
 
+		const c1 = data.color1 || 'var(--r-accent, #C9A84C)';
+		const c2 = data.color2 || 'var(--r-title-color, #1E293B)';
+
 		body = `
 			<div style="position: relative; width: 100%; max-width: 480px; height: 260px; margin: 0 auto; background-color: var(--r-table-stripe, #f8fafc); border-radius: 6px; padding: 1rem; border: 1px solid var(--r-border, #e2e8f0); box-sizing: border-box;">
 				<!-- Left Circle -->
-				<div style="position: absolute; left: 20px; top: 30px; width: 200px; height: 200px; border-radius: 50%; background-color: rgba(201, 168, 76, 0.1); border: 2px solid var(--r-accent, #C9A84C); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 1rem; box-sizing: border-box; text-align: center; z-index: 2;">
+				<div style="position: absolute; left: 20px; top: 30px; width: 200px; height: 200px; border-radius: 50%; background-color: ${hexToRgbA(c1, 0.1)}; border: 2px solid ${c1}; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 1rem; box-sizing: border-box; text-align: center; z-index: 2;">
 					<strong style="font-size: 0.85rem; color: var(--r-title-color);">${left}</strong>
 					<div style="font-size: 0.7rem; margin-top: 0.25rem; color: var(--r-text); overflow: hidden; max-height: 120px;">${mapList(leftItems)}</div>
 				</div>
 				<!-- Right Circle -->
-				<div style="position: absolute; right: 20px; top: 30px; width: 200px; height: 200px; border-radius: 50%; background-color: rgba(30, 41, 59, 0.06); border: 2px solid var(--r-title-color, #1E293B); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 1rem; box-sizing: border-box; text-align: center; z-index: 2;">
+				<div style="position: absolute; right: 20px; top: 30px; width: 200px; height: 200px; border-radius: 50%; background-color: ${hexToRgbA(c2, 0.06)}; border: 2px solid ${c2}; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 1rem; box-sizing: border-box; text-align: center; z-index: 2;">
 					<strong style="font-size: 0.85rem; color: var(--r-title-color);">${right}</strong>
 					<div style="font-size: 0.7rem; margin-top: 0.25rem; color: var(--r-text); overflow: hidden; max-height: 120px;">${mapList(rightItems)}</div>
 				</div>
 				<!-- Intersection Content Overlay -->
 				<div style="position: absolute; left: 190px; top: 60px; width: 100px; text-align: center; z-index: 10;">
 					<strong style="font-size: 0.8rem; color: var(--r-title-color);">Both</strong>
-					<div style="font-size: 0.65rem; margin-top: 0.2rem; color: var(--r-text); font-weight: 500;">${mapList(sharedItems)}</div>
+					<div style="font-size: 0.65rem; margin-top: 0.2:rem; color: var(--r-text); font-weight: 500;">${mapList(sharedItems)}</div>
 				</div>
 			</div>
 		`;
@@ -232,13 +278,14 @@ function renderDiagram(data: DiagramData, rawBlocksLength: number, rawBlocks: st
 	else if (type.includes('flowchart') || type.includes('process') || type.includes('timeline') || type.includes('gantt') || type.includes('workflow') || type.includes('dfd') || type.includes('sequence') || type.includes('activity') || type.includes('state') || type.includes('swimlane')) {
 		const steps = data.steps || data.nodes || [];
 		const stepList = Array.isArray(steps) ? steps : [steps];
-		
+		const c1 = data.color1 || 'var(--r-accent, #C9A84C)';
+
 		const htmlSteps = stepList.map((step, idx) => {
-			const arrow = idx < stepList.length - 1 ? '<div style="font-size: 1.25rem; color: var(--r-accent, #C9A84C); margin: 0.25rem 0.5rem; text-align: center; align-self: center;">➔</div>' : '';
+			const arrow = idx < stepList.length - 1 ? `<div style="font-size: 1.25rem; color: ${c1}; margin: 0.25rem 0.5rem; text-align: center; align-self: center;">➔</div>` : '';
 			return `
 				<div style="display: flex; flex-direction: column; align-items: center; margin-bottom: 0.5rem;">
 					<div style="background-color: var(--r-table-stripe, #f8fafc); border: 1.5px solid var(--r-border, #cbd5e1); border-radius: 6px; padding: 0.5rem 0.75rem; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.05); min-width: 110px;">
-						<span style="font-size: 0.65rem; font-weight: bold; color: var(--r-accent, #C9A84C); display: block; text-transform: uppercase;">Step 0${idx + 1}</span>
+						<span style="font-size: 0.65rem; font-weight: bold; color: ${c1}; display: block; text-transform: uppercase;">Step 0${idx + 1}</span>
 						<span style="font-size: 0.8rem; font-weight: 600; color: var(--r-title-color);">${step}</span>
 					</div>
 				</div>
@@ -258,6 +305,8 @@ function renderDiagram(data: DiagramData, rawBlocksLength: number, rawBlocks: st
 		const nodes = data.nodes || data.steps || [];
 		const nodeList = Array.isArray(nodes) ? nodes : [nodes];
 		const root = data.root || data.title || 'Hierarchy';
+		const c1 = data.color1 || 'var(--r-title-color, #1E293B)';
+		const c2 = data.color2 || 'var(--r-accent, #C9A84C)';
 
 		const children = nodeList.map((n) => {
 			return `<div style="background-color: #fff; border: 1px solid var(--r-border); border-radius: 4px; padding: 0.4rem 0.6rem; font-size: 0.75rem; color: var(--r-text); text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05); min-width: 85px;">${n}</div>`;
@@ -266,11 +315,11 @@ function renderDiagram(data: DiagramData, rawBlocksLength: number, rawBlocks: st
 		body = `
 			<div style="display: flex; flex-direction: column; align-items: center; gap: 0.75rem; padding: 0.5rem 0; width: 100%;">
 				<!-- Root node -->
-				<div style="background: linear-gradient(135deg, var(--r-title-color, #1E293B) 0%, var(--r-accent, #C9A84C) 100%); color: #fff; border-radius: 6px; padding: 0.5rem 1rem; font-size: 0.85rem; font-weight: bold; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.08);">
+				<div style="background: linear-gradient(135deg, ${c1} 0%, ${c2} 100%); color: #fff; border-radius: 6px; padding: 0.5rem 1rem; font-size: 0.85rem; font-weight: bold; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.08);">
 					${root}
 				</div>
 				<!-- Connective line -->
-				<div style="width: 2px; height: 12px; background-color: var(--r-accent, #C9A84C);"></div>
+				<div style="width: 2px; height: 12px; background-color: ${c2};"></div>
 				<!-- Children nodes grid -->
 				<div style="display: flex; justify-content: center; gap: 0.5rem; flex-wrap: wrap; width: 100%;">
 					${children}
@@ -281,7 +330,10 @@ function renderDiagram(data: DiagramData, rawBlocksLength: number, rawBlocks: st
 
 	// 8. BLUEPRINT / ARCHITECTURAL / FLOOR PLAN / SITE MAP / SITE / NETWORK / CIRCUIT / P&ID
 	else if (type.includes('blueprint') || type.includes('floorplan') || type.includes('network') || type.includes('circuit') || type.includes('pid') || type.includes('sitemap') || type.includes('spatial') || type.includes('heat') || type.includes('radar') || type.includes('spider') || type.includes('pareto') || type.includes('scatter') || type.includes('bubble') || type.includes('cartesian') || type.includes('linegraph') || type.includes('sparkline') || type.includes('histogram') || type.includes('box') || type.includes('qqplot') || type.includes('freebody') || type.includes('lewis') || type.includes('phase') || type.includes('molecular') || type.includes('scorecard') || type.includes('canvas') || type.includes('matrix')) {
-		const gridDots = `<defs><pattern id="grid" width="16" height="16" patternUnits="userSpaceOnUse"><path d="M 16 0 L 0 0 0 16" fill="none" stroke="#2563EB" stroke-width="0.3" opacity="0.35"/></pattern></defs><rect width="100%" height="100%" fill="url(#grid)" />`;
+		const c1 = data.color1 || '#2563EB'; // primary color (e.g. background blue or circles blue)
+		const c2 = data.color2 || '#1D4ED8'; // secondary border line color
+
+		const gridDots = `<defs><pattern id="grid" width="16" height="16" patternUnits="userSpaceOnUse"><path d="M 16 0 L 0 0 0 16" fill="none" stroke="${c2}" stroke-width="0.3" opacity="0.35"/></pattern></defs><rect width="100%" height="100%" fill="url(#grid)" />`;
 		const nodes = data.labels && data.labels.length ? data.labels : (data.nodes || []);
 		const nodeList = Array.isArray(nodes) ? nodes : [nodes];
 
@@ -289,7 +341,7 @@ function renderDiagram(data: DiagramData, rawBlocksLength: number, rawBlocks: st
 			const x = 40 + (idx % 3) * 65;
 			const y = 45 + Math.floor(idx / 3) * 50;
 			return `
-				<circle cx="${x}" cy="${y}" r="15" fill="#2563EB" opacity="0.85" />
+				<circle cx="${x}" cy="${y}" r="15" fill="${c1}" opacity="0.85" />
 				<circle cx="${x}" cy="${y}" r="15" fill="none" stroke="#fff" stroke-width="1.2" />
 				<text x="${x}" y="${y + 2.5}" text-anchor="middle" fill="#fff" font-size="6" font-family="monospace" font-weight="bold">${n.slice(0, 10)}</text>
 				${idx > 0 && idx % 3 !== 0 ? `<line x1="${x - 50}" y1="${y}" x2="${x - 15}" y2="${y}" stroke="#fff" stroke-width="1.2" stroke-dasharray="2,2" />` : ''}
@@ -297,7 +349,7 @@ function renderDiagram(data: DiagramData, rawBlocksLength: number, rawBlocks: st
 		}).join('');
 
 		body = `
-			<div style="background-color: #1E3A8A; border-radius: 6px; padding: 0.5rem; border: 1.5px solid #1D4ED8; box-shadow: inset 0 2px 4px rgba(0,0,0,0.3); display: flex; justify-content: center; align-items: center; width: 100%; box-sizing: border-box;">
+			<div style="background-color: ${c1}; border-radius: 6px; padding: 0.5rem; border: 1.5px solid ${c2}; box-shadow: inset 0 2px 4px rgba(0,0,0,0.3); display: flex; justify-content: center; align-items: center; width: 100%; box-sizing: border-box;">
 				<svg width="100%" height="160" style="max-width: 480px;">
 					${gridDots}
 					<text x="15" y="20" fill="#fff" font-size="7" font-family="monospace" opacity="0.95">// SYSTEM DIAGRAM: ${title.toUpperCase()}</text>
@@ -312,9 +364,10 @@ function renderDiagram(data: DiagramData, rawBlocksLength: number, rawBlocks: st
 		const steps = data.labels && data.labels.length ? data.labels : (data.nodes || []);
 		const stepList = Array.isArray(steps) ? steps : [steps];
 		const listHtml = stepList.map(s => `<li>${s}</li>`).join('');
-		
+		const c1 = data.color1 || 'var(--r-accent, #C9A84C)';
+
 		body = `
-			<div style="border-left: 4.5px solid var(--r-accent, #C9A84C); padding: 0.5rem 0.75rem; background-color: var(--r-table-stripe); border-radius: 4px; width: 100%; box-sizing: border-box;">
+			<div style="border-left: 4.5px solid ${c1}; padding: 0.5rem 0.75rem; background-color: var(--r-table-stripe); border-radius: 4px; width: 100%; box-sizing: border-box;">
 				<h5 style="margin: 0 0 0.4rem 0; color: var(--r-title-color); font-size: 0.85rem; font-weight: bold;">${title}</h5>
 				<ul style="margin: 0; padding-left: 1.2rem; font-size: 0.8rem; list-style-type: square;">${listHtml}</ul>
 			</div>
@@ -323,6 +376,11 @@ function renderDiagram(data: DiagramData, rawBlocksLength: number, rawBlocks: st
 
 	const html = `
 		<div class="diagram-box">
+			<div class="diagram-box__actions">
+				<button class="edit-trigger edit-trigger--diagram" data-chapter-id="${chapterId}" data-diagram-index="${diagramIndex}" title="Edit this diagram" aria-label="Edit diagram">
+					✏️ Edit
+				</button>
+			</div>
 			<div class="diagram-box__title" style="color: var(--r-title-color); font-weight: bold; border-bottom: 1.5px solid var(--r-accent, #C9A84C); padding-bottom: 0.3rem; margin-bottom: 0.6rem; font-size: 0.95rem;">📊 ${title}</div>
 			${subtitle ? `<div class="diagram-box__subtitle" style="font-size: 0.75rem; color: var(--r-text-muted); margin-top: -0.4rem; margin-bottom: 0.6rem;">${subtitle}</div>` : ''}
 			<div style="display: flex; justify-content: center; width: 100%; box-sizing: border-box;">
@@ -330,20 +388,24 @@ function renderDiagram(data: DiagramData, rawBlocksLength: number, rawBlocks: st
 			</div>
 		</div>
 	`;
-	
+
 	const placeholder = `\x02RAWBLOCK${rawBlocksLength}\x03`;
 	rawBlocks.push(html);
 	return placeholder;
 }
 
-export function parseMarkdown(md: string): string {
+export function parseMarkdown(md: string, chapterId: string = ''): string {
 	if (!md) return '<p>No content written for this chapter yet.</p>';
 
 	let src = md.trim();
 
 	// ── Step 1: extract raw HTML blocks so we don't escape them ───────────
 	const rawBlocks: string[] = [];
-	
+	let diagramCounter = 0;
+	// Unified counter for all editable visual blocks (diagrams, tables, inline HTML elements).
+	// Passed as data-diagram-index so the edit drawer identifies which block to splice.
+	let visualBlockCounter = 0;
+
 	// Balance tags dynamically to correctly extract nested elements like divs and tables
 	while (true) {
 		const divMatch = src.match(/<(div|table|thead|tbody|tr|th|td|figure)[\s>]/i);
@@ -373,13 +435,24 @@ export function parseMarkdown(md: string): string {
 			}
 		}
 
-		if (endIdx !== -1) {
+		if (endIdx === -1 && depth > 0) {
+			// Tag is unbalanced (e.g. AI forgot to close it or text split cut it off).
+			// Auto-close it to prevent it from being escaped as raw text.
+			let suffix = '';
+			for (let d = 0; d < depth; d++) {
+				suffix += `</${tag}>`;
+			}
+			const fullBlock = src.substring(startIdx) + suffix;
+			const placeholder = `\x02RAWBLOCK${rawBlocks.length}\x03`;
+			rawBlocks.push(fullBlock);
+			src = src.substring(0, startIdx) + placeholder;
+		} else if (endIdx !== -1) {
 			const fullBlock = src.substring(startIdx, endIdx);
 			const placeholder = `\x02RAWBLOCK${rawBlocks.length}\x03`;
 			rawBlocks.push(fullBlock);
 			src = src.substring(0, startIdx) + placeholder + src.substring(endIdx);
 		} else {
-			// Prevent infinite loop if tag is unbalanced in source content
+			// Prevent infinite loop if tag is completely unbalanced
 			src = src.substring(0, startIdx) + '\x01' + src.substring(startIdx + 1);
 		}
 	}
@@ -392,7 +465,10 @@ export function parseMarkdown(md: string): string {
 	src = src.replace(blockRegex, (match, blockContent) => {
 		try {
 			const parsed = parseDiagramLines(blockContent);
-			return renderDiagram(parsed, rawBlocks.length, rawBlocks);
+			const html = renderDiagram(parsed, rawBlocks.length, rawBlocks, chapterId, visualBlockCounter);
+			diagramCounter++;
+			visualBlockCounter++;
+			return html;
 		} catch (err) {
 			console.error('Failed to render diagram:', err);
 			return `<div class="diagram-error">Failed to render diagram: ${(err as Error).message}</div>`;
@@ -427,28 +503,77 @@ export function parseMarkdown(md: string): string {
 	let tableHeaders: string[] = [];
 	let tableRows: string[][] = [];
 	let tableAlignments: ('left' | 'center' | 'right' | null)[] = [];
+	let tableCounter = 0;
 
-	function renderHtmlTable(headers: string[], rows: string[][], alignments: any[]): string {
-		let ths = headers.map((h, idx) => {
-			const align = alignments[idx] ? ` align="${alignments[idx]}"` : '';
-			let cleanH = h
-				.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-				.replace(/\*(.*?)\*/g, '<em>$1</em>');
-			return `<th${align}>${cleanH}</th>`;
-		}).join('');
-		
-		let trs = rows.map(r => {
-			let tds = r.map((cell, idx) => {
-				const align = alignments[idx] ? ` align="${alignments[idx]}"` : '';
-				let cleanCell = cell
+	function renderHtmlTable(headers: string[], rows: string[][], alignments: any[], tableIndex: number): string {
+		const maxColumnsPerSegment = 5;
+		const columnCount = headers.length;
+		const isWideTable = columnCount > maxColumnsPerSegment;
+
+		// Raw markdown for this table — passed back to the edit API for AI rewrites
+		const rawHeader = `| ${headers.join(' | ')} |`;
+		const rawSeparator = `| ${alignments.map((align) => {
+			if (align === 'left') return ':---';
+			if (align === 'center') return ':---:';
+			if (align === 'right') return '---:';
+			return '---';
+		}).join(' | ')} |`;
+		const rawRows = rows.map((row) => `| ${row.join(' | ')} |`).join('\n');
+		const rawTable = [rawHeader, rawSeparator, rawRows].filter(Boolean).join('\n');
+		const encodedRaw = encodeURIComponent(rawTable);
+
+		// Snapshot the visual-block index for this specific table
+		const thisBlockIndex = visualBlockCounter;
+		visualBlockCounter++;
+
+		function buildTableSegment(startIndex: number, endIndex: number, segmentLabel?: string): string {
+			const segmentHeaders = headers.slice(startIndex, endIndex);
+			const segmentAlignments = alignments.slice(startIndex, endIndex);
+
+			const ths = segmentHeaders.map((h, idx) => {
+				const align = segmentAlignments[idx] ? ` align="${segmentAlignments[idx]}"` : '';
+				const cleanH = h
 					.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
 					.replace(/\*(.*?)\*/g, '<em>$1</em>');
-				return `<td${align}>${cleanCell}</td>`;
+				return `<th${align}>${cleanH}</th>`;
 			}).join('');
-			return `<tr>${tds}</tr>`;
-		}).join('');
-		
-		const tableHtml = `<div class="table-container"><table><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table></div>`;
+
+			const trs = rows.map(r => {
+				const segmentCells = r.slice(startIndex, endIndex);
+				const tds = segmentCells.map((cell, idx) => {
+					const align = segmentAlignments[idx] ? ` align="${segmentAlignments[idx]}"` : '';
+					const cleanCell = cell
+						.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+						.replace(/\*(.*?)\*/g, '<em>$1</em>');
+					return `<td${align}>${cleanCell}</td>`;
+				}).join('');
+				return `<tr>${tds}</tr>`;
+			}).join('');
+
+			const isFirst = startIndex === 0;
+			return `
+				<div class="diagram-box diagram-box--table${isWideTable ? ' diagram-box--table--wide' : ''}${segmentLabel ? ' diagram-box--table--continued' : ''}" data-column-count="${segmentHeaders.length}"${segmentLabel ? ` data-segment-label="${segmentLabel}"` : ''}>
+					${isFirst ? `<div class="diagram-box__actions"><button class="edit-trigger edit-trigger--diagram" data-chapter-id="${chapterId}" data-table-index="${thisBlockIndex}" data-table-raw="${encodedRaw}" title="Edit this table" aria-label="Edit table">✏️ Edit</button></div>` : ''}
+					<div class="table-container">
+						<table>
+							<thead><tr>${ths}</tr></thead>
+							<tbody>${trs}</tbody>
+						</table>
+					</div>
+				</div>`;
+		}
+
+		const tableHtml = isWideTable
+			? Array.from({ length: Math.ceil(columnCount / maxColumnsPerSegment) }, (_, segmentIndex) => {
+				const startIndex = segmentIndex * maxColumnsPerSegment;
+				const endIndex = Math.min(startIndex + maxColumnsPerSegment, columnCount);
+				return buildTableSegment(
+					startIndex,
+					endIndex,
+					segmentIndex === 0 ? undefined : `continued-${segmentIndex + 1}`
+				);
+			}).join('\n')
+			: buildTableSegment(0, columnCount);
 		const placeholder = `\x02RAWBLOCK${rawBlocks.length}\x03`;
 		rawBlocks.push(tableHtml);
 		return placeholder;
@@ -456,16 +581,16 @@ export function parseMarkdown(md: string): string {
 
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i].trim();
-		
+
 		if (line.startsWith('|') && line.endsWith('|')) {
 			const cells = line.slice(1, -1).split('|').map(c => c.trim());
-			
+
 			if (!inTable) {
 				const nextLine = lines[i + 1]?.trim() || '';
 				if (nextLine.startsWith('|') && nextLine.endsWith('|') && nextLine.replace(/[\s|:\-]/g, '') === '') {
 					inTable = true;
 					tableHeaders = cells;
-					
+
 					const delims = nextLine.slice(1, -1).split('|').map(c => c.trim());
 					tableAlignments = delims.map(d => {
 						const left = d.startsWith(':');
@@ -475,7 +600,7 @@ export function parseMarkdown(md: string): string {
 						if (left) return 'left';
 						return null;
 					});
-					
+
 					tableRows = [];
 					i++; // Skip the delimiter row
 					continue;
@@ -488,14 +613,14 @@ export function parseMarkdown(md: string): string {
 
 		if (inTable && (!line.startsWith('|') || !line.endsWith('|'))) {
 			inTable = false;
-			processedLines.push(renderHtmlTable(tableHeaders, tableRows, tableAlignments));
+			processedLines.push(renderHtmlTable(tableHeaders, tableRows, tableAlignments, tableCounter++));
 		}
 
 		processedLines.push(lines[i]);
 	}
 
 	if (inTable) {
-		processedLines.push(renderHtmlTable(tableHeaders, tableRows, tableAlignments));
+		processedLines.push(renderHtmlTable(tableHeaders, tableRows, tableAlignments, tableCounter++));
 	}
 
 	html = processedLines.join('\n');
@@ -518,8 +643,23 @@ export function parseMarkdown(md: string): string {
 	html = html.replace(/(<li>.*?<\/li>)/gs, '<ul>$1</ul>');
 	html = html.replace(/<\/ul>\s*<ul>/g, '');
 
-	// ── Step 4: restore raw HTML blocks ───────────────────────────────
-	html = html.replace(/\x02RAWBLOCK(\d+)\x03/g, (_, i) => rawBlocks[parseInt(i)]);
+	// ── Step 4: restore raw HTML blocks, injecting edit overlays on visual elements ──
+	// Callout boxes, stat blocks, checklists, and pro-con grids are written as raw HTML
+	// by the AI. We detect them by class name and inject a standardised edit button
+	// directly inside the first opening <div> of each matched block.
+	const INLINE_VISUAL_RE = /class="[^"]*\b(callout-box|stat-block|checklist-box|pro-con-grid|quote-box|tip-box|warning-box|key-takeaway)\b/i;
+	let inlineVisualIndex = 0;
+	html = html.replace(/\x02RAWBLOCK(\d+)\x03/g, (_, i) => {
+		const block = rawBlocks[parseInt(i)];
+		if (INLINE_VISUAL_RE.test(block)) {
+			const idx = inlineVisualIndex++;
+			const encodedBlock = encodeURIComponent(block);
+			const btn = `<button class="edit-trigger edit-trigger--diagram edit-trigger--inline" data-chapter-id="${chapterId}" data-table-index="${idx}" data-table-raw="${encodedBlock}" title="Edit this element" aria-label="Edit visual element">✏️ Edit</button>`;
+			// Insert the button immediately after the first opening <div ...>
+			return block.replace(/(<div\b[^>]*>)/, `$1${btn}`);
+		}
+		return block;
+	});
 
 	return html;
 }

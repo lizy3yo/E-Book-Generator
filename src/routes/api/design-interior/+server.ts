@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { ANTHROPIC_API_KEY, CLAUDE_CHAT_MODEL } from '$env/static/private';
+import { INTERIOR_PRESETS } from '$lib/interiorDesigns';
 
 const SUPPORTED_MEDIA_TYPES = new Set([
 	'image/jpeg',
@@ -60,63 +61,22 @@ export const POST: RequestHandler = async ({ request, url }) => {
 	let claudeKey = '';
 
 	const runProgrammaticFallback = () => {
-		const titleFont = coverSettings?.titleFont || 'Lora';
-		const isBold = headerFooterPreset === 'Bold Tech / Graphic' || coverStyle === 'Bold Graphic' || titleFont === 'Inter' || titleFont === 'Arial';
-		const isDark = coverStyle === 'Dark Minimalist' || (coverSettings?.titleColor === '#ffffff' && (coverSettings?.overlayOpacity ?? 0) > 0.4);
-		const isHidden = headerFooterPreset === 'Hidden / None';
-		const isMinimal = headerFooterPreset === 'Modern Minimalist';
-
-		const fontSerif = '"Lora", serif';
-		const fontSans = '"Inter", sans-serif';
-		const chosenFont = (titleFont === 'Inter' || titleFont === 'Arial') ? fontSans : fontSerif;
-
-		const primaryColor = coverSettings?.titleColor || (isBold ? '#0F172A' : '#3D2B1A');
+		const primaryColor = coverSettings?.titleColor || '#1A1612';
 		const accentColor = coverSettings?.authorColor || '#8E7453';
-		const ruleStyle = isBold ? `4px solid ${accentColor}` : `1.5px solid ${accentColor}`;
+		const alignment = coverSettings?.alignment || 'left';
+		const titleFont = coverSettings?.titleFont || 'Lora';
+
+		const presetFn = INTERIOR_PRESETS[headerFooterPreset] || INTERIOR_PRESETS['Classical Editorial'];
+		const design = presetFn({
+			primary: primaryColor,
+			accent: accentColor,
+			alignment,
+			titleFont
+		});
 
 		return json({
 			success: true,
-			design: {
-				'--r-header-font': isBold ? fontSans : fontSerif,
-				'--r-header-color': primaryColor,
-				'--r-header-border': isHidden || isMinimal ? 'none' : `1.5px solid ${accentColor}`,
-				'--r-header-transform': 'uppercase',
-				'--r-header-letter-spacing': isMinimal ? '3px' : '2px',
-				'--r-header-opacity': isHidden ? '0' : '0.75',
-				'--r-footer-font': chosenFont,
-				'--r-footer-color': primaryColor,
-				'--r-footer-border': isHidden || isMinimal ? 'none' : `1.5px solid ${accentColor}`,
-				'--r-footer-letter-spacing': '1.5px',
-				'--r-footer-opacity': isHidden ? '0' : '0.75',
-				'--r-title-font': chosenFont,
-				'--r-title-color': primaryColor,
-				'--r-title-transform': isBold || isDark ? 'uppercase' : 'none',
-				'--r-title-letter-spacing': isBold ? '-0.5px' : isDark ? '2px' : '0px',
-				'--r-title-weight': isBold ? '800' : '300',
-				'--r-title-style': !isBold && !isDark ? 'italic' : 'normal',
-				'--r-body-font': isBold ? fontSans : fontSerif,
-				'--r-label-font': fontSans,
-				'--r-label-color': isBold ? '#ffffff' : accentColor,
-				'--r-label-transform': 'uppercase',
-				'--r-label-letter-spacing': '3px',
-				'--r-label-bg': isBold ? accentColor : 'transparent',
-				'--r-label-padding': isBold ? '0.2rem 0.6rem' : '0',
-				'--r-label-border-radius': '4px',
-				'--r-rule-border': ruleStyle,
-				'--r-rule-width': coverSettings?.alignment === 'center' ? '60px' : coverSettings?.alignment === 'right' ? '120px' : '100%',
-				'--r-dropcap-font': chosenFont,
-				'--r-dropcap-color': accentColor,
-				'--r-dropcap-weight': '700',
-				'--r-dropcap-style': !isBold && !isDark ? 'italic' : 'normal',
-				'--r-blockquote-border': `3.5px solid ${accentColor}`,
-				'--r-blockquote-color': '#555555',
-				'--r-blockquote-bg': isDark ? 'var(--r-active-bg)' : 'transparent',
-				'--r-blockquote-padding': isDark ? '1.2rem 1.8rem' : '0 0 0 1.8rem',
-				'--r-blockquote-border-radius': isDark ? '4px' : '0',
-				'--r-header-align': coverSettings?.alignment === 'center' ? 'center' : coverSettings?.alignment === 'right' ? 'flex-end' : 'flex-start',
-				'--r-table-header-bg': primaryColor,
-				'--r-border': '#e2e8f0'
-			}
+			design
 		});
 	};
 
@@ -151,6 +111,10 @@ MANDATORY PRESETS RULES:
 - If layout preset is "Classical Editorial": running header should have serif font, light border-bottom line (e.g. 0.5px solid), page numbers centered at the bottom, italic/refined details.
 - If layout preset is "Modern Minimalist": running header and footer should have sans-serif fonts, no border lines (border: 'none'), spacious letter tracking, and page numbers at the bottom (opacity 0.7).
 - If layout preset is "Bold Tech / Graphic": running header has thick colored rules (e.g., 2.5px solid), heavy uppercase fonts, and accent badges.
+- If layout preset is "Royal Elegance": running header and footer has elegant serif italic text, double rule borders (2.5px double), and center alignments.
+- If layout preset is "Vintage Academic": running header and footer has academic Georgia font, dotted rules (1.5pt dotted), and centered numbers.
+- If layout preset is "Aesthetic Literary": running header and footer has lowercase style, no lines, italic titles and page numbers.
+- If layout preset is "Technical Mono": running header/footer has Courier/monospace fonts, dashed lines (1px dashed), and bold spacing.
 - If layout preset is "Hidden / None": you must set "--r-header-opacity" to "0", "--r-footer-opacity" to "0", "--r-header-border" to "none", and "--r-footer-border" to "none" so they are completely hidden from the page.
 
 If custom styling instructions are provided, you MUST prioritize and incorporate them. For example, if the user asks to "make header rules gold", choose a gold color (e.g. "#C9A84C") for header/footer rules. If the user asks for "dashed rule lines", set border style to dashed. Ensure the styling remains highly professional, elegant, readable, and consistent with publishing industry standards.
@@ -216,6 +180,13 @@ Return a JSON object containing two keys:
   - "--r-header-align": flexbox layout alignment for chapter header ('flex-start' | 'center' | 'flex-end')
   - "--r-table-header-bg": matching dark/accent background for table headers (e.g. '#0F172A' or the cover's primary/accent color)
   - "--r-border": color for tables/borders matching the theme (e.g. '#e2e8f0' or a light accent tone)
+  - "--r-chap-header-pad": padding-top before the chapter title block on page 1 (e.g. '0.25in', '0.5in'). Use smaller values (0.2in–0.35in) for modern/tech styles, larger (0.4in–0.6in) for literary/elegant styles.
+  - "--r-chap-header-bg": background of the chapter header block (e.g. 'transparent', or the cover's primary color for a Bold/Tech style full-bleed band)
+  - "--r-chap-header-bd-left": optional left accent bar (e.g. 'none', '6px solid #F59E0B', '4px dashed #4A9EFF'). Use for modern/tech/mono styles.
+  - "--r-chap-header-bd-top": optional overline above the chapter title (e.g. 'none', '2px solid #8E7453', '3px double #C9A96E'). Use for minimalist and elegant styles.
+  - "--r-chap-header-pd": padding inside the chapter header block (e.g. '0', '1rem 0 0 0', '1.25rem 1.5rem'). Must match --r-chap-header-bd-left and --r-chap-header-bg usage.
+  - "--r-chap-header-mb": margin-bottom below the chapter header block (e.g. '1.5rem', '2rem')
+  - "--r-chap-title-size": font-size of the chapter title (e.g. '20pt', '22pt', '24pt')
 
 Return ONLY the raw JSON. No prose, no markdown code block backticks.
 Format: {"analysis": "...", "design": {...}}`;
