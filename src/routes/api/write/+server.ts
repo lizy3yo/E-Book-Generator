@@ -361,30 +361,76 @@ Review, correct, and return in the required format.`;
 		}
 
 		// Make HTTP request to Anthropic
-		const response = await fetch('https://api.anthropic.com/v1/messages', {
-			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-				'x-api-key': activeApiKey,
-				'anthropic-version': '2023-06-01'
-			},
-			body: JSON.stringify({
-				model: selectedModel,
-				max_tokens: action === 'write-chapter' ? 8000 : action === 'verify-chapter' ? 6000 : 2000,
-				system: systemPrompt,
-				messages: [
-					{ role: 'user', content: userPrompt }
-				]
-			})
-		});
+		// Use a faster model for outline (structured JSON, not prose) and
+		// tighten max_tokens to match actual output size.
+		const outlineModel = action === 'outline'
+			? 'claude-haiku-4-5'
+			: selectedModel;
 
-		if (!response.ok) {
-			const errText = await response.text();
-			throw new Error(`Anthropic API error (${response.status}): ${errText}`);
+		// Size the output budget from the actual work, not a fixed guess. A
+		// verify pass echoes the whole chapter back after the report, so its
+		// budget has to scale with the draft it is given or long chapters get
+		// truncated mid-sentence.
+		const maxTokens =
+			action === 'write-chapter'  ? budgetForWrite(length) :
+			action === 'verify-chapter' ? budgetForVerify(chapterContent) :
+			/* outline */                  900;
+
+		const controller = new AbortController();
+		// Streamed requests only need to survive gaps between chunks, so the
+		// ceiling can be generous without risking a silent HTTP timeout.
+		const timeoutMs = action === 'outline' ? 25_000 : 600_000;
+		const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+		// Anthropic requires streaming once max_tokens is large enough that a
+		// single buffered response could exceed the request timeout.
+		const useStream = action !== 'outline';
+
+		let response: Response;
+		let responseText = '';
+		let stopReason: string | null = null;
+		try {
+			response = await fetch('https://api.anthropic.com/v1/messages', {
+				method: 'POST',
+				signal: controller.signal,
+				headers: {
+					'Content-Type': 'application/json',
+					'x-api-key': activeApiKey,
+					'anthropic-version': '2023-06-01'
+				},
+				body: JSON.stringify({
+					model: outlineModel,
+					max_tokens: maxTokens,
+					stream: useStream,
+					system: systemPrompt,
+					messages: [
+						{ role: 'user', content: userPrompt }
+					]
+				})
+			});
+
+			if (!response.ok) {
+				const errText = await response.text();
+				throw new Error(`Anthropic API error (${response.status}): ${errText}`);
+			}
+
+			({ text: responseText, stopReason } = useStream
+				? await readTextStream(response)
+				: await readTextResponse(response));
+		} catch (fetchErr: any) {
+			if (fetchErr.name === 'AbortError') {
+				throw new Error(`Claude API timed out after ${timeoutMs / 1000}s. Please try again.`);
+			}
+			throw fetchErr;
+		} finally {
+			clearTimeout(timer);
 		}
 
-		const data = await response.json();
-		const responseText = data.content?.find((c: any) => c.type === 'text')?.text || '';
+		if (stopReason === 'max_tokens') {
+			throw new Error(
+				`Claude ran out of output room on "${chapterTitle || bookTitle}" (budget was ${maxTokens} tokens) and the result was cut off. Please retry — if this repeats, the chapter is too long to process in one pass and should be split.`
+			);
+		}
 
 		if (action === 'outline') {
 			// Extract JSON array
@@ -465,6 +511,93 @@ Review, correct, and return in the required format.`;
 		}, { status: 500 });
 	}
 };
+
+// ── Output budgeting ──────────────────────────────────────────────────────
+// Claude Sonnet 5 and Opus 4.8 both cap output at 128k tokens. We stay under
+// that so a single runaway request can never stall the whole book.
+const MODEL_OUTPUT_CAP = 64_000;
+
+/** Rough token estimate for English markdown prose (~3.5 chars per token). */
+function estimateTokens(text: string): number {
+	return Math.ceil((text?.length ?? 0) / 3.5);
+}
+
+/** A fresh chapter's ceiling scales with how long the book's chapters should be. */
+function budgetForWrite(length: string): number {
+	const target =
+		length === 'short'  ? 12_000 :
+		length === 'medium' ? 20_000 :
+		/* long */            32_000;
+	return Math.min(target, MODEL_OUTPUT_CAP);
+}
+
+/**
+ * A verify pass emits a report and then re-emits the full chapter, so it needs
+ * room for the draft it was handed plus editorial expansion, plus the report.
+ */
+function budgetForVerify(chapterContent: string): number {
+	const draft = estimateTokens(chapterContent);
+	const needed = Math.ceil(draft * 1.5) + 4_000;
+	return Math.min(Math.max(needed, 12_000), MODEL_OUTPUT_CAP);
+}
+
+// ── Response readers ──────────────────────────────────────────────────────
+type ClaudeText = { text: string; stopReason: string | null };
+
+async function readTextResponse(response: Response): Promise<ClaudeText> {
+	const data = await response.json();
+	return {
+		text: data.content?.find((c: any) => c.type === 'text')?.text || '',
+		stopReason: data.stop_reason ?? null
+	};
+}
+
+/**
+ * Accumulates text deltas from Anthropic's SSE stream. Streaming is what lets
+ * us request a large budget without tripping the request timeout.
+ */
+async function readTextStream(response: Response): Promise<ClaudeText> {
+	const reader = response.body?.getReader();
+	if (!reader) throw new Error('Claude API returned an empty response stream.');
+
+	const decoder = new TextDecoder();
+	let buffer = '';
+	let text = '';
+	let stopReason: string | null = null;
+
+	while (true) {
+		const { done, value } = await reader.read();
+		if (done) break;
+
+		buffer += decoder.decode(value, { stream: true });
+
+		// SSE events are separated by a blank line; keep any partial tail.
+		const events = buffer.split('\n\n');
+		buffer = events.pop() ?? '';
+
+		for (const event of events) {
+			const dataLine = event.split('\n').find((l) => l.startsWith('data:'));
+			if (!dataLine) continue;
+
+			let payload: any;
+			try {
+				payload = JSON.parse(dataLine.slice(5).trim());
+			} catch {
+				continue;
+			}
+
+			if (payload.type === 'content_block_delta' && payload.delta?.type === 'text_delta') {
+				text += payload.delta.text;
+			} else if (payload.type === 'message_delta' && payload.delta?.stop_reason) {
+				stopReason = payload.delta.stop_reason;
+			} else if (payload.type === 'error') {
+				throw new Error(`Anthropic stream error: ${payload.error?.message || 'unknown'}`);
+			}
+		}
+	}
+
+	return { text, stopReason };
+}
 
 // Helper utilities for Mock Content Generation
 function getMockChapterTitle(bookTitle: string, index: number, total: number): string {
