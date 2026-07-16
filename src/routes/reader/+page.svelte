@@ -712,11 +712,147 @@
 			const PAD_RIGHT  = 120;  // 1.25in
 			const HDR_H      = 40;   // running header + margin
 			const FTR_H      = 40;   // running footer + margin
-			const BODY_H = PAGE_H_PX - PAD_TOP - PAD_BOTTOM - HDR_H - FTR_H;
+			const BODY_H = PAGE_H_PX - PAD_TOP - PAD_BOTTOM - HDR_H - FTR_H - 48; // Subtract 48px for .chapter-content padding-top (0.5in)
 			const BODY_W = PAGE_W_PX - PAD_LEFT - PAD_RIGHT;
 
 			let chapHtml = '';
 			let pageCounter = 1;
+
+			// Inject the ebook styles into the parent document temporarily during pagination
+			const styleEl = document.createElement('style');
+			styleEl.id = 'pdf-measurer-styles';
+			styleEl.innerHTML = `
+				.pdf-measurer-container {
+					font-family: ${activeBook.interiorDesign?.['--r-body-font'] ?? bodyFontCss};
+					font-size: 12pt;
+					line-height: 1.85;
+					color: #1A1612;
+				}
+				.pdf-measurer-container p { margin: 0 0 10pt; text-indent: 1.4em; }
+				.pdf-measurer-container p:first-of-type { text-indent: 0; }
+				.pdf-measurer-container h2 { font-size: 15pt; font-weight: 600; margin: 18pt 0 8pt; font-family: ${titleFontCss}; }
+				.pdf-measurer-container h3 { font-size: 12pt; font-weight: 600; margin: 14pt 0 6pt; font-family: ${titleFontCss}; }
+				.pdf-measurer-container blockquote {
+					border-left: ${activeBook.interiorDesign?.['--r-blockquote-border'] ?? `3pt solid ${accent}`};
+					background: ${activeBook.interiorDesign?.['--r-blockquote-bg'] ?? 'transparent'};
+					margin: 14pt 0;
+					padding: ${activeBook.interiorDesign?.['--r-blockquote-padding'] ?? '0 0 0 14pt'};
+					border-radius: ${activeBook.interiorDesign?.['--r-blockquote-border-radius'] ?? '0'};
+					font-style: italic;
+					color: ${activeBook.interiorDesign?.['--r-blockquote-color'] ?? '#6A6055'};
+				}
+				.pdf-measurer-container ul, .pdf-measurer-container ol { margin: 10pt 0; padding-left: 20pt; }
+				.pdf-measurer-container li { margin-bottom: 5pt; }
+				
+				.pdf-measurer-container table {
+					width: 100%;
+					border-collapse: collapse;
+					margin: 2rem 0;
+					font-size: 0.95rem;
+					text-align: left;
+					line-height: 1.5;
+				}
+				.pdf-measurer-container th {
+					background-color: ${activeBook.interiorDesign?.['--r-table-header-bg'] ?? '#0F172A'};
+					color: #ffffff;
+					font-weight: 600;
+					padding: 0.75rem 1rem;
+					border: 1px solid ${activeBook.interiorDesign?.['--r-border'] ?? '#e2e8f0'};
+				}
+				.pdf-measurer-container td {
+					padding: 0.75rem 1rem;
+					border: 1px solid ${activeBook.interiorDesign?.['--r-border'] ?? '#e2e8f0'};
+				}
+				.pdf-measurer-container tr:nth-child(even) {
+					background-color: #f8fafc;
+				}
+				.pdf-measurer-container .callout-box {
+					background-color: #faf7f2;
+					border-left: 3.5px solid ${accent};
+					border-radius: 4px;
+					padding: 1.25rem 1.5rem;
+					margin: 2rem 0;
+					box-sizing: border-box;
+				}
+				.pdf-measurer-container .callout-box__title {
+					font-family: 'Inter',sans-serif;
+					font-weight: 700;
+					font-size: 0.85rem;
+					text-transform: uppercase;
+					letter-spacing: 1.5px;
+					color: ${accent};
+					margin-bottom: 0.5rem;
+					display: block;
+				}
+				.pdf-measurer-container .callout-box__content {
+					font-size: 0.95rem;
+					line-height: 1.6;
+					color: #1a1612;
+				}
+				.pdf-measurer-container .diagram-box {
+					background-color: #f8fafc;
+					border: 1.5px solid #e2e8f0;
+					border-radius: 6px;
+					padding: 1.5rem;
+					margin: 2.5rem 0;
+					text-align: center;
+				}
+				.pdf-measurer-container .diagram-box__title {
+					font-family: ${titleFontCss};
+					font-size: 1.25rem;
+					font-weight: 600;
+					color: ${titleColor};
+					margin-bottom: 0.25rem;
+				}
+				.pdf-measurer-container .diagram-box__subtitle {
+					font-size: 0.8rem;
+					color: #64748b;
+					margin-bottom: 1.5rem;
+					text-transform: uppercase;
+					letter-spacing: 1px;
+				}
+				.pdf-measurer-container .diagram-flow {
+					display: flex;
+					flex-wrap: wrap;
+					justify-content: center;
+					align-items: center;
+					gap: 1rem;
+					margin: 1rem 0;
+				}
+				.pdf-measurer-container .diagram-step {
+					background-color: #ffffff;
+					border: 1px solid #cbd5e1;
+					border-radius: 4px;
+					padding: 0.75rem 1rem;
+					min-width: 140px;
+					max-width: 200px;
+					font-size: 0.85rem;
+					text-align: left;
+				}
+				.pdf-measurer-container .diagram-step__num {
+					font-weight: 700;
+					color: ${accent};
+					margin-bottom: 0.25rem;
+					font-size: 0.8rem;
+				}
+				.pdf-measurer-container .diagram-step__text {
+					font-weight: 500;
+					color: #1e293b;
+				}
+				.pdf-measurer-container .diagram-arrow {
+					font-size: 1.2rem;
+					color: #cbd5e1;
+				}
+				.pdf-measurer-container .diagram-takeaway {
+					margin-top: 1.5rem;
+					padding-top: 1rem;
+					border-top: 1px solid #e2e8f0;
+					font-size: 0.85rem;
+					font-style: italic;
+					color: #475569;
+				}
+			`;
+			document.head.appendChild(styleEl);
 
 			activeBook.chapters.forEach((c, idx) => {
 				if (c.status !== 'completed' || !c.content) return;
@@ -742,14 +878,15 @@
 				let budget = BODY_H - firstPageReserve;
 
 				const measurer = document.createElement('div');
+				measurer.className = 'pdf-measurer-container';
 				measurer.style.cssText =
 					`position:absolute;visibility:hidden;width:${BODY_W}px;` +
-					`font-size:13px;line-height:1.85;font-family:${bodyFontCss};`;
+					`font-size:12pt;line-height:1.85;font-family:${bodyFontCss};`;
 				document.body.appendChild(measurer);
 
 				for (const blk of blocks) {
 					measurer.innerHTML = blk;
-					const h = measurer.offsetHeight + 20;
+					const h = measurer.offsetHeight + 24;
 					if (curH + h > budget && cur.length > 0) {
 						pages.push({ blocks: cur, isFirst: pages.length === 0 });
 						cur = []; curH = 0; budget = BODY_H;
@@ -783,6 +920,7 @@
 						</section>`;
 				});
 			});
+			document.head.removeChild(styleEl);
 
 			return `<!doctype html>
 	<html lang="en">
@@ -962,7 +1100,7 @@
 		padding: 0.75rem 1rem;
 		border: 1px solid ${activeBook.interiorDesign?.['--r-border'] ?? '#e2e8f0'};
 	}
-	tr:nth-child(even)) {
+	tr:nth-child(even) {
 		background-color: #f8fafc;
 	}
 
@@ -1056,7 +1194,8 @@
 
 	@media print {
 	body { background: #fff; }
-	.cover-page, .toc-page, .chapter-section { page-break-after: always; }
+	.cover-page, .toc-page, .chapter-section { page-break-after: always; page-break-inside: avoid; break-inside: avoid; }
+	table, .callout-box, .diagram-box, blockquote { page-break-inside: avoid; break-inside: avoid; }
 	}
 	</style>
 	</head>
