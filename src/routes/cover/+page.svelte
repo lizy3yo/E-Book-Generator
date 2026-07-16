@@ -6,7 +6,22 @@
 	import { generateImage } from '$lib/generateImage';
 
 	let canvas: HTMLCanvasElement | null = $state(null);
+	let chatViewport: HTMLDivElement | null = $state(null);
 	let isGeneratingImage = $state(false);
+
+	// Auto-scroll chat viewport to bottom when messages or loading state changes
+	$effect(() => {
+		const _len = chatMessages.length;
+		const _processing = isProcessingChat;
+		const _generating = isGeneratingImage;
+		if (chatViewport) {
+			setTimeout(() => {
+				if (chatViewport) {
+					chatViewport.scrollTop = chatViewport.scrollHeight;
+				}
+			}, 50);
+		}
+	});
 	
 	// Chat Assistant State
 	let chatInput = $state('');
@@ -263,7 +278,7 @@
 				? coverOptions[selectedCoverIndex]
 				: null;
 
-			const storedPrompt = (selectedVariant?.prompt || settings.bgImagePrompt)?.trim();
+			const storedPrompt = (settings.bgImagePrompt || selectedVariant?.prompt)?.trim();
 			const isGenericPrompt = !storedPrompt
 				|| storedPrompt === 'Abstract minimalist painting with warm colors';
 
@@ -290,19 +305,22 @@
 
 			// 1. Update coverSettings so the canvas redraws with the new image
 			updateSetting('bgImageUrl', data.imageUrl);
+			updateSetting('bgImagePrompt', prompt);
 
-			// 2. Write the new imageUrl back into the selected variant slot so the
+			// 2. Write the new imageUrl and prompt back into the selected variant slot so the
 			//    thumbnail in the Design Variants panel reflects the new generation.
 			if (selectedCoverIndex !== null && coverOptions[selectedCoverIndex]) {
 				globalState.replaceCoverOption(book.id, selectedCoverIndex, {
 					...coverOptions[selectedCoverIndex],
-					imageUrl: data.imageUrl
+					imageUrl: data.imageUrl,
+					prompt
 				});
 			} else if (coverOptions.length > 0) {
 				// No variant selected — update slot 0 as a sensible default
 				globalState.replaceCoverOption(book.id, 0, {
 					...coverOptions[0],
-					imageUrl: data.imageUrl
+					imageUrl: data.imageUrl,
+					prompt
 				});
 			}
 
@@ -441,10 +459,11 @@
 	{:else}
 		<div class="studio-grid">
 			
-			<!-- Left: Control Panels & Chat assistant -->
 			<div class="controls-column">
-				
-				<!-- Cover Settings manual controls -->
+
+				<!-- TODO: Re-enable "Layout & Style Controls" once debugging is complete.
+				     All original markup is preserved below — remove the comment delimiters to restore.
+
 				<div class="settings-panel card">
 					<h3 class="font-serif">Layout & Style Controls</h3>
 					
@@ -562,11 +581,12 @@
 						</div>
 					</div>
 				</div>
+				-->
 
 				<!-- Interactive back-and-forth chat panel -->
 				<div class="assistant-chat-panel card">
 					<h3 class="font-serif">Cover Studio Assistant</h3>
-					<div class="chat-viewport">
+					<div class="chat-viewport" bind:this={chatViewport}>
 						{#each chatMessages as msg}
 							<div class="chat-bubble {msg.sender}">
 								<div class="avatar">
@@ -579,6 +599,18 @@
 								<div class="text font-serif">{msg.text}</div>
 							</div>
 						{/each}
+						{#if isProcessingChat}
+							<div class="chat-bubble assistant">
+								<div class="avatar">
+									<Bot size={16} />
+								</div>
+								<div class="text typing-indicator">
+									<span></span>
+									<span></span>
+									<span></span>
+								</div>
+							</div>
+						{/if}
 					</div>
 
 					<form onsubmit={handleAssistantSubmit} class="chat-form flex gap-1">
@@ -865,6 +897,41 @@
 		background-color: var(--accent);
 		color: white;
 		border-color: var(--accent);
+	}
+
+	.typing-indicator {
+		display: flex !important;
+		align-items: center;
+		gap: 0.35rem;
+		padding: 0.85rem 1.15rem !important;
+	}
+
+	.typing-indicator span {
+		width: 7px;
+		height: 7px;
+		background-color: var(--text-muted, #8E7453);
+		border-radius: 50%;
+		display: inline-block;
+		animation: typing-bounce 1.4s infinite ease-in-out both;
+	}
+
+	.typing-indicator span:nth-child(1) {
+		animation-delay: -0.32s;
+	}
+
+	.typing-indicator span:nth-child(2) {
+		animation-delay: -0.16s;
+	}
+
+	@keyframes typing-bounce {
+		0%, 80%, 100% { 
+			transform: scale(0.6);
+			opacity: 0.4;
+		} 
+		40% { 
+			transform: scale(1.0);
+			opacity: 1;
+		}
 	}
 
 	.chat-form input {

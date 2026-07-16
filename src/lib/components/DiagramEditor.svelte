@@ -2,6 +2,7 @@
 	import { tick } from 'svelte';
 	import { globalState } from '$lib/state.svelte';
 	import { parseMarkdown } from '$lib/diagrams';
+	import { X, Sparkles, Palette, Eye, Check, FileText, BarChart3 } from '@lucide/svelte';
 
 	let { editTarget, activeBook, onClose, onSave } = $props<{
 		editTarget: {
@@ -250,14 +251,14 @@ Rules:
 		<div class="edit-drawer__header">
 			<div class="edit-drawer__title-row">
 				<span class="edit-drawer__scope-badge edit-drawer__scope-badge--diagram">
-					📊 Diagram Editor
+					<BarChart3 size={11} /> Diagram Editor
 				</span>
 				<h3 class="edit-drawer__title font-serif">
 					Edit Diagram · Ch. {editTarget.chapterOrder}
 				</h3>
 			</div>
 			<p class="edit-drawer__subtitle font-serif">{editTarget.chapterTitle}</p>
-			<button class="edit-drawer__close" onclick={onClose} aria-label="Close editor">✕</button>
+			<button class="edit-drawer__close" onclick={onClose} aria-label="Close editor"><X size={18} /></button>
 		</div>
 
 		<!-- Body -->
@@ -271,7 +272,7 @@ Rules:
 				{#if isMarkdownTable(originalRaw)}
 					<!-- AI Prompt -->
 					<div class="diagram-editor__field-group">
-						<label class="edit-drawer__label" for="diag-table-instruction">✨ AI Edit Table</label>
+						<label class="edit-drawer__label" for="diag-table-instruction"><Sparkles size={13} /> AI Edit Table</label>
 						<div class="diagram-editor__ai-row">
 							<textarea
 								id="diag-table-instruction"
@@ -286,7 +287,7 @@ Rules:
 
 					<!-- Color Settings -->
 					<div class="diagram-editor__section">
-						<div class="diagram-editor__section-title">🎨 Table Color</div>
+						<div class="diagram-editor__section-title"><Palette size={13} /> Table Color</div>
 						<div class="diagram-editor__color-row diagram-editor__color-row--table">
 							<input
 								type="color"
@@ -313,7 +314,7 @@ Rules:
 				{:else}
 					<!-- AI Prompt -->
 					<div class="diagram-editor__field-group">
-						<label class="edit-drawer__label" for="diag-ai-instruction">✨ AI Edit Diagram</label>
+						<label class="edit-drawer__label" for="diag-ai-instruction"><Sparkles size={13} /> AI Edit Diagram</label>
 						<div class="diagram-editor__ai-row">
 							<textarea
 								id="diag-ai-instruction"
@@ -341,7 +342,7 @@ Rules:
 
 					<!-- Color Settings -->
 					<div class="diagram-editor__section">
-						<div class="diagram-editor__section-title">🎨 Color Customizer</div>
+						<div class="diagram-editor__section-title"><Palette size={13} /> Color Customizer</div>
 						<div class="diagram-editor__colors">
 							{#each diagramColors as color, i}
 								<div class="diagram-editor__color-item">
@@ -378,7 +379,7 @@ Rules:
 													applyDiagramManualEdit();
 												}}
 												disabled={isEditing}
-											>✕</button>
+											><X size={12} /></button>
 										{/if}
 									</div>
 								</div>
@@ -388,7 +389,7 @@ Rules:
 
 					<!-- Fields Settings -->
 					<div class="diagram-editor__section">
-						<div class="diagram-editor__section-title">📝 Diagram Details</div>
+						<div class="diagram-editor__section-title"><FileText size={13} /> Diagram Details</div>
 						{#each Object.entries(diagramFields) as [key, val]}
 							<div class="diagram-editor__field">
 								<label class="diagram-editor__field-label" for="diag-field-{key}">{key}</label>
@@ -425,7 +426,7 @@ Rules:
 
 			<!-- Right Column: Live Preview -->
 			<div class="diagram-drawer__preview-panel">
-				<div class="diagram-editor__section-title">👁️ Live Paginator Preview</div>
+				<div class="diagram-editor__section-title"><Eye size={13} /> Live Paginator Preview</div>
 				<div class="diagram-drawer__preview-box" style={isMarkdownTable(originalRaw) ? `--r-table-header-bg: ${tableColor};` : ''}>
 					<div class="chapter-body">
 						{@html liveHtml}
@@ -440,7 +441,7 @@ Rules:
 				<p class="edit-drawer__error" role="alert">{editError}</p>
 			{/if}
 			{#if editSuccess}
-				<p class="edit-drawer__success" role="status">✓ Diagram updated successfully.</p>
+				<p class="edit-drawer__success" role="status"><Check size={14} /> Diagram updated successfully.</p>
 			{/if}
 			{#if isMarkdownTable(originalRaw)}
 				<div class="edit-drawer__actions">
@@ -450,7 +451,7 @@ Rules:
 							<span class="spinner"></span>
 							Applying…
 						{:else}
-							✨ Apply Edit
+							<Sparkles size={13} /> Apply Edit
 						{/if}
 					</button>
 				</div>
@@ -529,6 +530,9 @@ Rules:
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
 	}
 
 	.edit-drawer__title {
@@ -627,6 +631,9 @@ Rules:
 		color: var(--text-muted, #6E6860);
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
+		display: flex;
+		align-items: center;
+		gap: 0.35rem;
 	}
 
 	.edit-drawer__textarea {
@@ -675,6 +682,9 @@ Rules:
 		letter-spacing: 0.06em;
 		color: var(--text-muted, #6E6860);
 		margin-bottom: 0.75rem;
+		display: flex;
+		align-items: center;
+		gap: 0.35rem;
 	}
 
 	.diagram-editor__colors {
@@ -789,6 +799,10 @@ Rules:
 		font-weight: 500;
 		font-size: 0.82rem;
 		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.4rem;
 	}
 
 	.edit-drawer__apply:hover:not(:disabled) {
@@ -822,6 +836,9 @@ Rules:
 		font-size: 0.8rem;
 		margin: 0;
 		font-weight: 600;
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
 	}
 
 	.edit-drawer__cancel {
@@ -948,6 +965,10 @@ Rules:
 		white-space: nowrap;
 		z-index: 5;
 		letter-spacing: 0.02em;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.25rem;
 	}
 
 	.chapter-body :global(.edit-trigger--diagram:hover) {

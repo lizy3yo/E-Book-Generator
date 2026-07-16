@@ -28,10 +28,30 @@ export const POST: RequestHandler = async ({ request }) => {
 		// ── Mock mode ──────────────────────────────────────────────────────────
 		if (useMockMode || !claudeKey) {
 			await new Promise((r) => setTimeout(r, 400));
+			const lower = instruction.toLowerCase();
+			const mutations: Record<string, any> = {};
+			let reply = `I've updated the cover design based on your feedback: "${instruction}".`;
+
+			if (lower.includes('dark') || lower.includes('black') || lower.includes('deep')) {
+				mutations.overlayOpacity = 0.45;
+				mutations.bgImagePrompt = `Luxury dark minimalist professional book cover. Title: "${bookTitle}". Style: deep charcoal background with elegant lighting, incorporating: ${instruction}.`;
+				reply = "I've deepened the overlay opacity and adjusted the prompt for a darker, more atmospheric background.";
+			} else if (lower.includes('light') || lower.includes('warm') || lower.includes('cream')) {
+				mutations.overlayOpacity = 0.1;
+				mutations.bgImagePrompt = `Sophisticated warm editorial professional book cover. Title: "${bookTitle}". Style: warm cream tones, painterly textures, incorporating: ${instruction}.`;
+				reply = "I've adjusted the lighting and prompt to bring out warmer, softer cream tones in the cover design.";
+			} else if (lower.includes('modern') || lower.includes('sans') || lower.includes('clean')) {
+				mutations.titleFont = 'Inter';
+				mutations.bgImagePrompt = `High-impact commercial bold graphic book cover. Title: "${bookTitle}". Style: clean modern sans-serif typography with high contrast, incorporating: ${instruction}.`;
+				reply = "I've updated the design prompt to use clean, modern sans-serif typography with a high-contrast layout.";
+			} else {
+				mutations.bgImagePrompt = `Refined professional book cover. Title: "${bookTitle}". Genre: ${genre}. Style: editorial illustration with custom elements, incorporating: ${instruction}.`;
+			}
+
 			return json({
 				success: true,
-				reply: `Got it: "${instruction}". In live mode this applies the changes immediately.`,
-				mutations: {},
+				reply,
+				mutations,
 				variantIndex: null,
 				source: 'mock'
 			});
@@ -66,7 +86,7 @@ AVAILABLE MUTATION FIELDS (only include fields that are being changed):
 - alignment: "left" | "center" | "right"
 - textPosition: "top" | "middle" | "bottom"
 - overlayOpacity: number (0–0.8) — dark overlay on the background image for text legibility
-- bgImagePrompt: string — ONLY include when the user explicitly requests a new background image; write a detailed, cinematic, publishing-quality prompt (min 60 words)
+- bgImagePrompt: string — Since the typography and visual layout are baked directly into the generated cover image, you MUST always generate and return an updated bgImagePrompt for any design instruction (including typography, color, layout, or background changes). Describe the entire cover design in detail (min 60 words), incorporating all of the user's requested refinements (e.g. font style, colors, lighting, theme) so that the newly generated image reflects their request.
 - variantIndex: 0 | 1 | 2 | null — which design slot to update (null = currently selected)
 
 PROFESSIONAL DESIGN RULES:
@@ -84,7 +104,7 @@ PROFESSIONAL DESIGN RULES:
    - Lighting quality (cinematic chiaroscuro / warm soft natural / high-contrast dramatic)
    - Specific visual subject directly relevant to "${bookTitle}"
    - Quality descriptor (photorealistic render / painterly editorial illustration / bold vector graphic)
-   - No text, no typography in the image
+   - Include the title and author name explicitly in the prompt, describing their placement, font style, and colors (e.g., "Bold elegant white serif title text 'THE BOOK TITLE' dominating the top half..."), so the text is generated directly as part of the visual composition.
    - Minimum 60 words
 
 RESPONSE FORMAT:

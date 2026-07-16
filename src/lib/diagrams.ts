@@ -378,7 +378,7 @@ function renderDiagram(
 		<div class="diagram-box">
 			<div class="diagram-box__actions">
 				<button class="edit-trigger edit-trigger--diagram" data-chapter-id="${chapterId}" data-diagram-index="${diagramIndex}" title="Edit this diagram" aria-label="Edit diagram">
-					✏️ Edit
+					<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pen-line"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg> Edit
 				</button>
 			</div>
 			<div class="diagram-box__title" style="color: var(--r-title-color); font-weight: bold; border-bottom: 1.5px solid var(--r-accent, #C9A84C); padding-bottom: 0.3rem; margin-bottom: 0.6rem; font-size: 0.95rem;">📊 ${title}</div>
@@ -553,7 +553,7 @@ export function parseMarkdown(md: string, chapterId: string = ''): string {
 			const isFirst = startIndex === 0;
 			return `
 				<div class="diagram-box diagram-box--table${isWideTable ? ' diagram-box--table--wide' : ''}${segmentLabel ? ' diagram-box--table--continued' : ''}" data-column-count="${segmentHeaders.length}"${segmentLabel ? ` data-segment-label="${segmentLabel}"` : ''}>
-					${isFirst ? `<div class="diagram-box__actions"><button class="edit-trigger edit-trigger--diagram" data-chapter-id="${chapterId}" data-table-index="${thisBlockIndex}" data-table-raw="${encodedRaw}" title="Edit this table" aria-label="Edit table">✏️ Edit</button></div>` : ''}
+					${isFirst ? `<div class="diagram-box__actions"><button class="edit-trigger edit-trigger--diagram" data-chapter-id="${chapterId}" data-table-index="${thisBlockIndex}" data-table-raw="${encodedRaw}" title="Edit this table" aria-label="Edit table"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pen-line"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg> Edit</button></div>` : ''}
 					<div class="table-container">
 						<table>
 							<thead><tr>${ths}</tr></thead>
@@ -654,7 +654,7 @@ export function parseMarkdown(md: string, chapterId: string = ''): string {
 		if (INLINE_VISUAL_RE.test(block)) {
 			const idx = inlineVisualIndex++;
 			const encodedBlock = encodeURIComponent(block);
-			const btn = `<button class="edit-trigger edit-trigger--diagram edit-trigger--inline" data-chapter-id="${chapterId}" data-table-index="${idx}" data-table-raw="${encodedBlock}" title="Edit this element" aria-label="Edit visual element">✏️ Edit</button>`;
+			const btn = `<button class="edit-trigger edit-trigger--diagram edit-trigger--inline" data-chapter-id="${chapterId}" data-table-index="${idx}" data-table-raw="${encodedBlock}" title="Edit this element" aria-label="Edit visual element"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pen-line"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg> Edit</button>`;
 			// Insert the button immediately after the first opening <div ...>
 			return block.replace(/(<div\b[^>]*>)/, `$1${btn}`);
 		}

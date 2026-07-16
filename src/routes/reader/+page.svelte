@@ -8,7 +8,8 @@
 	import {
 		BookMarked, Clipboard, ClipboardCheck, FileCode, FileDown,
 		Image as ImageIcon, PenLine, BookOpen,
-		Sparkles, Wand2, RefreshCcw, RotateCcw
+		Sparkles, Wand2, RefreshCcw, RotateCcw,
+		X, Palette, Camera, Check
 	} from '@lucide/svelte';
 
 	let fontSize = $state(18);
@@ -2429,7 +2430,7 @@
 							</h3>
 						</div>
 						<p class="edit-drawer__subtitle font-serif">{editTarget.chapterTitle}</p>
-						<button class="edit-drawer__close" onclick={closeEditPanel} aria-label="Close editor">✕</button>
+						<button class="edit-drawer__close" onclick={closeEditPanel} aria-label="Close editor"><X size={14} /></button>
 					</div>
 
 					<!-- Scope hint -->
@@ -2505,7 +2506,7 @@
 									disabled={isEditing}
 									aria-pressed={!useRealisticIllustration}
 								>
-									🎨 Illustrated
+									<Palette size={13} /> Illustrated
 								</button>
 								<button
 									type="button"
@@ -2515,7 +2516,7 @@
 									disabled={isEditing}
 									aria-pressed={useRealisticIllustration}
 								>
-									📷 Realistic
+									<Camera size={13} /> Realistic
 								</button>
 							</div>
 						{/if}
@@ -2528,15 +2529,16 @@
 						{/if}
 						{#if editSuccess}
 							<p class="edit-drawer__success" role="status">
+								<Check size={14} />
 								{editTarget.scope === 'illustration' || (editTarget.scope === 'diagram' && useRealisticIllustration)
-									? '🎨 New image generated.'
+									? 'New image generated.'
 									: editTarget.scope === 'diagram' && editTarget.diagramKind === 'table'
-									? '✓ Table updated.'
+									? 'Table updated.'
 									: editTarget.scope === 'diagram' && editTarget.diagramKind === 'inline'
-									? '✓ Visual block updated.'
+									? 'Visual block updated.'
 									: editTarget.scope === 'diagram'
-									? '✓ Diagram updated.'
-									: '✓ Content updated.'}
+									? 'Diagram updated.'
+									: 'Content updated.'}
 							</p>
 						{/if}
 
@@ -2546,7 +2548,12 @@
 							{#if lastInstruction}
 								{@const redoTitle = `Re-run: ""`}
 								<button class="edit-drawer__redo" onclick={applyRedo} disabled={isEditing} title={redoTitle} aria-label="Redo last edit">
-									{#if isEditing && activeAction === 'redo'}<span class="spinner spinner--dark"></span>{:else}↺{/if} Redo
+									{#if isEditing && activeAction === 'redo'}
+										<span class="spinner spinner--dark"></span>
+									{:else}
+										<RotateCcw size={12} />
+									{/if}
+									Redo
 								</button>
 							{/if}
 							<button class="edit-drawer__apply" onclick={applyEdit} disabled={isEditing || !editInstruction.trim()}>
@@ -2554,7 +2561,13 @@
 									<span class="spinner"></span>
 									{editTarget.scope === 'illustration' || (editTarget.scope === 'diagram' && useRealisticIllustration) ? 'Generating…' : 'Applying…'}
 								{:else}
-									{editTarget.scope === 'illustration' ? '🎨 Generate' : (editTarget.scope === 'diagram' && useRealisticIllustration) ? '📷 Generate Image' : '✨ Apply Edit'}
+									{#if editTarget.scope === 'illustration'}
+										<Palette size={13} /> Generate
+									{:else if editTarget.scope === 'diagram' && useRealisticIllustration}
+										<Camera size={13} /> Generate Image
+									{:else}
+										<Sparkles size={13} /> Apply Edit
+									{/if}
 								{/if}
 							</button>
 						</div>
@@ -2578,7 +2591,7 @@
 								{#if isEditing && activeAction === 'reconstruct'}
 									<span class="spinner spinner--accent"></span> Reconstructing…
 								{:else}
-									⟳ Reconstruct from Scratch
+									<RefreshCcw size={12} /> Reconstruct from Scratch
 								{/if}
 							</button>
 						</div>
@@ -3578,6 +3591,10 @@
 		-webkit-backdrop-filter: blur(4px);
 		white-space: nowrap;
 		letter-spacing: 0.02em;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.25rem;
 	}
 
 	.chapter-body :global(.edit-trigger--diagram:hover) {
@@ -3875,6 +3892,10 @@
 		color: var(--text-muted, #9C8E7A);
 		transition: background 0.15s ease, color 0.15s ease;
 		line-height: 1.4;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.25rem;
 	}
 
 	.realistic-toggle__btn:not(:last-child) {
@@ -3923,6 +3944,9 @@
 		border-radius: 5px;
 		padding: 0.5rem 0.75rem;
 		margin: 0;
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
 	}
 
 	.edit-drawer__actions {
