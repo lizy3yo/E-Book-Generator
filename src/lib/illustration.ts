@@ -222,13 +222,14 @@ export async function createIllustration(
 	const direction = await artDirectIllustration(book, brief, ultra, keys, useMock);
 	const prompt    = direction?.prompt ?? houseStyleIllustrationPrompt(book, brief, ultra);
 
-	const url = await generateImage({
+	const image = await generateImage({
 		prompt,
 		apiKey:      keys.imageKey,
 		provider:    keys.imageProvider,
 		useMockMode: useMock,
 		isCover:     false
 	});
+	const url = image.url;
 
 	const labelResult = url
 		? await labelIllustration(book, brief, url, direction?.subject ?? '', keys, useMock)
@@ -241,6 +242,7 @@ export async function createIllustration(
 		labels: labelResult.labels,
 		prompt,
 		claudeUsage,
-		imageBilled: !!url && !useMock && !!keys.imageKey
+		// Authoritative: the server says whether a real paid image was made.
+		imageBilled: image.billed
 	};
 }

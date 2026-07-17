@@ -183,7 +183,8 @@
 					})
 				});
 				const rData = await rRes.json();
-				if (rData.success) globalState.addBookUsage(activeBook.id, { searches: 1 });
+				if (rData.source === 'live') globalState.addBookUsage(activeBook.id, { searches: 1 });
+				else if (rData.usage) globalState.addBookUsage(activeBook.id, { claude: rData.usage });
 				if (rData.success && rData.results?.length) {
 					const newFacts = (rData.results as any[])
 						.map((f: any) => `[${f.title}] ${f.snippet}`)
@@ -406,7 +407,8 @@
 					})
 				});
 				const rData = await rRes.json();
-				if (rData.success) globalState.addBookUsage(activeBook.id, { searches: 1 });
+				if (rData.source === 'live') globalState.addBookUsage(activeBook.id, { searches: 1 });
+				else if (rData.usage) globalState.addBookUsage(activeBook.id, { claude: rData.usage });
 				if (rData.success && rData.results?.length) {
 					const newFacts = (rData.results as any[])
 						.map((f: any) => `[${f.title}] ${f.snippet}`)
@@ -559,16 +561,15 @@
 				const promptData = await promptRes.json();
 				if (!promptData.success) throw new Error(promptData.error || 'Prompt refinement failed');
 				if (promptData.usage) globalState.addBookUsage(activeBook.id, { claude: promptData.usage });
-				const newIllustUrl = await generateImage({
+				const newImage = await generateImage({
 					prompt:      promptData.prompt,
 					apiKey:      globalState.apiKeys.imageKey,
 					provider:    globalState.apiKeys.imageProvider,
 					useMockMode: globalState.apiKeys.useMockMode,
 					isCover:     false
 				});
-				if (newIllustUrl && !globalState.apiKeys.useMockMode && globalState.apiKeys.imageKey) {
-					globalState.addBookUsage(activeBook.id, { images: 1 });
-				}
+				const newIllustUrl = newImage.url;
+				if (newImage.billed) globalState.addBookUsage(activeBook.id, { images: 1 });
 
 				// Re-label against the NEW picture. The old labels are coordinates into
 				// the image this one just replaced, so keeping them would leave every

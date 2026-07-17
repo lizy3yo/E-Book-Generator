@@ -177,14 +177,15 @@ class GenerationRunner {
 			specs.map(async (spec) => {
 				let imageUrl = '';
 				try {
-					imageUrl = await generateImage({
+					const img = await generateImage({
 						prompt:      spec.prompt,
 						apiKey:      keys.imageKey,
 						provider:    keys.imageProvider,
 						useMockMode: keys.useMockMode,
 						isCover:     true
 					});
-					if (imageUrl && !keys.useMockMode && keys.imageKey) globalState.addBookUsage(book.id, { images: 1 });
+					imageUrl = img.url;
+					if (img.billed) globalState.addBookUsage(book.id, { images: 1 });
 				} catch (err: any) {
 					// Keep the slot: an empty imageUrl renders as a failed card the
 					// user can retry, which beats a cover silently going missing.
@@ -310,15 +311,15 @@ class GenerationRunner {
 
 		try {
 			const keys = globalState.apiKeys;
-			const imageUrl = await generateImage({
+			const img = await generateImage({
 				prompt,
 				apiKey:      keys.imageKey,
 				provider:    keys.imageProvider,
 				useMockMode: keys.useMockMode,
 				isCover:     true
 			});
-			if (imageUrl && !keys.useMockMode && keys.imageKey) globalState.addBookUsage(bookId, { images: 1 });
-			globalState.replaceCoverOption(bookId, optionIndex, { ...option, prompt, imageUrl });
+			if (img.billed) globalState.addBookUsage(bookId, { images: 1 });
+			globalState.replaceCoverOption(bookId, optionIndex, { ...option, prompt, imageUrl: img.url });
 		} catch (err: any) {
 			console.error(err);
 			this.patch(bookId, { coverError: `That cover failed to render: ${err?.message || 'unknown error'}` });
@@ -428,7 +429,8 @@ class GenerationRunner {
 				})
 			});
 			const researchData = await researchRes.json();
-			if (researchData.success) globalState.addBookUsage(book.id, { searches: 1 });
+			if (researchData.source === 'live') globalState.addBookUsage(book.id, { searches: 1 });
+			else if (researchData.usage) globalState.addBookUsage(book.id, { claude: researchData.usage });
 			const searchFacts = researchData.success
 				? (researchData.results as any[]).map(f => `[${f.title}] ${f.snippet}`).join('\n\n')
 				: '';
@@ -557,7 +559,8 @@ class GenerationRunner {
 				})
 			});
 			const rd = await r.json();
-			if (rd.success) globalState.addBookUsage(book.id, { searches: 1 });
+			if (rd.source === 'live') globalState.addBookUsage(book.id, { searches: 1 });
+			else if (rd.usage) globalState.addBookUsage(book.id, { claude: rd.usage });
 			bookLevelFacts = rd.success
 				? (rd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
 				: '';
@@ -605,7 +608,8 @@ class GenerationRunner {
 						})
 					});
 					const crd = await cr.json();
-					if (crd.success) globalState.addBookUsage(book.id, { searches: 1 });
+					if (crd.source === 'live') globalState.addBookUsage(book.id, { searches: 1 });
+					else if (crd.usage) globalState.addBookUsage(book.id, { claude: crd.usage });
 					chapterFacts = crd.success
 						? (crd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
 						: '';
@@ -908,7 +912,8 @@ class GenerationRunner {
 				})
 			});
 			const rd = await r.json();
-			if (rd.success) globalState.addBookUsage(bookId, { searches: 1 });
+			if (rd.source === 'live') globalState.addBookUsage(bookId, { searches: 1 });
+			else if (rd.usage) globalState.addBookUsage(bookId, { claude: rd.usage });
 			bookLevelFacts = rd.success
 				? (rd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
 				: '';
@@ -927,7 +932,8 @@ class GenerationRunner {
 				})
 			});
 			const crd = await cr.json();
-			if (crd.success) globalState.addBookUsage(bookId, { searches: 1 });
+			if (crd.source === 'live') globalState.addBookUsage(bookId, { searches: 1 });
+			else if (crd.usage) globalState.addBookUsage(bookId, { claude: crd.usage });
 			chapterFacts = crd.success
 				? (crd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
 				: '';
@@ -956,6 +962,10 @@ class GenerationRunner {
 			});
 		} finally {
 			this.patch(bookId, { regeneratingChapterIdx: null });
+			// Redoing the one chapter that failed the run makes the whole book
+			// complete again — re-derive the top-level status so the library stops
+			// showing "Failed" over a book that is now finished.
+			globalState.recomputeBookStatus(bookId);
 		}
 	}
 }

@@ -71,11 +71,27 @@ function isRetryable(code: unknown): boolean {
 }
 
 /**
+ * What one generation produced, plus whether it cost real money.
+ *
+ * `billed` is the AUTHORITATIVE cost signal for the running book-cost total: it
+ * is driven by the server's `source` field, not by whether the client happened
+ * to hold an image key. This matters because the server falls back to its own
+ * `IMAGE_API_KEY` env var when the client sends none — so a real, billed image
+ * is generated even when the browser's `imageKey` is empty. Gating cost on the
+ * client key (as an earlier version did) undercounted every such image to zero.
+ */
+export interface GenerateImageResult {
+	url: string;
+	/** True only when the image was produced by a real paid provider (source ≠ 'mock'). */
+	billed: boolean;
+}
+
+/**
  * @param params  Same shape as the /api/image POST body (minus `action`)
- * @returns       The generated image URL
+ * @returns       The generated image URL and whether it was a real billed call
  * @throws        ImageGenerationError with a human-readable message on failure
  */
-export async function generateImage(params: GenerateImageParams): Promise<string> {
+export async function generateImage(params: GenerateImageParams): Promise<GenerateImageResult> {
 	let lastError: unknown;
 
 	for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -98,7 +114,7 @@ export async function generateImage(params: GenerateImageParams): Promise<string
 }
 
 /** One full create → poll cycle. */
-async function attemptGeneration(params: GenerateImageParams): Promise<string> {
+async function attemptGeneration(params: GenerateImageParams): Promise<GenerateImageResult> {
 	// ── Step 1: create the task ────────────────────────────────────────────────
 	const createRes = await fetch('/api/image', {
 		method:  'POST',
@@ -113,12 +129,15 @@ async function attemptGeneration(params: GenerateImageParams): Promise<string> {
 		throw new ImageGenerationError(createData.error || 'Image generation failed.', true);
 	}
 
-	// Synchronous providers (69labs, mock) return imageUrl directly
+	// Synchronous providers (69labs, mock) return imageUrl directly. `source` is
+	// 'mock' for the placeholder SVG and 'live' for a real 69labs render.
 	if (createData.imageUrl !== undefined) {
-		return createData.imageUrl;
+		return { url: createData.imageUrl, billed: createData.source !== 'mock' };
 	}
 
 	// ── Step 2: poll for Kie.ai result ────────────────────────────────────────
+	// The async poll path is only reached for a real Kie.ai job — mock mode
+	// always returns synchronously above — so a successful poll is always billed.
 	const { taskId } = createData;
 	if (!taskId) throw new ImageGenerationError('No taskId returned from image API.', false);
 
@@ -140,7 +159,7 @@ async function attemptGeneration(params: GenerateImageParams): Promise<string> {
 		const pollData = await pollRes.json();
 
 		if (pollData.error) throw new ImageGenerationError(pollData.error, isRetryable(pollData.code));
-		if (pollData.done && pollData.imageUrl) return pollData.imageUrl;
+		if (pollData.done && pollData.imageUrl) return { url: pollData.imageUrl, billed: true };
 		// pollData.done === false → still pending, continue polling
 	}
 

@@ -337,14 +337,15 @@
 				  `Cinematic lighting, rich detail, suitable for a published trade ebook.`
 				: storedPrompt;
 
-			const imageUrl = await generateImage({
+			const img = await generateImage({
 				prompt,
 				apiKey:      keys.imageKey,
 				provider:    keys.imageProvider,
 				useMockMode: keys.useMockMode,
 				isCover:     true
 			});
-			if (imageUrl && !keys.useMockMode && keys.imageKey) globalState.addBookUsage(book.id, { images: 1 });
+			const imageUrl = img.url;
+			if (img.billed) globalState.addBookUsage(book.id, { images: 1 });
 
 			const data = { success: true, imageUrl };
 
