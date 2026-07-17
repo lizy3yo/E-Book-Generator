@@ -100,6 +100,20 @@ export function ensureContrast(hex: string, ground: string, min: number): string
 	return rgbToHex(r, g, b);
 }
 
+/**
+ * Walk a colour toward white by `ratio` (0–1), keeping its hue.
+ *
+ * The counterpart to `ensureContrast`'s walk toward black: this is how a
+ * saturated cover colour becomes a pale, cohesive field or card tint (a
+ * diagram's cream background, a table's zebra stripe) instead of every book
+ * reusing the same fixed off-white regardless of what the cover looked like.
+ */
+export function tintWithWhite(hex: string, ratio: number): string {
+	const [r, g, b] = hexToRgb(hex);
+	const t = Math.max(0, Math.min(1, ratio));
+	return rgbToHex(r + (255 - r) * t, g + (255 - g) * t, b + (255 - b) * t);
+}
+
 /** Perceptual-ish distance, good enough to tell two swatches apart. */
 function distance(a: string, b: string): number {
 	const [r1, g1, b1] = hexToRgb(a), [r2, g2, b2] = hexToRgb(b);

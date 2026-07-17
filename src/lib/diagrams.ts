@@ -27,6 +27,14 @@ const DIAGRAM_CARD   = '#FFFFFF'; // node/card fill
 export interface BookMeta {
 	title?: string;
 	author?: string;
+	/** Cover-derived primary/dark colour. Falls back to DIAGRAM_NAVY when the
+	 *  book has no cover read yet, so a diagram's dark tone follows the same
+	 *  colour the rest of the interior (chapter titles, table headers) does. */
+	navyColor?: string;
+	/** Cover-derived accent colour. Falls back to DIAGRAM_AMBER. */
+	amberColor?: string;
+	/** Pale, cover-derived tint for a node/card's fill. Falls back to DIAGRAM_CARD (white). */
+	cardColor?: string;
 }
 
 /**
@@ -341,8 +349,9 @@ function renderDiagram(
 
 	// 6. FLOWCHART / TIMELINE / GANTT / PROCESS / WORKFLOW
 	else if (type.includes('flowchart') || type.includes('process') || type.includes('timeline') || type.includes('gantt') || type.includes('workflow') || type.includes('dfd') || type.includes('sequence') || type.includes('activity') || type.includes('state') || type.includes('swimlane')) {
-		const accent = data.color1 || DIAGRAM_AMBER;
-		const dark   = data.color2 || DIAGRAM_NAVY;
+		const accent = data.color1 || bookMeta.amberColor || DIAGRAM_AMBER;
+		const dark   = data.color2 || bookMeta.navyColor || DIAGRAM_NAVY;
+		const card   = bookMeta.cardColor || DIAGRAM_CARD;
 
 		// Steps may arrive as an array of individual labels, or as a single
 		// '->' delimited string produced by the AI (e.g. "A -> B -> C").
@@ -420,7 +429,7 @@ function renderDiagram(
 
 			// Node rectangle
 			svgBody += `<rect x="${x}" y="${y}" width="${L.nodeW}" height="${h}"
-				rx="7" ry="7" fill="#FFFFFF" stroke="${dark}" stroke-width="1.5"/>`;
+				rx="7" ry="7" fill="${card}" stroke="${dark}" stroke-width="1.5"/>`;
 
 			// Step label in accent colour
 			svgBody += `<text x="${cx}" y="${y + PAD_V + 10}" text-anchor="middle"
@@ -458,8 +467,9 @@ function renderDiagram(
 
 	// 7. HIERARCHY / MIND MAP / ORG CHART / TREE / CONCEPT / USE CASE / CLASS
 	else if (type.includes('mindmap') || type.includes('hierarchy') || type.includes('orgchart') || type.includes('tree') || type.includes('concept') || type.includes('classdiagram') || type.includes('usecase') || type.includes('taxonomy')) {
-		const dark   = data.color1 || DIAGRAM_NAVY;
-		const accent = data.color2 || DIAGRAM_AMBER;
+		const dark   = data.color1 || bookMeta.navyColor || DIAGRAM_NAVY;
+		const accent = data.color2 || bookMeta.amberColor || DIAGRAM_AMBER;
+		const card   = bookMeta.cardColor || DIAGRAM_CARD;
 		const root   = data.root || data.title || 'Hierarchy';
 
 		const rawNodes = data.nodes || data.steps || [];
@@ -514,7 +524,7 @@ function renderDiagram(
 				stroke="${accent}" stroke-width="1.5"/>`;
 
 			svgBody += `<rect x="${CHILD_X}" y="${cy}" width="${CHILD_W}" height="${h}"
-				rx="6" ry="6" fill="#FFFFFF" stroke="${dark}" stroke-width="1.2"/>`;
+				rx="6" ry="6" fill="${card}" stroke="${dark}" stroke-width="1.2"/>`;
 
 			wrapped[idx].forEach((line, li) => {
 				svgBody += `<text x="${CHILD_X + CHILD_W / 2}"

@@ -1,6 +1,7 @@
 import { parseMarkdown, type BookMeta } from '$lib/diagrams';
 import type { Chapter } from '$lib/types';
 import type { PageSlice } from './types';
+import { stripDuplicateChapterHeading, splitOversizedLists, splitOversizedTables } from './utils';
 
 /**
  * Usable height of a reader page's body, in px. A block that would push past
@@ -126,7 +127,19 @@ export function paginateChapters(
 			pagesByChapter[chapter.id] = [{ blocks: ['<p>This chapter has not been written yet.</p>'], startIdx: 0, endIdx: 1 }];
 			continue;
 		}
-		const blocks = splitHtmlIntoBlocks(parseMarkdown(chapter.content, chapter.id, bookMeta));
+		const rawBlocks = stripDuplicateChapterHeading(
+			splitHtmlIntoBlocks(parseMarkdown(chapter.content, chapter.id, bookMeta)),
+			chapter.title
+		);
+		// Minus the 24px block margin the loop below adds to every non-fullpage
+		// block, so a chunk sized to fit here still fits once that margin is
+		// added on top of it.
+		const splitBudget = PAGE_BUDGET_PX - 24;
+		const blocks = splitOversizedTables(
+			splitOversizedLists(rawBlocks, measureDiv, splitBudget),
+			measureDiv,
+			splitBudget
+		);
 		const pages: PageSlice[] = [];
 		let currentBlocks: string[] = [];
 		let currentHeight = openerReserve(chapter);

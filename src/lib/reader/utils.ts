@@ -52,6 +52,118 @@ export function spliceVisualBlock(
 	return fullMarkdown;
 }
 
+/**
+ * Drop a chapter's first content block when it is just the chapter title
+ * repeated as a heading. The template already renders the title in
+ * `.chapter-header`; a model that also opens its prose with "# <Same Title>"
+ * produces a page that shows the title twice in a row. Only an exact
+ * (case-insensitive) match is stripped — a genuine section heading that
+ * merely resembles the title is left alone.
+ */
+export function stripDuplicateChapterHeading(blocks: string[], chapterTitle: string): string[] {
+	if (!blocks.length || !chapterTitle) return blocks;
+	const match = blocks[0].match(/^<h[1-3][^>]*>([\s\S]*?)<\/h[1-3]>$/i);
+	if (!match) return blocks;
+	const headingText = match[1].replace(/<[^>]+>/g, '').trim().toLowerCase();
+	if (headingText !== chapterTitle.trim().toLowerCase()) return blocks;
+	return blocks.slice(1);
+}
+
+/**
+ * A `<ul>`/`<ol>` block taller than a single page cannot fit as one atom —
+ * the pagination loop places or defers a whole block at a time, so an
+ * oversized list was simply left to overflow past the page's `overflow:
+ * hidden` and got clipped mid-item. This pre-splits such a list into several
+ * same-tag chunks, each measured to fit within `maxHeight`, so the ordinary
+ * block-by-block paginator can place them like any other block.
+ *
+ * `measureDiv` must already be attached to the document and styled to the
+ * real column width/font the caller paginates against.
+ */
+export function splitOversizedLists(blocks: string[], measureDiv: HTMLElement, maxHeight: number): string[] {
+	const out: string[] = [];
+	for (const block of blocks) {
+		const match = block.match(/^<(ul|ol)([^>]*)>([\s\S]*)<\/\1>$/i);
+		if (!match) { out.push(block); continue; }
+
+		measureDiv.innerHTML = block;
+		if (measureDiv.offsetHeight <= maxHeight) { out.push(block); continue; }
+
+		const [, tag, attrs, inner] = match;
+		const items = inner.match(/<li[\s\S]*?<\/li>/gi) ?? [];
+		if (items.length <= 1) { out.push(block); continue; }
+
+		let chunk: string[] = [];
+		for (const item of items) {
+			const trial = `<${tag}${attrs}>${chunk.join('')}${item}</${tag}>`;
+			measureDiv.innerHTML = trial;
+			if (measureDiv.offsetHeight > maxHeight && chunk.length > 0) {
+				out.push(`<${tag}${attrs}>${chunk.join('')}</${tag}>`);
+				chunk = [item];
+			} else {
+				chunk.push(item);
+			}
+		}
+		if (chunk.length) out.push(`<${tag}${attrs}>${chunk.join('')}</${tag}>`);
+	}
+	return out;
+}
+
+/**
+ * Same problem as `splitOversizedLists`, for tables: a table taller than a
+ * single page is one atomic block, so a long one simply overflowed past the
+ * page and was clipped mid-row. This pre-splits such a table's `<tbody>`
+ * into several row chunks, each measured to fit within `maxHeight`. Every
+ * chunk repeats the full markup ahead of `<tbody>` — including `<thead>` —
+ * so the column headers are never separated from the rows that follow them,
+ * the industry-standard convention for a table that spans multiple pages.
+ * The edit-trigger button (present only on the original block) is dropped
+ * from continuation chunks so it doesn't appear twice for one table.
+ */
+export function splitOversizedTables(blocks: string[], measureDiv: HTMLElement, maxHeight: number): string[] {
+	const out: string[] = [];
+	for (const block of blocks) {
+		if (!/<table[\s>]/i.test(block)) { out.push(block); continue; }
+
+		measureDiv.innerHTML = block;
+		if (measureDiv.offsetHeight <= maxHeight) { out.push(block); continue; }
+
+		const tbodyMatch = block.match(/<tbody>([\s\S]*?)<\/tbody>/i);
+		if (!tbodyMatch || tbodyMatch.index === undefined) { out.push(block); continue; }
+
+		const rows = tbodyMatch[1].match(/<tr[\s\S]*?<\/tr>/gi) ?? [];
+		if (rows.length <= 1) { out.push(block); continue; }
+
+		const before = block.slice(0, tbodyMatch.index);
+		const beforeContinued = before.replace(/<div class="diagram-box__actions">[\s\S]*?<\/div>/i, '');
+		const after = block.slice(tbodyMatch.index + tbodyMatch[0].length);
+
+		let chunk: string[] = [];
+		let isFirstChunk = true;
+		const flush = () => {
+			if (!chunk.length) return;
+			const prefix = isFirstChunk ? before : beforeContinued;
+			out.push(`${prefix}<tbody>${chunk.join('')}</tbody>${after}`);
+			isFirstChunk = false;
+			chunk = [];
+		};
+
+		for (const row of rows) {
+			const prefix = isFirstChunk ? before : beforeContinued;
+			const trial = `${prefix}<tbody>${chunk.join('')}${row}</tbody>${after}`;
+			measureDiv.innerHTML = trial;
+			if (measureDiv.offsetHeight > maxHeight && chunk.length > 0) {
+				flush();
+				chunk = [row];
+			} else {
+				chunk.push(row);
+			}
+		}
+		flush();
+	}
+	return out;
+}
+
 export function getChapterOrderLabel(
 	chap: { title: string; order: number },
 	idx: number,

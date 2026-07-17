@@ -3,7 +3,7 @@
 	import { globalState } from '$lib/state.svelte';
 	import type { Chapter } from '$lib/types';
 	import { INTERIOR_PRESETS } from '$lib/interiorDesigns';
-	import { samplePalette } from '$lib/coverPalette';
+	import { samplePalette, tintWithWhite } from '$lib/coverPalette';
 	import {
 		BookMarked, FileDown,
 		Image as ImageIcon, PenLine, BookOpen,
@@ -489,6 +489,14 @@
 		return '#3D2B1A';
 	});
 
+	// A diagram's field/card colours are meant to read as a pale, neutral
+	// surface — using the accent at full saturation for a whole field would
+	// fight the diagrams' own navy/amber ink. Tinting it toward white keeps
+	// the hue (so it still reads as "this book's colour") while staying light
+	// enough to hold navy text and white-bordered cards legibly.
+	let designDiagramFieldColor = $derived(tintWithWhite(designAccentColor, 0.92));
+	let designDiagramCardColor = $derived(tintWithWhite(designAccentColor, 0.97));
+
 	let designSubtitleColor = $derived.by(() => {
 		const sc = coverSettings?.subtitleColor;
 		if (sc && !isLightColor(sc)) return sc;
@@ -532,7 +540,8 @@
 			`--chapter-rule-width: ${ruleWidth}`,
 			`--chapter-rule-margin-left: ${ruleMarginLeft}`,
 			`--chapter-rule-margin-right: ${ruleMarginRight}`,
-			`--header-flex-align: ${headerFlexAlign}`
+			`--header-flex-align: ${headerFlexAlign}`,
+			`--r-diagram-bg: ${designDiagramFieldColor}`
 		];
 
 		if (activeBook?.interiorDesign) {
@@ -707,7 +716,13 @@
 			activeBook.chapters,
 			fontSize,
 			designBodyFont,
-			{ title: activeBook.title, author: activeBook.author ?? '' },
+			{
+				title: activeBook.title,
+				author: activeBook.author ?? '',
+				navyColor: designTitleColor,
+				amberColor: designAccentColor,
+				cardColor: designDiagramCardColor
+			},
 			{
 				titleFont:   d['--r-title-font']      ?? designFontFamily,
 				titleSize:   d['--r-chap-title-size'] ?? '2rem',
@@ -1166,8 +1181,9 @@
 
 	.toc-item {
 		display: flex;
-		flex-direction: column;
-		align-items: flex-start;
+		flex-direction: row;
+		align-items: center;
+		gap: 0.45rem;
 		padding: 0.7rem 1rem;
 		border-radius: 6px;
 		border: 1px solid transparent;
@@ -1192,6 +1208,13 @@
 	}
 
 	.toc-item:disabled { opacity: 0.3; cursor: not-allowed; }
+
+	/* Chapter items stack label + title vertically */
+	.toc-item:has(.chap-num) {
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 0;
+	}
 
 	.chap-num {
 		font-size: 0.7rem;
@@ -1839,6 +1862,12 @@
 	/* ── Industry-Standard Table Styles ────────────────────────────────────── */
 	.chapter-body :global(table) {
 		width: 100%;
+		/* auto lets a column grow to fit its content's natural width, which can
+		   push the table past the page's edge when a cell holds a long word or
+		   phrase — the overflow is then clipped by the page's overflow:hidden.
+		   fixed instead divides the table's own width (100% of the column)
+		   across the columns and forces cells to wrap within their share. */
+		table-layout: fixed;
 		border-collapse: collapse;
 		margin: 2rem 0;
 		font-size: 0.95rem;
@@ -1851,10 +1880,12 @@
 		font-weight: 600;
 		padding: 0.75rem 1rem;
 		border: 1px solid var(--r-table-border, var(--r-border, #e2e8f0));
+		overflow-wrap: break-word;
 	}
 	.chapter-body :global(td) {
 		padding: 0.75rem 1rem;
 		border: 1px solid var(--r-table-border, var(--r-border, #e2e8f0));
+		overflow-wrap: break-word;
 	}
 	.chapter-body :global(tr:nth-child(even)) {
 		background-color: var(--r-table-stripe, #f8fafc);

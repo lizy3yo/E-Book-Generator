@@ -1,5 +1,7 @@
 import { parseMarkdown } from '$lib/diagrams';
 import type { Book } from '$lib/types';
+import { stripDuplicateChapterHeading, splitOversizedLists, splitOversizedTables } from './utils';
+import { tintWithWhite } from '$lib/coverPalette';
 
 /**
  * Escape text destined for the export's HTML.
@@ -80,6 +82,14 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 		const accent        = cs.authorColor  || '#8E7453';
 		const titleColor    = cs.titleColor   || '#1A1612';
 		const alignment     = cs.alignment    || 'left';
+
+		// A diagram's field/card colours read as a pale, neutral surface — using
+		// the accent at full saturation for a whole field would fight the
+		// diagrams' own navy/amber ink. Tinting it toward white keeps the hue
+		// while staying light enough to hold navy text and white-bordered cards.
+		const diagramAccent = activeBook.coverDesign?.accent || accent;
+		const diagramFieldColor = tintWithWhite(diagramAccent, 0.92);
+		const diagramCardColor  = tintWithWhite(diagramAccent, 0.97);
 
 		// The callout box, resolved once from the active preset.
 		//
@@ -202,6 +212,11 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 
 				.pdf-measurer-container table {
 					width: 100%;
+					/* Must match the exported document's table-layout: fixed — a
+					   measurement taken under auto layout wraps less and comes out
+					   shorter than the fixed layout the PDF actually renders, which
+					   under-reserves page space and clips the extra rows it grows. */
+					table-layout: fixed;
 					border-collapse: collapse;
 					margin: 2rem 0;
 					font-size: 0.95rem;
@@ -214,10 +229,12 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 					font-weight: 600;
 					padding: 0.75rem 1rem;
 					border: 1px solid ${activeBook.interiorDesign?.['--r-border'] ?? '#e2e8f0'};
+					overflow-wrap: break-word;
 				}
 				.pdf-measurer-container td {
 					padding: 0.75rem 1rem;
 					border: 1px solid ${activeBook.interiorDesign?.['--r-border'] ?? '#e2e8f0'};
+					overflow-wrap: break-word;
 				}
 				.pdf-measurer-container tr:nth-child(even) {
 					background-color: #f8fafc;
@@ -281,7 +298,7 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 				   stylesheet below, or measured height diverges from rendered
 				   height and pagination drifts. */
 				.pdf-measurer-container .diagram-box {
-					background-color: #FAF5EA;
+					background-color: ${diagramFieldColor};
 					border: 1px solid rgba(15, 34, 49, 0.15);
 					border-radius: 8px;
 					padding: 0;
@@ -421,7 +438,10 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 				}
 				const fullMd   = parseMarkdown(contentForPdf, c.id, {
 					title:  activeBook.title,
-					author: activeBook.author ?? ''
+					author: activeBook.author ?? '',
+					navyColor: activeBook.coverDesign?.primary || titleColor,
+					amberColor: diagramAccent,
+					cardColor: diagramCardColor
 				});
 				const rawIllust = c.illustrationUrl || '';
 				// Use base64 only — never embed a raw HTTP URL in the iframe HTML.
@@ -456,7 +476,10 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 
 				const tmp = document.createElement('div');
 				tmp.innerHTML = fullMd;
-				const blocks = Array.from(tmp.children).map((el) => el.outerHTML);
+				let blocks = stripDuplicateChapterHeading(
+					Array.from(tmp.children).map((el) => el.outerHTML),
+					c.title
+				);
 
 				type Page = { blocks: string[]; isFirst: boolean };
 				const pages: Page[] = [];
@@ -468,6 +491,14 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 					`position:absolute;visibility:hidden;width:${BODY_W}px;` +
 					`font-size:12pt;line-height:1.85;font-family:${bodyFontCss};`;
 				document.body.appendChild(measurer);
+				// A list or table block taller than a full page cannot fit as one
+				// atom — the loop below places or defers a whole block at a time,
+				// so it was simply clipped by the page's overflow:hidden. Split it
+				// into page-sized chunks before pagination runs. Minus the 24px
+				// block margin the loop adds to every non-fullpage block, so a
+				// chunk sized to fit here still fits once that margin lands on it.
+				const splitBudget = BODY_H - 24;
+				blocks = splitOversizedTables(splitOversizedLists(blocks, measurer, splitBudget), measurer, splitBudget);
 
 				// ── What the opener costs before a block is placed ──────────────
 				//
@@ -902,7 +933,12 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 		font-size: 10pt;
 		text-align: left;
 		line-height: 1.45;
-		table-layout: auto;
+		/* auto lets a column grow to fit its content's natural width, which can
+		   push the table past the page's edge when a cell holds a long word or
+		   phrase — the overflow is then clipped by the page's overflow:hidden.
+		   fixed instead divides the table's own width (100% of the column)
+		   across the columns and forces cells to wrap within their share. */
+		table-layout: fixed;
 	}
 	.table-container {
 		width: 100%;
@@ -1012,7 +1048,7 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 	/* Editorial diagram plate — keep in sync with .pdf-measurer-container
 	   .diagram-box rules above so pagination measures what it renders. */
 	.diagram-box {
-		background-color: #FAF5EA;
+		background-color: ${diagramFieldColor};
 		border: 1px solid rgba(15, 34, 49, 0.15);
 		border-radius: 8px;
 		padding: 0;
