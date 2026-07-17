@@ -42,3 +42,80 @@ export function claudeCallCost(model: string, inputTokens: number, outputTokens:
  */
 export const ESTIMATED_COST_PER_IMAGE = 0.04; // Kie.ai / 69labs image generation
 export const ESTIMATED_COST_PER_SEARCH = 0.005; // Exa search
+
+/**
+ * Every distinct generated (billed) image embedded in a chapter's prose.
+ *
+ * Real images reach chapter content in three stored forms: a rendered
+ * `<img src="…">` plate spliced in by the edit drawer, a markdown `![alt](url)`,
+ * or a ```plate / ```diagram fence carrying an `image:` / `url:` line. All three
+ * point at a raster image the image provider generated and billed for.
+ *
+ * SVG and chart diagrams (bar, pie, flowchart, hierarchy, …) are drawn from
+ * data by code and carry no such URL, so they are correctly skipped — counting
+ * them as billed images would inflate the estimate for pictures that cost
+ * nothing to make.
+ */
+function chapterContentImageUrls(content: string): string[] {
+	if (!content) return [];
+	const urls: string[] = [];
+	const re = /(?:<img[^>]+src=["']([^"']+)["'])|(?:!\[[^\]]*\]\(([^)\s]+)[^)]*\))|(?:^[ \t]*(?:image|url)[ \t]*:[ \t]*(\S+))/gim;
+	for (const m of content.matchAll(re)) {
+		const u = (m[1] || m[2] || m[3] || '').trim();
+		if (u && (/^https?:\/\//i.test(u) || /^data:image\//i.test(u))) urls.push(u);
+	}
+	return urls;
+}
+
+/**
+ * How many generated images a book represents, for cost estimation.
+ *
+ * `BookUsage.images` counts every BILLED generation as it happens — cover
+ * candidates, chapter illustrations, embedded plates, and regenerations — and
+ * is the most faithful figure when it is present. But it is 0 for books whose
+ * images were generated before that counter existed (or in mock mode), which is
+ * why a book plainly full of pictures could still report "Images (0) — $0.00".
+ *
+ * So the fallback counts the images the book actually carries, by collecting
+ * every distinct image URL it holds:
+ *   • cover art — every rendered candidate plus the chosen cover,
+ *   • each chapter's illustration plate,
+ *   • every raster image embedded in chapter prose (drawer plates, markdown
+ *     images, ```plate fences) — but NOT the code-drawn SVG/chart diagrams,
+ *     which cost nothing.
+ * URLs are deduplicated, so the chosen cover (which repeats a candidate's URL)
+ * and any image referenced twice are each counted once.
+ *
+ * The tracked count and the collected count are combined with max(), never
+ * summed: the tracked count already covers the images the book kept, so adding
+ * them would double-count. max() keeps the tracked figure when regenerations
+ * pushed it above the surviving set, and the collected figure when the tracker
+ * missed the generations entirely.
+ */
+export function estimatedImageCount(book: {
+	usage?: { images?: number };
+	coverOptions?: { imageUrl?: string }[];
+	coverSettings?: { bgImageUrl?: string | null };
+	chapters?: { illustrationUrl?: string | null; content?: string }[];
+}): number {
+	const tracked = book.usage?.images ?? 0;
+
+	const urls = new Set<string>();
+	const add = (u?: string | null) => {
+		const t = (u ?? '').trim();
+		if (t) urls.add(t);
+	};
+
+	// Cover art — every rendered candidate, plus the chosen cover (usually a
+	// duplicate of one candidate's URL, so the Set collapses it).
+	for (const o of book.coverOptions ?? []) add(o.imageUrl);
+	add(book.coverSettings?.bgImageUrl);
+
+	// Per-chapter illustration plate + any images embedded in the prose.
+	for (const c of book.chapters ?? []) {
+		add(c.illustrationUrl);
+		for (const u of chapterContentImageUrls(c.content ?? '')) add(u);
+	}
+
+	return Math.max(tracked, urls.size);
+}

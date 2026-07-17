@@ -10,7 +10,7 @@
 	import ChapterPlanError from '$lib/components/ChapterPlanError.svelte';
 	import CoverPreviewDialog from '$lib/components/CoverPreviewDialog.svelte';
 	import BookCostDialog from '$lib/components/BookCostDialog.svelte';
-	import { claudeCallCost, ESTIMATED_COST_PER_IMAGE, ESTIMATED_COST_PER_SEARCH } from '$lib/pricing';
+	import { claudeCallCost, estimatedImageCount, ESTIMATED_COST_PER_IMAGE, ESTIMATED_COST_PER_SEARCH } from '$lib/pricing';
 	import { generationRunner } from '$lib/generationRunner.svelte';
 	import { AI_CONCEPT_COUNT, hasCoverBrief } from '$lib/coverStyles';
 	import { fileToImagePayload } from '$lib/imageInput';
@@ -94,13 +94,19 @@
 	// ── Book cost badge ──────────────────────────────────────────────────────
 	let showCostDialog = $state(false);
 	const activeBookCost = $derived.by(() => {
-		const usage = active?.usage;
-		if (!usage) return 0;
-		const claudeTotal = Object.entries(usage.claude).reduce(
-			(sum, [model, u]) => sum + claudeCallCost(model, u.inputTokens, u.outputTokens),
-			0
-		);
-		return claudeTotal + usage.images * ESTIMATED_COST_PER_IMAGE + usage.searches * ESTIMATED_COST_PER_SEARCH;
+		if (!active) return 0;
+		const usage = active.usage;
+		const claudeTotal = usage
+			? Object.entries(usage.claude).reduce(
+				(sum, [model, u]) => sum + claudeCallCost(model, u.inputTokens, u.outputTokens),
+				0
+			)
+			: 0;
+		// Images are counted from the book's actual contents (see estimatedImageCount),
+		// so the estimate holds up for books generated before usage tracking existed.
+		return claudeTotal
+			+ estimatedImageCount(active) * ESTIMATED_COST_PER_IMAGE
+			+ (usage?.searches ?? 0) * ESTIMATED_COST_PER_SEARCH;
 	});
 
 	// ── Run state ─────────────────────────────────────────────────────────────
@@ -1086,6 +1092,7 @@
 <BookCostDialog
 	open={showCostDialog}
 	usage={active?.usage}
+	imageCount={active ? estimatedImageCount(active) : 0}
 	onClose={() => showCostDialog = false}
 />
 

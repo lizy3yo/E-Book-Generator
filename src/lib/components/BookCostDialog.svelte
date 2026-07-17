@@ -17,10 +17,14 @@
 	interface Props {
 		open: boolean;
 		usage: BookUsage | undefined;
+		/** Images the book represents, counted from its actual contents (cover
+		 *  candidates + chapter illustrations), not just the billed-at-generation
+		 *  counter — see `estimatedImageCount` in $lib/pricing. */
+		imageCount: number;
 		onClose: () => void;
 	}
 
-	let { open, usage, onClose }: Props = $props();
+	let { open, usage, imageCount, onClose }: Props = $props();
 
 	let claudeRows = $derived(
 		Object.entries(usage?.claude ?? {}).map(([model, u]) => ({
@@ -32,7 +36,7 @@
 		}))
 	);
 	let claudeTotal   = $derived(claudeRows.reduce((sum, r) => sum + r.cost, 0));
-	let imagesCount   = $derived(usage?.images ?? 0);
+	let imagesCount   = $derived(imageCount);
 	let imagesCost    = $derived(imagesCount * ESTIMATED_COST_PER_IMAGE);
 	let searchesCount = $derived(usage?.searches ?? 0);
 	let searchesCost  = $derived(searchesCount * ESTIMATED_COST_PER_SEARCH);
@@ -106,9 +110,11 @@
 			Claude costs are calculated from the real number of tokens each call used, priced at
 			Anthropic's standard rate — this matches what Anthropic actually bills for these calls.
 			Image and search costs are rough estimates: neither provider returns usage or cost data,
-			so these are flat per-call guesses, not a measurement of what you were charged. Check
-			your Kie.ai / 69labs / Exa dashboard for your actual bill. This total also only reflects
-			calls made since this feature was added — it does not include cost from before.
+			so these are flat per-call guesses, not a measurement of what you were charged. Image
+			costs are estimated from the images the book actually contains (its cover and chapter
+			illustrations), so regenerated or discarded attempts may not be reflected. Check your
+			Kie.ai / 69labs / Exa dashboard for your actual bill. Claude and search totals only
+			reflect calls made since this feature was added — they do not include cost from before.
 		</p>
 	</div>
 {/if}
