@@ -1,4 +1,4 @@
-import type { Book, ApiKeys, StepLog, Chapter, CoverSettings, CoverOption, PipelineStage, BibleEntry, IllustrationLabel } from './types';
+import type { Book, ApiKeys, StepLog, Chapter, CoverSettings, CoverOption, PipelineStage, BibleEntry, IllustrationLabel, BookFormat } from './types';
 import { supabase } from './supabase';
 
 class GlobalState {
@@ -368,6 +368,27 @@ class GlobalState {
 		const updatedBook: Book = {
 			...this.books[bookIndex],
 			chapters: updatedChapters,
+			updatedAt: new Date().toISOString()
+		};
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
+	}
+
+	/**
+	 * Record the shape the book will be written in.
+	 *
+	 * Written once, before the outline, and read by every chapter afterwards.
+	 * It is persisted rather than recomputed because chapters are written
+	 * concurrently: a format re-derived per chapter would drift, and the whole
+	 * point of a form is that it does not.
+	 */
+	updateBookFormat(bookId: string, format: BookFormat) {
+		const bookIndex = this.books.findIndex(b => b.id === bookId);
+		if (bookIndex === -1) return;
+
+		const updatedBook: Book = {
+			...this.books[bookIndex],
+			format,
 			updatedAt: new Date().toISOString()
 		};
 		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);

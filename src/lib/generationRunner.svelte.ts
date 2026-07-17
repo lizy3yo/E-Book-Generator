@@ -28,7 +28,7 @@
  */
 
 import { globalState } from './state.svelte';
-import type { Book, Chapter, CoverOption, CoverOrigin, BibleEntry, IllustrationLabel } from './types';
+import type { Book, Chapter, CoverOption, CoverOrigin, BibleEntry, IllustrationLabel, BookFormat } from './types';
 import { generateImage } from './generateImage';
 import { createIllustration } from './illustration';
 import { COVER_TEMPLATES, AI_CONCEPT_COUNT, buildCoverDirection, buildBriefCoverPrompt, hasCoverBrief, type CoverTemplate } from './coverStyles';
@@ -436,6 +436,46 @@ class GenerationRunner {
 
 			globalState.updateBookStatus(book.id, 'outlining');
 
+			// ── Decide the book's shape, once, before anything is planned ─────
+			//
+			// This has to happen here and be persisted, not re-derived later:
+			// chapters are written concurrently and never see each other, so if
+			// each one worked out its own form you would get a different one in
+			// every chapter. Decided once, stored, obeyed by all of them.
+			//
+			// Never fatal. A book with no format is a free-form book, which is
+			// exactly what every book was before this existed.
+			let format: BookFormat = { mode: 'free' };
+			try {
+				const fmtRes = await fetch('/api/write', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						action: 'decide-format',
+						apiKey: keys.anthropicKey,
+						useMockMode: useMock,
+						bookTitle: book.title,
+						bookSubtitle: book.subtitle,
+						genre: book.genre,
+						length: book.length,
+						pageCount: book.pageCount,
+						tone: book.tone,
+						structure: book.structure,
+						authorBrief: book.userContext
+					})
+				});
+				const fmtData = await fmtRes.json();
+				if (fmtData.success && fmtData.format) format = fmtData.format as BookFormat;
+			} catch { /* free */ }
+
+			globalState.updateBookFormat(book.id, format);
+			globalState.addLog(book.id, {
+				step: 'outline', status: 'success',
+				message: format.mode === 'form'
+					? `Format: ${format.unitCount} ${format.unitPlural ?? 'units'}, each with ${format.fields?.length ?? 0} parts. ${format.reasoning ?? ''}`
+					: `Format: free-form chapters. ${format.reasoning ?? ''}`
+			});
+
 			// Outline
 			const outlineRes = await fetch('/api/write', {
 				method: 'POST',
@@ -450,7 +490,8 @@ class GenerationRunner {
 					pageCount: book.pageCount,
 					tone: book.tone,
 					structure: book.structure,
-					researchNotes: factsSummary
+					researchNotes: factsSummary,
+					bookFormat: format
 				})
 			});
 			const outlineData = await outlineRes.json();
@@ -741,8 +782,16 @@ class GenerationRunner {
 				// What the already-written chapters SAID, as opposed to what the
 				// outline planned for them. Bounded to ~2.5k tokens however long
 				// the book is — that bound is the whole reason this scales.
-				bookBible
+				bookBible,
 
+				// The book's shape, decided once before the outline, plus the span
+				// of units THIS chapter owns. Both are needed: the format says what
+				// a unit looks like; the range says which ones are this chapter's.
+				// Chapters run concurrently, so that range is the only thing
+				// stopping two of them both writing number 47.
+				bookFormat:       book.format,
+				chapterUnitStart: chap.unitStart,
+				chapterUnitEnd:   chap.unitEnd
 			})
 		});
 		const draftData = await draftRes.json();
@@ -765,7 +814,10 @@ class GenerationRunner {
 				tone: book.tone,
 				chapterTitle: chap.title,
 				chapterContent: draftData.content,
-				researchNotes: factsSummary
+				researchNotes: factsSummary,
+				// Without this the editor treats the repeating structure as a
+				// weakness and edits it out — see the guard in the verify prompt.
+				bookFormat: book.format
 			})
 		});
 		const verifyData = await verifyRes.json();

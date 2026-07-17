@@ -69,6 +69,54 @@ export interface BibleEntry {
 }
 
 /**
+ * One field of a book's repeating unit — "The Problem", "Money Saved".
+ *
+ * `role` decides where it renders and therefore how it reads:
+ *   prose  — a serif paragraph with a bold run-in label. Explains.
+ *   action — a line inside the callout box. Tells the reader what to do.
+ * That split (explain in serif, act in sans) is the single most transferable
+ * thing in the reference book, and it only works if every field declares which
+ * side it is on.
+ */
+export interface BookFormatField {
+	label: string;
+	role: 'prose' | 'action';
+	/** What belongs in this field, in the writing model's own terms. */
+	guidance: string;
+}
+
+/**
+ * The shape a book's content repeats in.
+ *
+ * Some books are 100 of the same thing — a fix, a technique, a recipe — each
+ * with identical parts. That rigidity is what makes the reference book read as
+ * tight as it does, and it is exactly what a language model is good at: a form
+ * with named boxes is far harder to write badly than an open chapter.
+ *
+ * Most books are NOT that. A memoir has no repeating unit, and forcing one on
+ * it produces nonsense ("Fix 12 — Reconcile With Your Father"). So `mode` is
+ * decided once, up front, from the author's own concept — and defaults to
+ * 'free', which is how every book was written before this existed.
+ *
+ * The unit and its fields are DERIVED per book, never hardcoded: the reference
+ * book's "Fix / Money Saved" is plumbing's clothing, not the skeleton.
+ */
+export interface BookFormat {
+	mode: 'free' | 'form';
+	/** Singular noun for one unit — "Fix", "Technique", "Recipe". */
+	unit?: string;
+	/** Plural, for outlines and back matter — "Fixes". */
+	unitPlural?: string;
+	/** How many across the WHOLE book, numbered 1..N without restarting. */
+	unitCount?: number;
+	/** In render order. Prose fields first, then the action box. */
+	fields?: BookFormatField[];
+	/** Why this was chosen. Shown to the author — they don't pick it, but when
+	 *  it guesses wrong they deserve to see why the book came out that way. */
+	reasoning?: string;
+}
+
+/**
  * One callout on a chapter illustration.
  *
  * The image itself carries no text — image models cannot spell, and a
@@ -95,6 +143,17 @@ export interface Chapter {
 	/** Absent on chapters written before labelling existed, and on any
 	 *  illustration the vision pass could not label confidently. */
 	illustrationLabels?: IllustrationLabel[];
+	/**
+	 * The span of the book's repeating units this chapter owns, inclusive —
+	 * e.g. 7..12. Set by the outline when `Book.format.mode === 'form'`.
+	 *
+	 * Numbering is continuous across the WHOLE book, not per chapter: Fix 47 is
+	 * Fix 47 wherever it sits. The outline is the only place that can guarantee
+	 * that, because chapters are written concurrently and never see each other —
+	 * so it assigns the ranges up front and every chapter writes only its own.
+	 */
+	unitStart?: number;
+	unitEnd?: number;
 	status: 'pending' | 'writing' | 'verifying' | 'completed' | 'failed';
 }
 
@@ -124,6 +183,14 @@ export interface Book {
 	pageCount?: number;
 	tone: string;
 	structure: string;
+	/**
+	 * How this book's content is shaped. Decided once from the author's concept
+	 * before the outline runs, then obeyed by every chapter.
+	 *
+	 * Absent on books planned before this existed — treat a missing value as
+	 * `{ mode: 'free' }`, which is exactly how they were written.
+	 */
+	format?: BookFormat;
 	useUltraRealistic: boolean;
 	researchDepth: 'basic' | 'deep';
 	selfCorrectionLevel: 'standard' | 'rigorous';

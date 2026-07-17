@@ -28,6 +28,9 @@ export const POST: RequestHandler = async ({ request }) => {
 			chapterSummary,
 			bookOutline,
 			bookBible,
+			bookFormat,
+			chapterUnitStart,
+			chapterUnitEnd,
 			pageCount,
 			chapterContent,
 			// ── Illustration art direction ─────────────────────────────────
@@ -114,6 +117,17 @@ export const POST: RequestHandler = async ({ request }) => {
 						success: true,
 						subject: `Mock subject for "${chapterTitle}".`,
 						prompt: `Mock art direction — a single instructive visual for "${chapterTitle}" from "${bookTitle}" (${genre}).`,
+						source: 'mock'
+					});
+				}
+
+				if (action === 'decide-format') {
+					// Mock mode cannot read a concept, and guessing a shape it never
+					// looked at is how you get a memoir written as a repair manual.
+					// Free is what every book did before this existed.
+					return json({
+						success: true,
+						format: { mode: 'free', reasoning: 'Mock mode does not analyse the concept, so the book is written free-form.' },
 						source: 'mock'
 					});
 				}
@@ -221,11 +235,33 @@ Layout: title occupies the upper 55%, author in a solid bar at the foot.`,
 		const structureGuide = structureInstructions[structure] ?? `Follow a ${structure} format.`;
 
 		if (action === 'outline') {
+			// When the book has a repeating unit, the outline is the ONLY place
+			// that can assign the numbers: chapters are written concurrently and
+			// never see each other, so nothing downstream could keep "Fix 47" from
+			// being written twice. It allocates ranges up front; the code below
+			// then verifies they tile 1..N and re-tiles them if they don't.
+			const isForm = bookFormat?.mode === 'form' && bookFormat?.unitCount;
+			const unitAllocation = isForm
+				? `
+
+═══ THIS BOOK IS BUILT FROM A REPEATING UNIT ═══
+
+It contains exactly ${bookFormat.unitCount} ${bookFormat.unitPlural ?? 'units'}, numbered 1 to ${bookFormat.unitCount} continuously across the WHOLE book — the numbering does not restart in each chapter.
+
+Your job is to divide those ${bookFormat.unitCount} ${bookFormat.unitPlural ?? 'units'} among the ${plan.chapterCount} chapters by SUBJECT, so each chapter owns one unbroken run of them.
+
+- Every element must carry "unitStart" and "unitEnd" (inclusive).
+- Chapter 1 starts at 1. Each chapter starts at the previous chapter's unitEnd + 1. The last chapter ends at exactly ${bookFormat.unitCount}.
+- No gaps. No overlaps. Every number from 1 to ${bookFormat.unitCount} belongs to exactly one chapter.
+- Chapters need not be equal: give a meaty subject more ${bookFormat.unitPlural ?? 'units'} and a thin one fewer. Aim for 4–8 each, and let the subject decide.
+- The chapter's summary must say what its ${bookFormat.unitPlural ?? 'units'} have in common — it is the brief the writer works from, and they will see nothing but it.`
+				: '';
+
 			systemPrompt = `You are a senior acquisitions editor at a major publishing house with 20 years of experience structuring bestselling non-fiction ebooks.
 Your task is to produce a publication-ready chapter outline.
-You MUST strictly follow any custom chapter requirements, structural requests (e.g. adding an Introduction/Preface chapter first, specific topics to cover, or particular formatting), and directions specified by the user in the "[Author Brief]" under Grounding Research & Author Notes.
+You MUST strictly follow any custom chapter requirements, structural requests (e.g. adding an Introduction/Preface chapter first, specific topics to cover, or particular formatting), and directions specified by the user in the "[Author Brief]" under Grounding Research & Author Notes.${unitAllocation}
 Respond ONLY with a valid JSON array — no markdown fences, no commentary.
-Each element: {"title": "string", "order": number, "summary": "string (2–3 sentences describing what the chapter covers and what the reader will gain)"}`;
+Each element: {"title": "string", "order": number, "summary": "string (2–3 sentences describing what the chapter covers and what the reader will gain)"${isForm ? ', "unitStart": number, "unitEnd": number' : ''}}`;
 
 			userPrompt = `Create a detailed chapter outline for the following ebook:
 
@@ -419,6 +455,67 @@ CRITICAL RULE: Actively choose the RIGHT element for each content type. Do not d
 			// Bounded to ~2.5k tokens at any book length; see $lib/bookBible.
 			const bibleBlock = renderBibleBlock(bookBible);
 
+			// ── The form, when this book has one ──────────────────────────────
+			//
+			// This deliberately overrides the free-form instructions above. Those
+			// are written for a chapter that decides its own shape; a book with a
+			// repeating unit has already made that decision, and every chapter must
+			// make it identically or the form is worthless. Stated last, and stated
+			// as an override, because it is arguing with a long prompt that assumes
+			// otherwise.
+			const fields: any[] = Array.isArray(bookFormat?.fields) ? bookFormat.fields : [];
+			const proseFields  = fields.filter(f => f.role === 'prose');
+			const actionFields = fields.filter(f => f.role === 'action');
+			const hasUnits =
+				bookFormat?.mode === 'form' && fields.length > 0 &&
+				Number.isFinite(Number(chapterUnitStart)) && Number.isFinite(Number(chapterUnitEnd));
+
+			const formBlock = !hasUnits ? '' : `
+
+═══════════════════════════════════════════════════════════════
+THIS CHAPTER IS BUILT FROM A REPEATING UNIT — THIS SECTION OVERRIDES THE INSTRUCTIONS ABOUT SHAPE ABOVE (headings, sections, takeaways, how a chapter is organised)
+═══════════════════════════════════════════════════════════════
+
+It overrides SHAPE ONLY. It does not touch the accuracy rules, and it never licenses you to invent anything. Where the form asks for something the research does not support, the accuracy rules win — always. A form is a container for what you actually know; it is not permission to fill it.
+
+This book is ${bookFormat.unitCount} ${bookFormat.unitPlural}, numbered 1 to ${bookFormat.unitCount} across the whole book. This chapter owns ${bookFormat.unitPlural} ${chapterUnitStart} to ${chapterUnitEnd} — ${Number(chapterUnitEnd) - Number(chapterUnitStart) + 1} of them. Write exactly those, in order, using exactly those numbers. Do not renumber from 1. Do not write any ${bookFormat.unit} outside your range — every other number belongs to another chapter that is being written right now.
+
+WHAT THE CHAPTER LOOKS LIKE
+
+1. A short opening: 2–3 paragraphs saying what these ${bookFormat.unitPlural} have in common and why they are grouped. No heading.
+2. Then each ${bookFormat.unit}, in the exact shape below. Nothing else.
+
+Do NOT write "Key Takeaways", a conclusion, a transition to the next chapter, or free-standing sections. The ${bookFormat.unitPlural} ARE the chapter. That instruction above about ending with takeaways does not apply to this book.
+
+THE SHAPE OF ONE ${bookFormat.unit.toUpperCase()} — IDENTICAL EVERY TIME, NO EXCEPTIONS
+
+### ${bookFormat.unit} ${chapterUnitStart} — [Title]
+
+${proseFields.map(f => `**${f.label}:** [${f.guidance}]`).join('\n\n')}
+
+<div class="callout-box">
+<div class="callout-box__content">
+${actionFields.map(f => `<p><strong>${f.label}:</strong> [${f.guidance}]</p>`).join('\n')}
+</div>
+</div>
+
+RULES THAT DO NOT BEND
+
+- The heading is exactly \`### ${bookFormat.unit} N — Title\`. The title is an instruction to the reader and starts with a verb.
+- Every ${bookFormat.unit} carries every field, in that order, with those exact labels. A reader learns the shape once and then navigates by it; a ${bookFormat.unit} that drops a field or reorders them breaks that, and there is no such thing as a ${bookFormat.unit} where one does not apply — if it seems not to, you have chosen the wrong ${bookFormat.unit}.
+- The prose fields are prose: real sentences, no bullets.
+- The action fields go inside the callout box, exactly as shown. They are read at a glance — one or two sentences each, no padding.${actionFields.length ? `\n- **${actionFields[actionFields.length - 1].label}** is the payoff and comes last. Where the research supports a figure, give a RANGE rather than a single number — a range is honest about variation, a lone figure pretends to a precision nobody has.` : ''}
+
+GROUNDING — THIS IS WHERE A FORM GOES WRONG
+
+A form asks the same question of every ${bookFormat.unit}, and the research will not always answer it. That pressure is real, and it is how a book like this ends up full of confident invention. So:
+
+- **Never invent a figure to fill the payoff field.** If the research does not support a number, say what the saving DEPENDS ON in plain terms ("depends on how far the damage has spread before you catch it") rather than inventing a range. An honest dependency is worth more to the reader than a fabricated number, and a reader who checks one invented figure stops trusting all ${bookFormat.unitCount}.
+- **Never invent specifics to fill any other field either** — brand names, product names, prices, model numbers, statistics, studies, dates. If the research names none, write the field in terms of what to look for rather than what to buy.
+- Repeating the form ${Number(chapterUnitEnd) - Number(chapterUnitStart) + 1} times in this chapter multiplies every one of these opportunities. The form is a container for what you actually know from the research and the author's brief. Where you do not know, say so inside the field and keep the field.
+- ${bookFormat.unitPlural} are self-contained. The reader opens the book at one of them. Do not write "as we saw above" or "in the last ${bookFormat.unit}".
+- Do not number the ${bookFormat.unitPlural} in the opening paragraphs. Just write them.`;
+
 			userPrompt = `Write the complete content for the following ebook chapter:
 
 Book Title: "${bookTitle}"
@@ -433,6 +530,7 @@ Tone guidance: ${toneGuide}
 
 Grounding Research & Author Notes (integrate seamlessly — do not list these as sources, weave them into the narrative):
 ${researchNotes || 'None provided.'}
+${formBlock}
 
 Write the full chapter now. Be thorough, substantive, and publication-ready.`;
 
@@ -463,8 +561,34 @@ ${chapterContent}
 Return ONLY the JSON array.`;
 
 		} else if (action === 'verify-chapter') {
+			// The verify pass re-emits the whole chapter, and it is told to flag
+			// "structural gaps" — so left alone it will happily tidy a rigid form
+			// into something it finds better written. That would silently undo the
+			// form in exactly the chapters it ran on, which is worse than never
+			// having one: half the book would be in shape and half not.
+			const formGuard = bookFormat?.mode === 'form' && Array.isArray(bookFormat?.fields) && bookFormat.fields.length
+				? `
+
+═══ THIS CHAPTER HAS A FIXED STRUCTURE — DO NOT EDIT IT ═══
+
+This book is built from a repeating unit: each "${bookFormat.unit}" carries these fields, in this order, every time:
+${bookFormat.fields.map((f: any) => `  - ${f.label} (${f.role === 'prose' ? 'a prose paragraph' : 'a line inside the callout box'})`).join('\n')}
+
+Your remit here is the WORDS INSIDE those fields — accuracy, consistency, fabricated claims. The structure itself is not yours to review, and it is not evidence of a problem when it repeats. It repeats on purpose.
+
+You MUST NOT:
+- renumber any ${bookFormat.unit}, or change its heading format
+- add, remove, rename or reorder any field
+- move text between a prose field and the callout box
+- convert the callout box to prose, or unwrap its HTML
+- add a "Key Takeaways", a conclusion, or a transition — this book does not have them
+- "improve" the repetition by varying it
+
+If a field's CONTENT is wrong, fix the content and leave everything around it byte-for-byte identical.`
+				: '';
+
 			systemPrompt = `You are a professional copy-editor, expert fact-checker, and reviewer at a publishing house.
-Your job is to perform a final review, verification, and validation on the drafted ebook chapter to ensure industry-standard quality.
+Your job is to perform a final review, verification, and validation on the drafted ebook chapter to ensure industry-standard quality.${formGuard}
 
 Validation & Verification Workflow:
 - Check that every factual statement in the chapter is verified against the provided Exa AI research notes. Discard any unsupported claims or speculations.
@@ -676,6 +800,81 @@ ${authorNote.trim().slice(0, 1_000)}
 ` : ''}
 Art-direct the single interior plate for this chapter. Remember: no text of any kind anywhere in the image, and no device that would need text to work.`;
 
+		} else if (action === 'decide-format') {
+			// Read the author's own concept and work out whether this book is made
+			// of one thing repeated — and if so, what that thing is called and what
+			// its parts are. Derived per book, never hardcoded: the reference
+			// book's "Fix / Money Saved" is plumbing's clothing, and stamping it on
+			// a makeup book yields "Fix 12 — Apply Eyeliner. Money Saved: $200."
+			systemPrompt = `You are a non-fiction book architect. You read an author's concept and decide the SHAPE of their book — before a single chapter is planned.
+
+═══ THE ONE QUESTION ═══
+
+Is this book made of ONE THING, REPEATED?
+
+Some books are. A repair manual is 100 fixes. A technique guide is 60 techniques. A cookbook is 80 recipes. Every unit has the same parts in the same order, so the reader learns the shape once and then navigates by it. That repetition is what makes such a book usable.
+
+Most books are not. A memoir, a history, an argument, a biography, a business narrative — these develop. Each chapter does something the one before it could not. There is no unit, and inventing one destroys the book: "Fix 12 — Reconcile With Your Father, Money Saved: $200" is what forcing it looks like.
+
+Answer "form" ONLY when the repeating unit is obvious from the author's own words. You are not looking for a book that COULD be forced into units; you are looking for one that already IS units and would be worse without them. When you hesitate, answer "free" — a manual written free-form is merely a little loose, while a memoir forced into a form is ruined.
+
+═══ IF "form": DERIVE IT FROM THE AUTHOR'S WORDS ═══
+
+Do NOT reach for a template. Read what they wrote and name their book's unit in their own vocabulary.
+
+- A plumbing repair book repeats a **Fix**.
+- A makeup guide repeats a **Technique** or a **Lesson**.
+- A cookbook repeats a **Recipe**.
+- A training programme repeats a **Drill**.
+
+Then give the unit its FIELDS — 4 to 6, identical for every unit in the book. Mine the author's own structure and brief for them: if they wrote "common mistakes to avoid", one field is the common mistake. If they wrote "quick daily routines", one field is the quick version. They have usually already told you the parts; your job is to notice.
+
+Each field takes a role:
+- **prose** — a paragraph that explains. Use 2 or 3. These carry "what goes wrong" and "why it matters".
+- **action** — a line in a box telling the reader what to DO. Use 2 to 4. These are scanned, not read.
+
+Two action fields earn their place specifically:
+- A **boundary** — where to stop and get help, or stop and not force it. Every practical book needs one; it is what makes it trustworthy rather than reckless.
+- A **payoff**, LAST and QUANTIFIED — money saved, time saved, what is avoided. Name the unit of measure in its guidance. A payoff that cannot be measured is not a payoff.
+
+Labels must be short (1–4 words), in the author's register, and read as labels rather than sentences.
+
+═══ HOW MANY UNITS ═══
+
+- If the TITLE or SUBTITLE states a number ("100 Old-House Fixes", "50 Recipes"), that number wins outright. The cover is a promise; 87 would make it a lie.
+- Otherwise derive from the budget below. Aim for 4–8 units per chapter. Pick a round, credible number.
+
+═══ THE REASONING FIELD ═══
+
+One sentence, written for the AUTHOR, not for me. They never chose this and cannot override it, so tell them plainly what shape their book will take and what in their concept led there.
+
+Return ONLY valid JSON, no markdown fences, no commentary.
+
+If free:
+{"mode":"free","reasoning":"..."}
+
+If form:
+{"mode":"form","unit":"Fix","unitPlural":"Fixes","unitCount":100,"reasoning":"...","fields":[{"label":"The Problem","role":"prose","guidance":"What goes wrong, concretely."},{"label":"Money Saved","role":"action","guidance":"A dollar range, e.g. $150 to $600."}]}`;
+
+			userPrompt = `The author's concept, exactly as they wrote it:
+
+Title: "${bookTitle}"
+${bookSubtitle ? `Subtitle: "${bookSubtitle}"` : 'Subtitle: none'}
+Genre / Subject: ${genre || 'not stated'}
+
+Writing Tone (their words):
+${tone || 'not stated'}
+
+Book Structure (their words — read this closely, it is usually where they describe the shape):
+${structure || 'not stated'}
+
+Author Brief (their words — the richest signal about what this book actually is):
+${authorBrief?.trim() || 'None provided.'}
+
+Budget: ${plan.pageCount} pages, ~${plan.totalWords.toLocaleString()} words, ${plan.chapterCount} chapters — so roughly ${plan.chapterCount * 4}–${plan.chapterCount * 8} units if this book has them.
+
+Decide the shape of this book.`;
+
 		} else if (action === 'place-illustration-labels') {
 			// The division of labour here is the whole point. The image model draws
 			// the plate but cannot spell, so the picture carries no text. Claude can
@@ -767,6 +966,10 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 		// than the 8s that would abort a legitimate read.
 		const isLabelling = action === 'place-illustration-labels';
 
+		// Deciding the format reads a concept and returns a small JSON object.
+		// It runs once per book, before the outline — small, non-streamed.
+		const isFormatDecision = action === 'decide-format';
+
 		// Size the output budget from the actual work, not a fixed guess. A
 		// verify pass echoes the whole chapter back after the report, so its
 		// budget has to scale with the draft it is given or long chapters get
@@ -778,6 +981,9 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 			/* art direction — a subject line plus a 140-word brief. Reads a long
 			   chapter, writes very little. */
 			action === 'art-direct-illustration' ? 1_200 :
+			/* format decision — a small object: the unit, up to 6 fields, a
+			   sentence of reasoning. */
+			action === 'decide-format' ? 1_500 :
 			/* labelling — at most 5 short labels with coordinates. */
 			action === 'place-illustration-labels' ? 1_500 :
 			/* distill — at most 8 short entries; the cap is deliberate, an
@@ -790,13 +996,13 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 		const controller = new AbortController();
 		// Streamed requests only need to survive gaps between chunks, so the
 		// ceiling can be generous without risking a silent HTTP timeout.
-		const timeoutMs = action === 'outline' || action === 'distill-chapter' || isCoverAction || isArtDirection || isLabelling ? 60_000 : 600_000;
+		const timeoutMs = action === 'outline' || action === 'distill-chapter' || isCoverAction || isArtDirection || isLabelling || isFormatDecision ? 60_000 : 600_000;
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
 
 		// Anthropic requires streaming once max_tokens is large enough that a
 		// single buffered response could exceed the request timeout. The small
 		// JSON actions are nowhere near it.
-		const useStream = action !== 'outline' && action !== 'distill-chapter' && !isCoverAction && !isArtDirection && !isLabelling;
+		const useStream = action !== 'outline' && action !== 'distill-chapter' && !isCoverAction && !isArtDirection && !isLabelling && !isFormatDecision;
 
 		// Reference-cover analysis is the only vision call in the app: the image
 		// rides as a content block ahead of the instruction text.
@@ -916,8 +1122,44 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 					content: '',
 					researchNotes: '',
 					illustrationUrl: null,
+					unitStart: Number.isFinite(Number(chap.unitStart)) ? Number(chap.unitStart) : undefined,
+					unitEnd:   Number.isFinite(Number(chap.unitEnd))   ? Number(chap.unitEnd)   : undefined,
 					status: 'pending' as const
 				}));
+
+				// Verify the allocation rather than trust it. The ranges carry a hard
+				// invariant — every number 1..N owned by exactly one chapter — and a
+				// model that drops or doubles one produces a book with two "Fix 47"
+				// and no "Fix 48". Nothing downstream could notice: chapters are
+				// written concurrently and never see each other. So check it here,
+				// and re-tile deterministically if it doesn't hold. An even split is
+				// worse than the model's subject-aware one, which is why this is a
+				// repair and not the default.
+				if (bookFormat?.mode === 'form' && bookFormat?.unitCount) {
+					const total = Number(bookFormat.unitCount);
+					const tiles =
+						formattedChapters.length > 0 &&
+						formattedChapters.every((c: any, i: number) =>
+							Number.isFinite(c.unitStart) && Number.isFinite(c.unitEnd) &&
+							c.unitEnd >= c.unitStart &&
+							c.unitStart === (i === 0 ? 1 : formattedChapters[i - 1].unitEnd + 1)
+						) &&
+						formattedChapters[formattedChapters.length - 1].unitEnd === total;
+
+					if (!tiles) {
+						console.warn('[outline] unit ranges did not tile 1..%d — re-tiling evenly', total);
+						const n = formattedChapters.length;
+						const base = Math.floor(total / n);
+						const extra = total % n;
+						let cursor = 1;
+						formattedChapters.forEach((c: any, i: number) => {
+							const size = base + (i < extra ? 1 : 0);
+							c.unitStart = cursor;
+							c.unitEnd   = cursor + size - 1;
+							cursor += size;
+						});
+					}
+				}
 
 				return json({
 					success: true,
@@ -982,6 +1224,74 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 			} catch (parseError) {
 				console.error('Failed to parse art-direction JSON:', responseText);
 				throw new Error('Claude did not return a valid illustration brief.');
+			}
+		} else if (action === 'decide-format') {
+			// Everything that fails validation becomes 'free' rather than an error.
+			// Free is not a failure state — it is how every book was written before
+			// this existed, and it is right for most books anyway. A half-parsed
+			// form, on the other hand, would be imposed on all 30 chapters at once.
+			try {
+				const start = responseText.indexOf('{');
+				const end   = responseText.lastIndexOf('}');
+				if (start === -1 || end <= start) throw new Error('no JSON object in response');
+
+				const p = JSON.parse(responseText.substring(start, end + 1));
+				const reasoning = String(p.reasoning ?? '').trim();
+
+				if (p.mode !== 'form') {
+					return json({ success: true, format: { mode: 'free', reasoning }, source: 'live' });
+				}
+
+				const fields = (Array.isArray(p.fields) ? p.fields : [])
+					.filter((f: any) => f && typeof f.label === 'string' && f.label.trim())
+					.map((f: any) => ({
+						label:    String(f.label).trim().slice(0, 40),
+						role:     f.role === 'prose' ? 'prose' : 'action',
+						guidance: String(f.guidance ?? '').trim()
+					}))
+					.slice(0, 6);
+
+				const unit  = String(p.unit ?? '').trim();
+				const count = Math.round(Number(p.unitCount));
+
+				// A form with no unit, no fields, or no prose/action split isn't a
+				// form — it's a half-answer. Writing 30 chapters against it would
+				// be worse than not having bothered.
+				const usable =
+					unit &&
+					fields.length >= 3 &&
+					fields.some((f: any) => f.role === 'prose') &&
+					fields.some((f: any) => f.role === 'action') &&
+					Number.isFinite(count) && count >= plan.chapterCount && count <= 500;
+
+				if (!usable) {
+					console.warn('[decide-format] unusable form, falling back to free:', responseText.slice(0, 300));
+					return json({
+						success: true,
+						format: { mode: 'free', reasoning: reasoning || 'No clear repeating unit, so the book is written free-form.' },
+						source: 'live'
+					});
+				}
+
+				return json({
+					success: true,
+					format: {
+						mode: 'form',
+						unit,
+						unitPlural: String(p.unitPlural ?? `${unit}s`).trim(),
+						unitCount: count,
+						fields,
+						reasoning
+					},
+					source: 'live'
+				});
+			} catch (parseError) {
+				console.error('Failed to parse format decision:', responseText);
+				return json({
+					success: true,
+					format: { mode: 'free', reasoning: 'The shape of this book could not be determined, so it is written free-form.' },
+					source: 'live'
+				});
 			}
 		} else if (action === 'place-illustration-labels') {
 			// Every filter here drops labels rather than repairing them. A label is
