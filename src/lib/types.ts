@@ -1,3 +1,4 @@
+import type { CoverDesign } from './coverPalette';
 export interface StepLog {
 	id: string;
 	step: 'research' | 'outline' | 'drafting' | 'review' | 'illustrate' | 'complete';
@@ -227,6 +228,21 @@ export interface Book {
 	selectedCoverIndex: number | null;
 
 	coverSettings: CoverSettings;
+
+	/**
+	 * Colour and type read off the CHOSEN COVER IMAGE, then held to a contrast
+	 * floor so the page stays readable.
+	 *
+	 * Distinct from `coverSettings.titleColor` / `authorColor`, which is what
+	 * the interior used to be coloured from. Those describe a cover that was
+	 * laid out in HTML; a generated cover bakes its type into the artwork, so
+	 * they no longer describe anything the reader can see. This is measured from
+	 * the pixels instead.
+	 *
+	 * Absent until a cover is chosen, and re-derived when it changes.
+	 */
+	coverDesign?: CoverDesign;
+
 	chapters: Chapter[];
 	/**
 	 * Rolling "book bible" — bounded (see $lib/bookBible), folded in after each

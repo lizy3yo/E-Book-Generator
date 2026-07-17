@@ -3,6 +3,7 @@ import type { RequestHandler } from './$types';
 import { planForBook } from '$lib/bookPlan';
 import { renderBibleBlock } from '$lib/bookBible';
 import { NO_TEXT_CLAUSE } from '$lib/illustration';
+import { ensureContrast } from '$lib/coverPalette';
 import {
 	CLAUDE_WRITING_MODEL,
 	CLAUDE_OPUS_MODEL,
@@ -40,6 +41,8 @@ export const POST: RequestHandler = async ({ request }) => {
 			// ── Illustration labelling ─────────────────────────────────────
 			imageUrl,
 			illustrationSubject,
+			// ── Cover-driven interior design ───────────────────────────────
+			coverPalette,
 			// ── Cover actions ──────────────────────────────────────────────
 			bookSubtitle,
 			bookAuthor,
@@ -130,6 +133,12 @@ export const POST: RequestHandler = async ({ request }) => {
 						format: { mode: 'free', reasoning: 'Mock mode does not analyse the concept, so the book is written free-form.' },
 						source: 'mock'
 					});
+				}
+
+				if (action === 'read-cover-design') {
+					// Mock mode has no vision. Guessing a palette off a cover nobody
+					// looked at is how a book ends up coloured by nothing at all.
+					return json({ success: false, error: 'Cover design needs vision — add an Anthropic API key.', source: 'mock' });
 				}
 
 				if (action === 'place-illustration-labels') {
@@ -875,6 +884,59 @@ Budget: ${plan.pageCount} pages, ~${plan.totalWords.toLocaleString()} words, ${p
 
 Decide the shape of this book.`;
 
+		} else if (action === 'read-cover-design') {
+			// Pixels have already been measured — the palette below is exact, not
+			// estimated. What pixels cannot say is which of those colours is the
+			// ACCENT rather than the ground, and what the title's type is doing.
+			// That is the only judgement asked for here.
+			const paletteBlock = Array.isArray(coverPalette) && coverPalette.length
+				? coverPalette
+					.map((p: any) => `  ${p.hex}  — ${Math.round((p.share ?? 0) * 100)}% of the cover`)
+					.join('\n')
+				: '  (none measured — read them off the image yourself, and say so in "reasoning")';
+
+			systemPrompt = `You are a book designer deciding how a book's INTERIOR should be coloured and set, by looking at the cover the author chose.
+
+You are given the cover and the exact colours measured from its pixels, with the share of the cover each one covers. The measurements are not estimates — do not second-guess them or invent hexes that are not there. Your job is to assign ROLES.
+
+═══ THE TWO COLOURS YOU MUST CHOOSE ═══
+
+**primary** — the ink. Chapter titles, headings, body text, table header bands.
+Pick the cover's darkest structural colour: the one carrying its authority. Usually the field a bold title sits on or is cut out of. It must read as ink, not as decoration. Never pick a light or washed-out colour here, and never pick the accent.
+
+**accent** — the one highlight. Rules under chapter titles, the bar down the side of a callout box, small labels.
+Pick the colour the cover uses to make something POP — the one your eye goes to that is not the ground. It is almost never the largest share; a 60% navy is the ground, and the 6% gold band is the accent. If the cover is genuinely monochrome, pick its most saturated colour even if muted, and say so.
+
+They must be clearly different from each other. A primary and accent a reader cannot tell apart gives a book with invisible rules.
+
+═══ THE TYPEFACE ═══
+
+**titleFont** — one of exactly: "Inter", "Lora", "Georgia", "Arial".
+
+Judge the cover title's CHARACTER, not its identity. You cannot recover the cover's actual font — it was drawn as artwork and there is no font file. So match what it is DOING:
+- Heavy, condensed, commanding, all-caps, engineered → "Inter"
+- Warm, literary, bookish, high-contrast serif → "Lora"
+- Traditional, sober, academic serif → "Georgia"
+- Plain, neutral, utilitarian sans → "Arial"
+
+═══ WHAT YOU ARE NOT DECIDING ═══
+
+You are not deciding whether these are readable on a page. A cover is seen across a shop; a page is read for an hour. Those are different jobs, and the code checks the contrast after you and will darken what you pick if it must. So choose the colour that is TRUE to the cover, and let the check handle legibility. Do not pre-emptively pick a safe dark brown because you are worried — pick the cover's real colour.
+
+═══ REASONING ═══
+
+One sentence, for the AUTHOR. They never chose this. Name the colours you picked and what on the cover they came from.
+
+Return ONLY valid JSON, no markdown fences, no commentary:
+{"primary":"#RRGGBB","accent":"#RRGGBB","titleFont":"Inter","reasoning":"..."}`;
+
+			userPrompt = `Book: "${bookTitle}"${genre ? ` (${genre})` : ''}
+
+The colours measured from this cover's pixels, largest share first:
+${paletteBlock}
+
+The cover itself is attached. Assign the roles.`;
+
 		} else if (action === 'place-illustration-labels') {
 			// The division of labour here is the whole point. The image model draws
 			// the plate but cannot spell, so the picture carries no text. Claude can
@@ -970,6 +1032,11 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 		// It runs once per book, before the outline — small, non-streamed.
 		const isFormatDecision = action === 'decide-format';
 
+		// Reading a cover's design is a vision call like labelling: it fetches and
+		// reads an image, so it needs the 60s ceiling rather than the 8s that would
+		// abort a legitimate read.
+		const isCoverDesign = action === 'read-cover-design';
+
 		// Size the output budget from the actual work, not a fixed guess. A
 		// verify pass echoes the whole chapter back after the report, so its
 		// budget has to scale with the draft it is given or long chapters get
@@ -984,6 +1051,8 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 			/* format decision — a small object: the unit, up to 6 fields, a
 			   sentence of reasoning. */
 			action === 'decide-format' ? 1_500 :
+			/* cover design — two hexes, a font name, one sentence. */
+			action === 'read-cover-design' ? 600 :
 			/* labelling — at most 5 short labels with coordinates. */
 			action === 'place-illustration-labels' ? 1_500 :
 			/* distill — at most 8 short entries; the cap is deliberate, an
@@ -996,13 +1065,13 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 		const controller = new AbortController();
 		// Streamed requests only need to survive gaps between chunks, so the
 		// ceiling can be generous without risking a silent HTTP timeout.
-		const timeoutMs = action === 'outline' || action === 'distill-chapter' || isCoverAction || isArtDirection || isLabelling || isFormatDecision ? 60_000 : 600_000;
+		const timeoutMs = action === 'outline' || action === 'distill-chapter' || isCoverAction || isArtDirection || isLabelling || isFormatDecision || isCoverDesign ? 60_000 : 600_000;
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
 
 		// Anthropic requires streaming once max_tokens is large enough that a
 		// single buffered response could exceed the request timeout. The small
 		// JSON actions are nowhere near it.
-		const useStream = action !== 'outline' && action !== 'distill-chapter' && !isCoverAction && !isArtDirection && !isLabelling && !isFormatDecision;
+		const useStream = action !== 'outline' && action !== 'distill-chapter' && !isCoverAction && !isArtDirection && !isLabelling && !isFormatDecision && !isCoverDesign;
 
 		// Reference-cover analysis is the only vision call in the app: the image
 		// rides as a content block ahead of the instruction text.
@@ -1015,7 +1084,7 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 		// works for any image the app itself can reach, which is the same bar the
 		// reader and the PDF export already have to clear. It also matches the
 		// reference-cover vision call, which is base64 for the same reason.
-		const labelImage = isLabelling ? await fetchImageAsBase64(imageUrl) : null;
+		const labelImage = (isLabelling || isCoverDesign) ? await fetchImageAsBase64(imageUrl) : null;
 
 		const userContent = action === 'analyze-cover-reference' && referenceImage?.data
 			? [
@@ -1029,7 +1098,7 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 					},
 					{ type: 'text', text: userPrompt }
 				]
-			: isLabelling
+			: (isLabelling || isCoverDesign)
 			? [
 					// The image leads the turn: Claude attends to instructions that
 					// follow an image more reliably than ones that precede it — the
@@ -1292,6 +1361,61 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 					format: { mode: 'free', reasoning: 'The shape of this book could not be determined, so it is written free-form.' },
 					source: 'live'
 				});
+			}
+		} else if (action === 'read-cover-design') {
+			try {
+				const start = responseText.indexOf('{');
+				const end   = responseText.lastIndexOf('}');
+				if (start === -1 || end <= start) throw new Error('no JSON object in response');
+
+				const p = JSON.parse(responseText.substring(start, end + 1));
+				const hex = (v: unknown) => {
+					const m = String(v ?? '').trim().match(/^#?([0-9a-f]{6})$/i);
+					return m ? `#${m[1].toUpperCase()}` : null;
+				};
+				const rawPrimary = hex(p.primary);
+				const rawAccent  = hex(p.accent);
+				if (!rawPrimary || !rawAccent) throw new Error('primary/accent were not hex colours');
+
+				// ── The legibility floor ──────────────────────────────────────
+				//
+				// The model was told to pick what is TRUE to the cover and let this
+				// check handle readability, because those are genuinely different
+				// jobs: a cover is seen across a shop, a page is read for an hour.
+				// A gold that sings on navy fails on cream, and a model asked to
+				// "keep it readable" will sometimes say yes and be wrong. WCAG has
+				// real numbers, so they are applied here rather than requested.
+				//
+				// Darkening keeps the hue the cover chose, which is the entire
+				// point of deriving from the cover — a safe brown nobody picked
+				// would defeat the feature.
+				const GROUND = '#FFFFFF';           // the reader's page
+				const primary = ensureContrast(rawPrimary, GROUND, 4.5); // body/heading text
+				const accent  = ensureContrast(rawAccent,  GROUND, 3.0); // rules and bars
+
+				const FONTS = ['Inter', 'Lora', 'Georgia', 'Arial'];
+				const titleFont = FONTS.includes(String(p.titleFont)) ? String(p.titleFont) : 'Lora';
+
+				const adjusted = primary !== rawPrimary || accent !== rawAccent;
+
+				return json({
+					success: true,
+					design: {
+						primary,
+						accent,
+						titleFont,
+						reasoning: String(p.reasoning ?? '').trim(),
+						// Surfaced, not hidden: if the author's cover colour was
+						// darkened to stay readable, that is worth being able to see.
+						adjustedForContrast: adjusted,
+						sourcePrimary: rawPrimary,
+						sourceAccent: rawAccent
+					},
+					source: 'live'
+				});
+			} catch (parseError) {
+				console.error('Failed to parse cover design:', responseText);
+				throw new Error('Claude did not return a usable cover design.');
 			}
 		} else if (action === 'place-illustration-labels') {
 			// Every filter here drops labels rather than repairing them. A label is

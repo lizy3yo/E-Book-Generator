@@ -1,4 +1,5 @@
 import type { Book, ApiKeys, StepLog, Chapter, CoverSettings, CoverOption, PipelineStage, BibleEntry, IllustrationLabel, BookFormat } from './types';
+import type { CoverDesign } from './coverPalette';
 import { supabase } from './supabase';
 
 class GlobalState {
@@ -389,6 +390,26 @@ class GlobalState {
 		const updatedBook: Book = {
 			...this.books[bookIndex],
 			format,
+			updatedAt: new Date().toISOString()
+		};
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
+	}
+
+	/**
+	 * Record the colour and type read off the chosen cover.
+	 *
+	 * Persisted rather than derived on render because getting it costs a canvas
+	 * read plus a vision call — doing that on every paint would be absurd, and
+	 * the answer only changes when the cover does.
+	 */
+	updateBookCoverDesign(bookId: string, coverDesign: CoverDesign) {
+		const bookIndex = this.books.findIndex(b => b.id === bookId);
+		if (bookIndex === -1) return;
+
+		const updatedBook: Book = {
+			...this.books[bookIndex],
+			coverDesign,
 			updatedAt: new Date().toISOString()
 		};
 		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);

@@ -3,6 +3,7 @@
 	import { globalState } from '$lib/state.svelte';
 	import type { Chapter } from '$lib/types';
 	import { INTERIOR_PRESETS } from '$lib/interiorDesigns';
+	import { samplePalette } from '$lib/coverPalette';
 	import {
 		BookMarked, FileDown,
 		Image as ImageIcon, PenLine, BookOpen,
@@ -23,7 +24,7 @@
 	// snapping header/footer design tokens back to the current cover settings.
 	let designKey = $state(0);
 
-	let headerFooterPreset = $state('Classical Editorial');
+	let headerFooterPreset = $state('Field Manual');
 	let interiorCustomInstructions = $state('');
 
 	// Instantly apply a named preset from $lib/interiorDesigns without hitting the AI endpoint.
@@ -31,19 +32,28 @@
 	function applyPresetInstantly(preset: string) {
 		if (!activeBook) return;
 		const cs = activeBook.coverSettings;
-		const primary = cs?.titleColor  || '#1A1612';
-		const accent  = cs?.authorColor || '#8E7453';
+		// Prefer what was read off the cover IMAGE. `coverSettings.titleColor` and
+		// `.authorColor` describe a cover laid out in HTML; a generated cover bakes
+		// its type into the artwork, so those fields no longer describe anything a
+		// reader can see, and colouring the interior from them means colouring it
+		// from nothing. They stay as the fallback for books with no cover read yet.
+		const cd = activeBook.coverDesign;
+		const primary = cd?.primary   || cs?.titleColor  || '#1A1612';
+		const accent  = cd?.accent    || cs?.authorColor || '#8E7453';
 		const alignment = cs?.alignment || 'left';
-		const titleFont = cs?.titleFont  || 'Lora';
+		const titleFont = cd?.titleFont || cs?.titleFont || 'Lora';
 		const presetFn = INTERIOR_PRESETS[preset];
 		if (!presetFn) return;
 		const design = presetFn({ primary, accent, alignment, titleFont });
 		const current = activeBook.interiorDesign ?? {};
-		globalState.updateBookInteriorDesign(activeBook.id, { ...current, ...design });
+		// _presetName records which named preset produced these tokens, so the
+		// dropdown can be restored to the user's actual choice on the next visit
+		// instead of always opening back on the hardcoded initial value.
+		globalState.updateBookInteriorDesign(activeBook.id, { ...current, ...design, _presetName: preset });
 		designKey = Date.now();
 	}
 
-	let appliedPreset = $state('Classical Editorial');
+	let appliedPreset = $state('Field Manual');
 	let appliedCustomInstructions = $state('');
 
 	let copySuccess = $state(false);
@@ -56,6 +66,19 @@
 		!!coverSettings?.bgImageUrl &&
 		!!(activeBook?.coverOptions?.some(o => o.imageUrl && o.imageUrl === coverSettings?.bgImageUrl))
 	);
+
+	// Restores the preset dropdown to what was actually saved for this book,
+	// once per book switch — local $state initialisers only run on first mount,
+	// so without this every book reopened the panel on the hardcoded default.
+	let presetSyncedForBookId = $state<string | null>(null);
+	$effect(() => {
+		if (activeBook && activeBook.id !== presetSyncedForBookId) {
+			presetSyncedForBookId = activeBook.id;
+			const saved = activeBook.interiorDesign?._presetName;
+			headerFooterPreset = saved ?? 'Field Manual';
+			appliedPreset = headerFooterPreset;
+		}
+	});
 
 	// editTarget is bound to EditDrawer
 	let editTarget = $state<EditTarget | null>(null);
@@ -281,7 +304,7 @@
 			// ── Step 3: Mount a hidden iframe ───────────────────────────────────
 			iframe = document.createElement('iframe');
 			iframe.style.cssText =
-				'position:fixed;left:-9999px;top:0;width:8.5in;height:11in;border:0;opacity:0;pointer-events:none;';
+				'position:fixed;left:-9999px;top:0;width:6in;height:9in;border:0;opacity:0;pointer-events:none;';
 			document.body.appendChild(iframe);
 
 			await new Promise<void>((resolve, reject) => {
@@ -334,8 +357,11 @@
 			// ── Step 7: Load jsPDF ─────────────────────────────────────────────
 			const { jsPDF } = await import('jspdf');
 
-			const PDF_W_IN = 8.5;
-			const PDF_H_IN = 11;
+			// 6 x 9 in — trade paperback. Must match .book-page-card exactly, or the
+			// captured bitmap is rescaled into a different sheet and every page is
+			// subtly stretched.
+			const PDF_W_IN = 6;
+			const PDF_H_IN = 9;
 			const SCALE     = 2;
 
 			const pdf = new jsPDF({
@@ -357,8 +383,8 @@
 						logging:         false,
 						windowWidth:     iWin.innerWidth,
 						windowHeight:    iWin.innerHeight,
-						width:           816,
-						height:          1056,
+						width:           576,  // 6in @ 96dpi
+						height:          864,  // 9in @ 96dpi
 						backgroundColor: '#ffffff',
 						imageTimeout:    10_000,
 					}) as Promise<HTMLCanvasElement>,
@@ -380,11 +406,11 @@
 					} catch (retryErr) {
 						console.warn(`[PDF] Page ${i + 1} retry failed, inserting blank page.`);
 						canvas = document.createElement('canvas');
-						canvas.width  = 816;
-						canvas.height = 1056;
+						canvas.width  = 576;
+						canvas.height = 864;
 						const ctx = canvas.getContext('2d')!;
 						ctx.fillStyle = '#ffffff';
-						ctx.fillRect(0, 0, 816, 1056);
+						ctx.fillRect(0, 0, 576, 864);
 					}
 				}
 
@@ -448,12 +474,14 @@
 	);
 
 	let designAccentColor = $derived.by(() => {
+		if (activeBook?.coverDesign?.accent) return activeBook.coverDesign.accent;
 		const ac = coverSettings?.authorColor;
 		if (ac && !isLightColor(ac)) return ac;
 		return '#8E7453';
 	});
 
 	let designTitleColor = $derived.by(() => {
+		if (activeBook?.coverDesign?.primary) return activeBook.coverDesign.primary;
 		const tc = coverSettings?.titleColor;
 		if (tc && !isLightColor(tc)) return tc;
 		if (coverStyle === 'Bold Graphic') return '#0F172A';
@@ -500,7 +528,7 @@
 			`--chapter-accent-color: ${designAccentColor}`,
 			`--chapter-title-color: ${designTitleColor}`,
 			`--chapter-subtitle-color: ${designSubtitleColor}`,
-			`--chapter-alignment: ${coverSettings?.alignment || 'center'}`,
+			`--chapter-alignment: ${coverSettings?.alignment || 'left'}`,
 			`--chapter-rule-width: ${ruleWidth}`,
 			`--chapter-rule-margin-left: ${ruleMarginLeft}`,
 			`--chapter-rule-margin-right: ${ruleMarginRight}`,
@@ -534,6 +562,61 @@
 		});
 	});
 
+	let isDerivingCoverDesign = $state(false);
+
+	/**
+	 * Read the chosen cover and colour the interior from it.
+	 *
+	 * Two steps, deliberately split by what each is good at:
+	 *   1. Sample the cover's pixels. The palette is then MEASURED, not guessed —
+	 *      a model naming "#C8752A" off a picture is estimating; the pixels are
+	 *      the cover.
+	 *   2. Ask vision the one thing pixels cannot answer: which of those colours
+	 *      is the ACCENT rather than the ground, and what the title's type is
+	 *      doing. The server then holds both to a contrast floor, because a cover
+	 *      is seen across a shop and a page is read for an hour.
+	 *
+	 * Never fatal: a book with no cover read simply falls back to the old
+	 * coverSettings colours, which is exactly what it did before.
+	 */
+	async function deriveCoverDesign(force = false) {
+		if (!activeBook || isDerivingCoverDesign) return;
+		const url = activeBook.coverSettings?.bgImageUrl;
+		if (!url) return;
+
+		const sig = currentCoverSignature;
+		if (!force && activeBook.coverDesign?.signature === sig) return;
+
+		isDerivingCoverDesign = true;
+		try {
+			const palette = await samplePalette(url);
+			const res = await fetch('/api/write', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					action: 'read-cover-design',
+					apiKey: globalState.apiKeys.anthropicKey,
+					useMockMode: globalState.apiKeys.useMockMode,
+					bookTitle: activeBook.title,
+					genre: activeBook.genre,
+					imageUrl: url,
+					coverPalette: palette
+				})
+			});
+			const data = await res.json();
+			if (data.success && data.design) {
+				globalState.updateBookCoverDesign(activeBook.id, { ...data.design, signature: sig });
+				// Re-apply the preset so the new colours land immediately rather
+				// than waiting for the next thing that happens to touch it.
+				applyPresetInstantly(headerFooterPreset);
+			}
+		} catch (err) {
+			console.warn('Could not read the cover design; falling back to cover settings.', err);
+		} finally {
+			isDerivingCoverDesign = false;
+		}
+	}
+
 	let isGeneratingInteriorDesign = $state(false);
 
 	async function generateInteriorDesignAI(force = false) {
@@ -565,7 +648,8 @@
 			if (data.success && data.design) {
 				const designWithSig = {
 					...data.design,
-					_coverSignature: signature
+					_coverSignature: signature,
+					_presetName: appliedPreset
 				};
 				globalState.updateBookInteriorDesign(activeBook.id, designWithSig);
 			}
@@ -579,6 +663,11 @@
 	$effect(() => {
 		if (activeBook && typeof window !== 'undefined') {
 			const sig = currentCoverSignature;
+			// The cover read comes first: the preset is coloured from it, so
+			// deriving it after would paint the page twice.
+			if (activeBook.coverDesign?.signature !== sig) {
+				deriveCoverDesign();
+			}
 			if (!activeBook.interiorDesign || activeBook.interiorDesign._coverSignature !== sig) {
 				generateInteriorDesignAI();
 			}
@@ -607,10 +696,25 @@
 	 */
 	function paginateAllChapters() {
 		if (!activeBook) return;
-		paginatedChapters = paginateChapters(activeBook.chapters, fontSize, designBodyFont, {
-			title: activeBook.title,
-			author: activeBook.author ?? ''
-		});
+		// The opener's header is drawn by this template, so the paginator cannot
+		// see it and must reserve its height. That height depends on how many
+		// lines the title wraps to, which depends on the type it is set in — so
+		// the tokens are passed in rather than guessed at. Without this the
+		// paginator assumed a flat 160/440px and the overflow was clipped
+		// mid-word at the foot of the page.
+		const d = activeBook.interiorDesign ?? {};
+		paginatedChapters = paginateChapters(
+			activeBook.chapters,
+			fontSize,
+			designBodyFont,
+			{ title: activeBook.title, author: activeBook.author ?? '' },
+			{
+				titleFont:   d['--r-title-font']      ?? designFontFamily,
+				titleSize:   d['--r-chap-title-size'] ?? '2rem',
+				titleWeight: d['--r-title-weight']    ?? '700',
+				showLabel:   d['--r-label-display']   !== 'none'
+			}
+		);
 	}
 
 	$effect(() => {
@@ -681,6 +785,10 @@
 							}}
 							style="width: 100%; padding: 0.4rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color); font-size: 0.85rem;"
 						>
+							<optgroup label="Practical / Manual">
+								<option value="Field Manual">Field Manual — Left-aligned, no chapter label</option>
+								<option value="Field Manual — Cover Aligned">Field Manual — Follows your cover's alignment</option>
+							</optgroup>
 							<optgroup label="Serif / Literary">
 								<option value="Classical Editorial">Classical Editorial — Serif, thin rules</option>
 								<option value="Royal Elegance">Royal Elegance — Italic serif, double rules</option>
@@ -1318,13 +1426,23 @@
 	 *   │  page-footer      (fixed, ~0.35in)        │
 	 *   └──────────────────────────────────────────┘
 	 *
-	 * Outer padding mirrors Chicago Manual of Style margins:
-	 *   top: 1 in  |  bottom: 1 in
-	 *   gutter (left): 1.5 in  |  fore-edge (right): 1.25 in
+	 * Trim is 6 x 9 in — the trade-paperback size, and what a printed non-fiction
+	 * book actually is. It was US Letter (8.5 x 11), which is a document, not a
+	 * book: the proportions give it away before a reader has read a word.
+	 *
+	 * Margins are symmetric at 0.52in, measured off a real 6x9 manual, giving a
+	 * 4.96in text column — about 66 characters at the export's 12pt, which is the
+	 * readable band. They were 1.5in gutter / 1.25in fore-edge, which on a 6in
+	 * page would leave a 3.25in ribbon of text.
+	 *
+	 * Symmetric, NOT mirrored: there is no wider inner margin alternating by page
+	 * for a binding. The reference manual is symmetric too — it is built to be
+	 * read as a PDF rather than bound. If these books are ever printed, this is
+	 * the number to revisit.
 	 */
 	.book-page-card {
-		width: min(8.5in, 100%);
-		height: 11in;
+		width: min(6in, 100%);
+		height: 9in;
 		margin: 0 auto;
 		background-color: var(--r-viewport);
 		border: 1px solid var(--r-page-border, #E5DFD3);
@@ -1334,8 +1452,13 @@
 			0 6px 20px rgba(36,34,32,0.08),
 			0 18px 40px rgba(36,34,32,0.06);
 
-		/* Outer page margins */
-		padding: 1in 1.25in 1in 1.5in;
+		/* Outer page margins — 6x9 trim, symmetric sides.
+		   --page-pad-x is declared here and consumed by .chapter-header's
+		   full-bleed break-out. They were two hardcoded pairs that silently
+		   disagreed the moment the trim changed; one variable is what stops
+		   that happening again. */
+		--page-pad-x: 0.52in;
+		padding: 0.6in var(--page-pad-x) 0.5in var(--page-pad-x);
 
 		/* Three-zone flex column */
 		display: flex;
@@ -1453,7 +1576,7 @@
 	@media (max-width: 1100px) {
 		.book-page-card {
 			width: 100%;
-			min-height: 11in;
+			min-height: 9in;
 			height: auto;
 			padding: 1in 1.25in 1in 1.5in;
 		}
@@ -1471,15 +1594,21 @@
 
 	.chapter-header {
 		/* ── Full-bleed break-out ───────────────────────────────────────────────
-		 * The book-page-card has 1.5in left / 1.25in right printed margins.
-		 * Negative margins pull this stripe to the physical card edge;
-		 * the matching inner padding restores the visual text indent.
-		 * Industry-standard technique ("bleed" in book / magazine typesetting).
+		 * Negative margins pull this stripe out to the physical card edge; the
+		 * matching inner padding restores the text indent. That lets a preset
+		 * paint a header background or accent bar to the paper's edge while the
+		 * words stay on the text column.
+		 *
+		 * Both halves MUST equal the card's own side padding. They were hardcoded
+		 * to -1.5in / -1.25in — the old US Letter margins — so when the trim
+		 * became 6x9 with 0.52in sides, this stripe hung ~1in off the page and
+		 * took any header background or bar with it. Reading --page-pad-x from
+		 * the card is what makes that impossible rather than merely fixed.
 		 * ──────────────────────────────────────────────────────────────────────── */
-		margin-left:  -1.5in;
-		margin-right: -1.25in;
-		padding-left:  1.5in;
-		padding-right: 1.25in;
+		margin-left:  calc(-1 * var(--page-pad-x, 0.52in));
+		margin-right: calc(-1 * var(--page-pad-x, 0.52in));
+		padding-left:  var(--page-pad-x, 0.52in);
+		padding-right: var(--page-pad-x, 0.52in);
 
 		margin-top: var(--r-chap-header-pad, 0.5rem);
 		margin-bottom: var(--r-chap-header-mb, 1.5rem);
@@ -1495,7 +1624,10 @@
 	}
 
 	.chapter-label {
-		display: block;
+		/* A preset may drop the eyebrow entirely — a manual's chapter opener
+		   names itself and does not need "CHAPTER 1" announced above it.
+		   Defaults to block, so every existing preset is unchanged. */
+		display: var(--r-label-display, block);
 		font-family: var(--r-label-font, var(--font-sans));
 		font-size: 0.75rem;
 		text-transform: var(--r-label-transform, uppercase);
@@ -1779,6 +1911,10 @@
 		color: #b45309;
 	}
 	.chapter-body :global(.callout-box__content) {
+		/* Serif explains, sans acts: a callout is scanned, not read, so a preset
+		   may set it in sans against a serif body. Defaults to `inherit` so every
+		   preset that doesn't opt in keeps the body face it always had. */
+		font-family: var(--r-callout-font, inherit);
 		font-size: 0.95rem;
 		line-height: 1.6;
 		color: var(--r-text, #1a1612);

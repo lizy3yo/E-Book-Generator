@@ -80,6 +80,22 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 		const accent        = cs.authorColor  || '#8E7453';
 		const titleColor    = cs.titleColor   || '#1A1612';
 		const alignment     = cs.alignment    || 'left';
+
+		// The callout box, resolved once from the active preset.
+		//
+		// Resolved here rather than inline because the box is styled TWICE below:
+		// once on the hidden measurer that decides where pages break, and once on
+		// the exported page. If those two disagree by so much as a border width,
+		// the paginator budgets for a box that isn't the one it prints, and blocks
+		// land on the wrong pages. One source, both consumers.
+		const calloutBg     = activeBook.interiorDesign?.['--r-callout-bg']           ?? '#faf7f2';
+		const calloutBdW    = activeBook.interiorDesign?.['--r-callout-border-width'] ?? '3.5px';
+		const calloutBdC    = activeBook.interiorDesign?.['--r-callout-border-color'] ?? accent;
+		const calloutRadius = activeBook.interiorDesign?.['--r-callout-border-radius'] ?? '4px';
+		const calloutTitleC = activeBook.interiorDesign?.['--r-callout-title-color']  ?? accent;
+		// Serif explains, sans acts — a preset may set the box in sans against a
+		// serif body. Falls back to the body face, which is what it always was.
+		const calloutFont   = activeBook.interiorDesign?.['--r-callout-font']         ?? bodyFontCss;
 		const ruleW  = alignment === 'center' ? '60px' : alignment === 'right' ? '120px' : '100%';
 		const ruleML = alignment === 'center' ? 'auto' : alignment === 'right' ? 'auto' : '0';
 		const ruleMR = alignment === 'center' ? 'auto' : alignment === 'right' ? '0'    : 'auto';
@@ -113,15 +129,25 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 				.join('');
 
 			// ─ Chapters: re-paginate synchronously from raw markdown ─
-			const PAGE_W_PX  = 816;  // 8.5in @ 96dpi
-			const PAGE_H_PX  = 1056; // 11in  @ 96dpi
-			const PAD_TOP    = 96;   // 1in
-			const PAD_BOTTOM = 96;   // 1in
-			const PAD_LEFT   = 144;  // 1.5in (spine)
-			const PAD_RIGHT  = 120;  // 1.25in
-			const HDR_H      = 40;   // running header + margin
-			const FTR_H      = 40;   // running footer + margin
-			const BODY_H = PAGE_H_PX - PAD_TOP - PAD_BOTTOM - HDR_H - FTR_H - 48; // Subtract 48px for .chapter-content padding-top (0.5in)
+			// 6 x 9 in — trade paperback, the size a printed non-fiction book
+			// actually is. Was 8.5 x 11 (US Letter), which reads as a document.
+			// These MUST match .book-page-card in the reader: the PDF is a bitmap
+			// capture of that element, so a mismatch stretches every page.
+			const PAGE_W_PX  = 576;  // 6in @ 96dpi
+			const PAGE_H_PX  = 864;  // 9in @ 96dpi
+			// Symmetric 0.52in sides, measured off a real 6x9 manual — a 4.96in
+			// column, ~66 characters at 12pt. The old 1.5in gutter + 1.25in
+			// fore-edge would leave a 3.25in ribbon on a 6in page, which is why
+			// the trim and the margins had to change in one go rather than one
+			// after the other.
+			const PAD_TOP    = 58;   // 0.60in
+			const PAD_BOTTOM = 48;   // 0.50in
+			const PAD_LEFT   = 50;   // 0.52in
+			const PAD_RIGHT  = 50;   // 0.52in
+			const HDR_H      = 32;   // running header + margin
+			const FTR_H      = 32;   // running footer + margin
+			const CONTENT_PAD_TOP = 34; // .chapter-content padding-top (0.35in)
+			const BODY_H = PAGE_H_PX - PAD_TOP - PAD_BOTTOM - HDR_H - FTR_H - CONTENT_PAD_TOP;
 			const BODY_W = PAGE_W_PX - PAD_LEFT - PAD_RIGHT;
 
 			// A diagram SVG carries a viewBox, so it scales to whatever box it is
@@ -200,14 +226,14 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 				.pdf-measurer-container .tip-box,
 				.pdf-measurer-container .warning-box,
 				.pdf-measurer-container .key-rule-box {
-					border-radius: 4px;
+					border-radius: ${calloutRadius};
 					padding: 1.25rem 1.5rem;
 					margin: 2rem 0;
 					box-sizing: border-box;
 				}
 				.pdf-measurer-container .callout-box {
-					background-color: #faf7f2;
-					border-left: 3.5px solid ${accent};
+					background-color: ${calloutBg};
+					border-left: ${calloutBdW} solid ${calloutBdC};
 				}
 				.pdf-measurer-container .tip-box {
 					background-color: #ecfdf5;
@@ -234,7 +260,7 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 					color: ${accent};
 				}
 				.pdf-measurer-container .callout-box .callout-box__title {
-					color: ${accent};
+					color: ${calloutTitleC};
 				}
 				.pdf-measurer-container .tip-box .callout-box__title {
 					color: #047857;
@@ -246,6 +272,7 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 					color: #b45309;
 				}
 				.pdf-measurer-container .callout-box__content {
+					font-family: ${calloutFont};
 					font-size: 0.95rem;
 					line-height: 1.6;
 					color: #1a1612;
@@ -435,15 +462,48 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 				const pages: Page[] = [];
 				let cur: string[] = [];
 				let curH = 0;
-				const firstPageReserve = 160 + (mappedIllust ? 280 : 0);
-				let budget = BODY_H - firstPageReserve;
-
 				const measurer = document.createElement('div');
 				measurer.className = 'pdf-measurer-container';
 				measurer.style.cssText =
 					`position:absolute;visibility:hidden;width:${BODY_W}px;` +
 					`font-size:12pt;line-height:1.85;font-family:${bodyFontCss};`;
 				document.body.appendChild(measurer);
+
+				// ── What the opener costs before a block is placed ──────────────
+				//
+				// The header and illustration are emitted by the template above,
+				// not as blocks, so this loop never measures them — their height
+				// has to be reserved or prose gets packed into space already
+				// spoken for and the page clips it mid-word at the foot.
+				//
+				// This was a flat `160 + (illust ? 280 : 0)`. The illustration
+				// alone is 240pt of image plus 16pt margins top and bottom —
+				// about 363px, not 280 — and the header's height depends entirely
+				// on how many lines the title wraps to. A three-line title is
+				// triple a one-line one, which is precisely what a constant
+				// cannot say. So the title is measured, in its own type.
+				const titleMeasurer = document.createElement('div');
+				titleMeasurer.style.cssText =
+					`position:absolute;visibility:hidden;width:${BODY_W}px;` +
+					`font-family:${titleFontCss};` +
+					`font-size:${activeBook.interiorDesign?.['--r-chap-title-size'] ?? '20pt'};` +
+					`font-weight:${activeBook.interiorDesign?.['--r-title-weight'] ?? '700'};` +
+					`line-height:1.25;`;
+				document.body.appendChild(titleMeasurer);
+
+				const showsLabel = activeBook.interiorDesign?.['--r-label-display'] !== 'none';
+				// .chapter-label 8pt + 6pt margin ≈ 21px · .chapter-title 12pt
+				// bottom margin ≈ 16px · .chapter-rule ≈ 2px
+				const OPENER_CHROME  = (showsLabel ? 21 : 0) + 16 + 2;
+				// .illustration img max-height 240pt (320px) + 16pt margins (43px)
+				const OPENER_ILLUST  = 363;
+
+				titleMeasurer.textContent = c.title ?? '';
+				const firstPageReserve =
+					OPENER_CHROME + titleMeasurer.offsetHeight + (mappedIllust ? OPENER_ILLUST : 0);
+				document.body.removeChild(titleMeasurer);
+
+				let budget = BODY_H - firstPageReserve;
 
 				for (const blk of blocks) {
 					measurer.innerHTML = blk;
@@ -467,7 +527,14 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 						pages.push({ blocks: cur, isFirst: pages.length === 0 });
 						cur = []; curH = 0; budget = BODY_H;
 					}
-					if (curH + h > budget && cur.length > 0) {
+					// `cur.length > 0` alone is not the right guard on the FIRST
+					// page: the header and illustration have already claimed it
+					// without contributing a block, so the sheet can be full while
+					// `cur` is still empty. `budget < BODY_H` is true only on that
+					// first page, and is what lets the opening paragraph move to
+					// page 2 instead of being clipped under the illustration.
+					const pageIsOccupied = cur.length > 0 || budget < BODY_H;
+					if (curH + h > budget && pageIsOccupied) {
 						pages.push({ blocks: cur, isFirst: pages.length === 0 });
 						cur = []; curH = 0; budget = BODY_H;
 					}
@@ -543,10 +610,10 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 	-webkit-print-color-adjust: exact;
 	print-color-adjust: exact;
 	}
-	@page { size: 8.5in 11in; margin: 0; }
+	@page { size: 6in 9in; margin: 0; }
 	.cover-page {
-	width: 816px;
-	height: 1056px;
+	width: 576px;
+	height: 864px;
 	position: relative;
 	display: flex;
 	flex-direction: column;
@@ -573,9 +640,9 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 	.cover-author   { font-style: italic; font-size: ${cs.authorSize ?? 16}px; color: ${cs.authorColor ?? '#aaa'}; }
 
 	.toc-page {
-	width: 8.5in;
-	min-height: 11in;
-	padding: 1in 1.5in 1in 1.5in;
+	width: 6in;
+	min-height: 9in;
+	padding: 0.6in 0.52in 0.5in 0.52in;
 	page-break-after: always;
 	box-sizing: border-box;
 	}
@@ -583,9 +650,11 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 	.toc-row { padding: 7px 0; border-bottom: 1pt dotted #D9CFC2; font-size: 11pt; }
 
 	.chapter-section {
-	width: 8.5in;
-	height: 11in;
-	padding: 1in 1.25in 1in 1.5in;
+	width: 6in;
+	height: 9in;
+	/* Mirrors .book-page-card in the reader. These two must not drift: the PDF
+	   is a bitmap capture of that element into this sheet. */
+	padding: 0.6in 0.52in 0.5in 0.52in;
 	display: flex;
 	flex-direction: column;
 	justify-content: space-between;
@@ -625,6 +694,7 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 	padding: ${activeBook.interiorDesign?.['--r-chap-header-pd'] ?? '0'};
 	}
 	.chapter-label  {
+		display: ${activeBook.interiorDesign?.['--r-label-display'] ?? 'block'};
 		font-family: ${activeBook.interiorDesign?.['--r-label-font'] ?? `'Inter',sans-serif`};
 		font-size: 8pt;
 		text-transform: ${activeBook.interiorDesign?.['--r-label-transform'] ?? 'uppercase'};
@@ -634,7 +704,6 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 		padding: ${activeBook.interiorDesign?.['--r-label-padding'] ?? '0'};
 		border-radius: ${activeBook.interiorDesign?.['--r-label-border-radius'] ?? '0'};
 		margin-bottom: 6pt;
-		display: inline-block;
 	}
 	.chapter-title  {
 		font-family: ${activeBook.interiorDesign?.['--r-title-font'] ?? titleFontCss};
@@ -891,14 +960,14 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 	}
 
 	.callout-box, .tip-box, .warning-box, .key-rule-box {
-		border-radius: 4px;
+		border-radius: ${calloutRadius};
 		padding: 1.25rem 1.5rem;
 		margin: 2rem 0;
 		box-sizing: border-box;
 	}
 	.callout-box {
-		background-color: #faf7f2;
-		border-left: 3.5px solid ${accent};
+		background-color: ${calloutBg};
+		border-left: ${calloutBdW} solid ${calloutBdC};
 	}
 	.tip-box {
 		background-color: #ecfdf5;
@@ -922,7 +991,7 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 		display: block;
 	}
 	.callout-box .callout-box__title {
-		color: ${accent};
+		color: ${calloutTitleC};
 	}
 	.tip-box .callout-box__title {
 		color: #047857;
@@ -934,6 +1003,7 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 		color: #b45309;
 	}
 	.callout-box__content {
+		font-family: ${calloutFont};
 		font-size: 0.95rem;
 		line-height: 1.6;
 		color: #1a1612;
