@@ -89,7 +89,15 @@ Do not include any markdown formatting, code block markers (like \`\`\`json), or
 					if (response.ok) {
 						const data = await response.json();
 						responseText = (data.content?.find((c: any) => c.type === 'text')?.text || '').trim();
-						
+						// This "mock" path still makes a REAL, billed Claude call to
+						// fabricate results, so its token usage is returned for the
+						// cost total — it is a Claude cost, not an Exa search.
+						const usage = {
+							model,
+							inputTokens: data.usage?.input_tokens ?? 0,
+							outputTokens: data.usage?.output_tokens ?? 0
+						};
+
 						// Clean markdown formatting if any was returned
 						let cleanJson = responseText;
 						if (cleanJson.startsWith('```json')) {
@@ -110,6 +118,7 @@ Do not include any markdown formatting, code block markers (like \`\`\`json), or
 									url: item.url || '#',
 									snippet: item.snippet || 'No snippet available.'
 								})),
+								usage,
 								source: 'mock'
 							});
 						}

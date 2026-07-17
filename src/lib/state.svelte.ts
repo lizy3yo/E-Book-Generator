@@ -290,6 +290,51 @@ class GlobalState {
 		this.persistBook(updatedBook);
 	}
 
+	/**
+	 * Re-derive a book's top-level status from its chapters.
+	 *
+	 * The status is written once, at the end of the writing pipeline: 'failed'
+	 * if any chapter failed there, 'completed' otherwise. But a chapter that
+	 * failed can be fixed on its own afterwards — regenerated with Redo, or
+	 * edited by hand in the reader until it has content — and nothing recomputed
+	 * the book status. So a book whose every chapter is now complete kept showing
+	 * "Failed" in the library. This closes that gap; call it after any mutation
+	 * that changes a single chapter's status.
+	 *
+	 * Guardrails:
+	 *  • Only acts once the book has chapters and has entered the writing phase
+	 *    (writing / failed / completed). Earlier stages (idle / researching /
+	 *    outlining) own their own status and must not be overwritten by a book
+	 *    that simply has no chapters yet.
+	 *  • Never overrides an in-flight run: while any chapter is still writing /
+	 *    verifying / pending the runner is mid-pipeline and owns the status.
+	 */
+	recomputeBookStatus(bookId: string) {
+		const bookIndex = this.books.findIndex(b => b.id === bookId);
+		if (bookIndex === -1) return;
+		const book = this.books[bookIndex];
+
+		if (book.chapters.length === 0) return;
+		if (book.status !== 'writing' && book.status !== 'failed' && book.status !== 'completed') return;
+
+		const inFlight = book.chapters.some(
+			(c) => c.status === 'writing' || c.status === 'verifying' || c.status === 'pending'
+		);
+		if (inFlight) return;
+
+		// "Done" means the chapter has content the reader can actually see. A
+		// failed chapter with no content keeps the book failed; the moment it
+		// gains content — via Redo or a manual edit — it counts, which is exactly
+		// the behaviour asked for.
+		const allDone = book.chapters.every((c) => c.status === 'completed' && !!c.content?.trim());
+		const next: Book['status'] = allDone ? 'completed' : 'failed';
+		if (next === book.status) return;
+
+		const updatedBook: Book = { ...book, status: next, updatedAt: new Date().toISOString() };
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
+	}
+
 	updateBookChapters(bookId: string, chapters: Chapter[]) {
 		const bookIndex = this.books.findIndex(b => b.id === bookId);
 		if (bookIndex === -1) return;
@@ -372,6 +417,9 @@ class GlobalState {
 		// Replace the top-level array so the $state proxy fires a root-level change
 		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
 		this.persistBook(updatedBook);
+
+		// A chapter that now has content can lift a "Failed" book back to "Ready".
+		this.recomputeBookStatus(bookId);
 	}
 
 	/**
