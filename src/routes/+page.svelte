@@ -9,6 +9,8 @@
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import ChapterPlanError from '$lib/components/ChapterPlanError.svelte';
 	import CoverPreviewDialog from '$lib/components/CoverPreviewDialog.svelte';
+	import BookCostDialog from '$lib/components/BookCostDialog.svelte';
+	import { claudeCallCost, ESTIMATED_COST_PER_IMAGE, ESTIMATED_COST_PER_SEARCH } from '$lib/pricing';
 	import { generationRunner } from '$lib/generationRunner.svelte';
 	import { AI_CONCEPT_COUNT, hasCoverBrief } from '$lib/coverStyles';
 	import { fileToImagePayload } from '$lib/imageInput';
@@ -88,6 +90,18 @@
 	});
 
 	const active = $derived(globalState.activeBook);
+
+	// ── Book cost badge ──────────────────────────────────────────────────────
+	let showCostDialog = $state(false);
+	const activeBookCost = $derived.by(() => {
+		const usage = active?.usage;
+		if (!usage) return 0;
+		const claudeTotal = Object.entries(usage.claude).reduce(
+			(sum, [model, u]) => sum + claudeCallCost(model, u.inputTokens, u.outputTokens),
+			0
+		);
+		return claudeTotal + usage.images * ESTIMATED_COST_PER_IMAGE + usage.searches * ESTIMATED_COST_PER_SEARCH;
+	});
 
 	// ── Run state ─────────────────────────────────────────────────────────────
 	/**
@@ -1024,7 +1038,14 @@
 						</div>
 					{/if}
 
-					<h2 class="font-serif">{active.title}</h2>
+					<div class="complete-title-row">
+						<h2 class="font-serif">{active.title}</h2>
+						<button
+							class="cost-badge"
+							onclick={() => showCostDialog = true}
+							title="Estimated AI generation cost for this book"
+						>~{activeBookCost < 0.01 && activeBookCost > 0 ? '<$0.01' : `$${activeBookCost.toFixed(2)}`}</button>
+					</div>
 					<p class="font-serif">Your ebook is complete — {active.chapters.length} chapters written, verified, and illustrated.</p>
 
 					<div class="complete-actions">
@@ -1061,6 +1082,12 @@
 
 	</main>
 </div>
+
+<BookCostDialog
+	open={showCostDialog}
+	usage={active?.usage}
+	onClose={() => showCostDialog = false}
+/>
 
 <!-- Delete confirmation dialog — rendered outside the layout flow -->
 <ConfirmDialog
@@ -2103,6 +2130,21 @@
 	}
 	.complete-card h2 { font-size: 2rem; margin: 0; }
 	.complete-card > p { color: var(--text-muted); font-size: 0.95rem; margin: 0; }
+	.complete-title-row { display: flex; align-items: center; justify-content: center; gap: 0.6rem; flex-wrap: wrap; }
+	.complete-title-row h2 { margin: 0; }
+	.cost-badge {
+		font-family: var(--font-sans, 'Inter', sans-serif);
+		font-size: 0.78rem;
+		font-weight: 600;
+		color: var(--accent, #8E7453);
+		background: var(--accent-light);
+		border: 1px solid var(--accent, #8E7453);
+		border-radius: 999px;
+		padding: 0.2rem 0.65rem;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+	.cost-badge:hover { opacity: 0.85; }
 	.complete-actions { display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center; }
 	.complete-chapter-summary { width: 100%; text-align: left; margin-top: 1rem; border-top: 1px solid var(--border-color); padding-top: 1rem; }
 	.complete-chapter-summary h4 { font-size: 0.95rem; margin-bottom: 0.75rem; color: var(--text-muted); }

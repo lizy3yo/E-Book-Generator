@@ -613,6 +613,7 @@
 				})
 			});
 			const data = await res.json();
+			if (data.usage) globalState.addBookUsage(activeBook.id, { claude: data.usage });
 			if (data.success && data.design) {
 				globalState.updateBookCoverDesign(activeBook.id, { ...data.design, signature: sig });
 				// Re-apply the preset so the new colours land immediately rather
@@ -654,6 +655,7 @@
 				})
 			});
 			const data = await res.json();
+			if (data.usage) globalState.addBookUsage(activeBook.id, { claude: data.usage });
 			if (data.success && data.design) {
 				const designWithSig = {
 					...data.design,

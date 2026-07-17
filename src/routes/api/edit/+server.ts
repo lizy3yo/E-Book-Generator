@@ -425,6 +425,11 @@ COVER SETTINGS: ${JSON.stringify(coverSettings || {})}`;
 
 		const data = await response.json();
 		const text = (data.content?.find((c: any) => c.type === 'text')?.text || '').trim();
+		const usage = {
+			model: selectedModel,
+			inputTokens: data.usage?.input_tokens ?? 0,
+			outputTokens: data.usage?.output_tokens ?? 0
+		};
 
 		let contentText = text;
 		let designOverrides: any = null;
@@ -450,23 +455,23 @@ COVER SETTINGS: ${JSON.stringify(coverSettings || {})}`;
 		}
 
 		if (action === 'edit-chapter' || action === 'reconstruct-chapter') {
-			return json({ success: true, content: contentText, design: designOverrides, source: 'live' });
+			return json({ success: true, content: contentText, design: designOverrides, usage, source: 'live' });
 		}
 		if (action === 'edit-page' || action === 'reconstruct-page' || action === 'add-page') {
-			return json({ success: true, pageContent: contentText, design: designOverrides, source: 'live' });
+			return json({ success: true, pageContent: contentText, design: designOverrides, usage, source: 'live' });
 		}
 		if (action === 'edit-illustration') {
 			// Re-append the ban rather than trusting the refinement to have carried
 			// it. The instruction may have asked for a caption, or the model may
 			// simply have dropped the clause while rewriting — either way the image
 			// model would letter the plate, and it cannot spell.
-			return json({ success: true, prompt: `${text.trim()} ${NO_TEXT_CLAUSE}`, source: 'live' });
+			return json({ success: true, prompt: `${text.trim()} ${NO_TEXT_CLAUSE}`, usage, source: 'live' });
 		}
 		if (action === 'edit-diagram') {
-			return json({ success: true, diagramRaw: text, source: 'live' });
+			return json({ success: true, diagramRaw: text, usage, source: 'live' });
 		}
 		if (action === 'edit-html-block') {
-			return json({ success: true, htmlBlock: text, source: 'live' });
+			return json({ success: true, htmlBlock: text, usage, source: 'live' });
 		}
 
 		throw new Error('Unhandled action after API response.');

@@ -249,7 +249,12 @@ Format: {"analysis": "...", "design": {...}}`;
 			const fullText = prefill + text;
 			const result = JSON.parse(fullText);
 			console.log('[design-interior] visual analysis of cover:', result.analysis);
-			return json({ success: true, design: result.design });
+			const usage = {
+				model,
+				inputTokens: data.usage?.input_tokens ?? 0,
+				outputTokens: data.usage?.output_tokens ?? 0
+			};
+			return json({ success: true, design: result.design, usage });
 		} else {
 			const errText = await res.text();
 			throw new Error(`Claude design generation failed (${res.status}): ${errText}`);

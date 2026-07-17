@@ -301,7 +301,12 @@ Format: {"reply":"...","variantIndex":null,"mutations":{}}`;
 		if (claudeRes.ok) {
 			const data = await claudeRes.json();
 			const raw = (data.content?.find((c: any) => c.type === 'text')?.text || '').trim();
-			return json({ success: true, ...ensureImagePrompt(parseResponse(raw)), source: 'claude' });
+			const usage = {
+				model,
+				inputTokens: data.usage?.input_tokens ?? 0,
+				outputTokens: data.usage?.output_tokens ?? 0
+			};
+			return json({ success: true, ...ensureImagePrompt(parseResponse(raw)), usage, source: 'claude' });
 		}
 
 		// Open circuit on hard billing/auth failures

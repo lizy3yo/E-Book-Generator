@@ -1,4 +1,4 @@
-import type { Book, ApiKeys, StepLog, Chapter, CoverSettings, CoverOption, PipelineStage, BibleEntry, IllustrationLabel, BookFormat } from './types';
+import type { Book, ApiKeys, StepLog, Chapter, CoverSettings, CoverOption, PipelineStage, BibleEntry, IllustrationLabel, BookFormat, BookUsage } from './types';
 import type { CoverDesign } from './coverPalette';
 import { supabase } from './supabase';
 
@@ -314,6 +314,38 @@ class GlobalState {
 		if (bookIndex === -1) return;
 
 		const updatedBook: Book = { ...this.books[bookIndex], interiorDesign, updatedAt: new Date().toISOString() };
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
+	}
+
+	/**
+	 * Add one AI call's cost to a book's running total. `claude` carries real
+	 * token usage from an Anthropic response and is summed per model; `images`
+	 * / `searches` are call counts for providers that report no usage data —
+	 * their cost is only ever an estimate (see $lib/pricing).
+	 */
+	addBookUsage(bookId: string, entry: { claude?: { model: string; inputTokens: number; outputTokens: number } | null; images?: number; searches?: number }) {
+		const bookIndex = this.books.findIndex(b => b.id === bookId);
+		if (bookIndex === -1) return;
+
+		const current: BookUsage = this.books[bookIndex].usage ?? { claude: {}, images: 0, searches: 0 };
+		const claude = { ...current.claude };
+		if (entry.claude) {
+			const { model, inputTokens, outputTokens } = entry.claude;
+			const prior = claude[model] ?? { inputTokens: 0, outputTokens: 0, calls: 0 };
+			claude[model] = {
+				inputTokens: prior.inputTokens + inputTokens,
+				outputTokens: prior.outputTokens + outputTokens,
+				calls: prior.calls + 1
+			};
+		}
+		const usage: BookUsage = {
+			claude,
+			images: current.images + (entry.images ?? 0),
+			searches: current.searches + (entry.searches ?? 0)
+		};
+
+		const updatedBook: Book = { ...this.books[bookIndex], usage, updatedAt: new Date().toISOString() };
 		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
 		this.persistBook(updatedBook);
 	}

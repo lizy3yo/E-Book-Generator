@@ -184,6 +184,7 @@ class GenerationRunner {
 						useMockMode: keys.useMockMode,
 						isCover:     true
 					});
+					if (imageUrl && !keys.useMockMode && keys.imageKey) globalState.addBookUsage(book.id, { images: 1 });
 				} catch (err: any) {
 					// Keep the slot: an empty imageUrl renders as a failed card the
 					// user can retry, which beats a cover silently going missing.
@@ -260,6 +261,7 @@ class GenerationRunner {
 			});
 			const data = await res.json();
 			if (!data.success) throw new Error(data.error || 'Could not generate cover concepts.');
+			if (data.usage) globalState.addBookUsage(bookId, { claude: data.usage });
 
 			const specs: CoverOption[] = (data.concepts as any[]).map(c => ({
 				id:       crypto.randomUUID(),
@@ -315,6 +317,7 @@ class GenerationRunner {
 				useMockMode: keys.useMockMode,
 				isCover:     true
 			});
+			if (imageUrl && !keys.useMockMode && keys.imageKey) globalState.addBookUsage(bookId, { images: 1 });
 			globalState.replaceCoverOption(bookId, optionIndex, { ...option, prompt, imageUrl });
 		} catch (err: any) {
 			console.error(err);
@@ -387,6 +390,7 @@ class GenerationRunner {
 			});
 			const data = await res.json();
 			if (!data.success) throw new Error(data.error || 'Could not read that cover.');
+			if (data.usage) globalState.addBookUsage(bookId, { claude: data.usage });
 
 			globalState.setCoverReferenceFormat(bookId, data.format, fileName);
 		} catch (err: any) {
@@ -424,6 +428,7 @@ class GenerationRunner {
 				})
 			});
 			const researchData = await researchRes.json();
+			if (researchData.success) globalState.addBookUsage(book.id, { searches: 1 });
 			const searchFacts = researchData.success
 				? (researchData.results as any[]).map(f => `[${f.title}] ${f.snippet}`).join('\n\n')
 				: '';
@@ -466,6 +471,7 @@ class GenerationRunner {
 				});
 				const fmtData = await fmtRes.json();
 				if (fmtData.success && fmtData.format) format = fmtData.format as BookFormat;
+				if (fmtData.usage) globalState.addBookUsage(book.id, { claude: fmtData.usage });
 			} catch { /* free */ }
 
 			globalState.updateBookFormat(book.id, format);
@@ -497,6 +503,7 @@ class GenerationRunner {
 			const outlineData = await outlineRes.json();
 
 			if (!outlineData.success) throw new Error(outlineData.error || 'Outline failed.');
+			if (outlineData.usage) globalState.addBookUsage(book.id, { claude: outlineData.usage });
 
 			const chapters: Chapter[] = outlineData.chapters;
 			globalState.updateBookChapters(book.id, chapters);
@@ -550,6 +557,7 @@ class GenerationRunner {
 				})
 			});
 			const rd = await r.json();
+			if (rd.success) globalState.addBookUsage(book.id, { searches: 1 });
 			bookLevelFacts = rd.success
 				? (rd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
 				: '';
@@ -597,6 +605,7 @@ class GenerationRunner {
 						})
 					});
 					const crd = await cr.json();
+					if (crd.success) globalState.addBookUsage(book.id, { searches: 1 });
 					chapterFacts = crd.success
 						? (crd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
 						: '';
@@ -725,6 +734,7 @@ class GenerationRunner {
 		});
 		const data = await res.json();
 		if (!data.success) throw new Error(data.error || 'distillation failed');
+		if (data.usage) globalState.addBookUsage(book.id, { claude: data.usage });
 		return (data.entries ?? []) as BibleEntry[];
 	}
 
@@ -796,6 +806,7 @@ class GenerationRunner {
 		});
 		const draftData = await draftRes.json();
 		if (!draftData.success) throw new Error(draftData.error || `Chapter ${chap.order} draft failed.`);
+		if (draftData.usage) globalState.addBookUsage(bookId, { claude: draftData.usage });
 
 		// Verify
 		const current = [...globalState.books.find(b => b.id === bookId)!.chapters];
@@ -821,6 +832,7 @@ class GenerationRunner {
 			})
 		});
 		const verifyData = await verifyRes.json();
+		if (verifyData.usage) globalState.addBookUsage(bookId, { claude: verifyData.usage });
 		const finalContent = verifyData.success ? verifyData.verifiedContent : draftData.content;
 
 		// Illustration — art-directed from the finished chapter and its research
@@ -852,6 +864,8 @@ class GenerationRunner {
 			);
 			illustUrl    = made.url;
 			illustLabels = made.labels;
+			made.claudeUsage.forEach(u => globalState.addBookUsage(bookId, { claude: u }));
+			if (made.imageBilled) globalState.addBookUsage(bookId, { images: 1 });
 		} catch { /* non-fatal */ }
 
 		// Commit
@@ -894,6 +908,7 @@ class GenerationRunner {
 				})
 			});
 			const rd = await r.json();
+			if (rd.success) globalState.addBookUsage(bookId, { searches: 1 });
 			bookLevelFacts = rd.success
 				? (rd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
 				: '';
@@ -912,6 +927,7 @@ class GenerationRunner {
 				})
 			});
 			const crd = await cr.json();
+			if (crd.success) globalState.addBookUsage(bookId, { searches: 1 });
 			chapterFacts = crd.success
 				? (crd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
 				: '';

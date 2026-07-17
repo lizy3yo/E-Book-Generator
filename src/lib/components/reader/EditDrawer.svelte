@@ -183,6 +183,7 @@
 					})
 				});
 				const rData = await rRes.json();
+				if (rData.success) globalState.addBookUsage(activeBook.id, { searches: 1 });
 				if (rData.success && rData.results?.length) {
 					const newFacts = (rData.results as any[])
 						.map((f: any) => `[${f.title}] ${f.snippet}`)
@@ -214,6 +215,7 @@
 				});
 				const data = await res.json();
 				if (!data.success) throw new Error(data.error || 'Reconstruct failed');
+				if (data.usage) globalState.addBookUsage(activeBook.id, { claude: data.usage });
 				globalState.updateChapterContent(activeBook.id, editTarget.chapterId, data.content, 'completed');
 				editTarget = { ...editTarget, chapterContent: data.content };
 
@@ -238,6 +240,7 @@
 				});
 				const data = await res.json();
 				if (!data.success) throw new Error(data.error || 'Reconstruct failed');
+				if (data.usage) globalState.addBookUsage(activeBook.id, { claude: data.usage });
 				const updatedContent = splicePage(
 					editTarget.chapterContent,
 					editTarget.pageStartIdx ?? 0,
@@ -265,6 +268,8 @@
 					globalState.apiKeys.useMockMode,
 					useRealisticIllustration
 				);
+				made.claudeUsage.forEach(u => globalState.addBookUsage(activeBook.id, { claude: u }));
+				if (made.imageBilled) globalState.addBookUsage(activeBook.id, { images: 1 });
 
 				// The labels go with the image. They are coordinates into this specific
 				// picture, so the previous set must be replaced, never carried over.
@@ -298,6 +303,8 @@
 						globalState.apiKeys.useMockMode,
 						useRealisticIllustration
 					);
+					made.claudeUsage.forEach(u => globalState.addBookUsage(activeBook.id, { claude: u }));
+					if (made.imageBilled) globalState.addBookUsage(activeBook.id, { images: 1 });
 
 					// Keep the diagram's own title — the author wrote it, and it names the
 					// point the plate is still making.
@@ -352,6 +359,7 @@
 					});
 					const data = await res.json();
 					if (!data.success) throw new Error(data.error || 'Reconstruct failed');
+					if (data.usage) globalState.addBookUsage(activeBook.id, { claude: data.usage });
 					const newRaw = data.diagramRaw ?? data.htmlBlock ?? editTarget.diagramRaw ?? '';
 					const updatedContent = spliceVisualBlock(
 						editTarget.chapterContent, kind,
@@ -398,6 +406,7 @@
 					})
 				});
 				const rData = await rRes.json();
+				if (rData.success) globalState.addBookUsage(activeBook.id, { searches: 1 });
 				if (rData.success && rData.results?.length) {
 					const newFacts = (rData.results as any[])
 						.map((f: any) => `[${f.title}] ${f.snippet}`)
@@ -426,6 +435,7 @@
 			});
 			const data = await res.json();
 			if (!data.success) throw new Error(data.error || 'Add page failed');
+			if (data.usage) globalState.addBookUsage(activeBook.id, { claude: data.usage });
 
 			const insertAt = editTarget.pageEndIdx ?? editTarget.chapterContent.split(/\n\n+/).length;
 			const mdBlocks = editTarget.chapterContent.split(/\n\n+/);
@@ -479,6 +489,7 @@
 				});
 				const data = await res.json();
 				if (!data.success) throw new Error(data.error || 'Edit failed');
+				if (data.usage) globalState.addBookUsage(activeBook.id, { claude: data.usage });
 				globalState.updateChapterContent(activeBook.id, editTarget.chapterId, data.content, 'completed');
 				if (data.design) {
 					globalState.updateBookInteriorDesign(activeBook.id, {
@@ -512,6 +523,7 @@
 				});
 				const data = await res.json();
 				if (!data.success) throw new Error(data.error || 'Edit failed');
+				if (data.usage) globalState.addBookUsage(activeBook.id, { claude: data.usage });
 				const updatedContent = splicePage(
 					editTarget.chapterContent,
 					editTarget.pageStartIdx ?? 0,
@@ -546,6 +558,7 @@
 				});
 				const promptData = await promptRes.json();
 				if (!promptData.success) throw new Error(promptData.error || 'Prompt refinement failed');
+				if (promptData.usage) globalState.addBookUsage(activeBook.id, { claude: promptData.usage });
 				const newIllustUrl = await generateImage({
 					prompt:      promptData.prompt,
 					apiKey:      globalState.apiKeys.imageKey,
@@ -553,11 +566,14 @@
 					useMockMode: globalState.apiKeys.useMockMode,
 					isCover:     false
 				});
+				if (newIllustUrl && !globalState.apiKeys.useMockMode && globalState.apiKeys.imageKey) {
+					globalState.addBookUsage(activeBook.id, { images: 1 });
+				}
 
 				// Re-label against the NEW picture. The old labels are coordinates into
 				// the image this one just replaced, so keeping them would leave every
 				// callout pointing at a part that is no longer in the frame.
-				const newLabels = await labelIllustration(
+				const labelResult = await labelIllustration(
 					activeBook,
 					{
 						chapterTitle:   editTarget.chapterTitle,
@@ -570,6 +586,8 @@
 					globalState.apiKeys,
 					globalState.apiKeys.useMockMode
 				);
+				if (labelResult.usage) globalState.addBookUsage(activeBook.id, { claude: labelResult.usage });
+				const newLabels = labelResult.labels;
 				globalState.updateChapterIllustration(
 					activeBook.id, editTarget.chapterId, newIllustUrl, newLabels
 				);
@@ -595,6 +613,8 @@
 						globalState.apiKeys.useMockMode,
 						useRealisticIllustration
 					);
+					made.claudeUsage.forEach(u => globalState.addBookUsage(activeBook.id, { claude: u }));
+					if (made.imageBilled) globalState.addBookUsage(activeBook.id, { images: 1 });
 
 					const plateTitle = (
 						editTarget.diagramRaw?.match(/^\s*title:\s*(.+)$/im)?.[1] ?? editTarget.chapterTitle
@@ -642,6 +662,7 @@
 					});
 					const data = await res.json();
 					if (!data.success) throw new Error(data.error || 'Edit failed');
+					if (data.usage) globalState.addBookUsage(activeBook.id, { claude: data.usage });
 					const newRaw = data.diagramRaw ?? data.htmlBlock ?? editTarget.diagramRaw ?? '';
 					const updatedContent = spliceVisualBlock(
 						editTarget.chapterContent, kind,

@@ -995,7 +995,7 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 		// forces a tool schema and retries on a quality failure, and keeping that
 		// out of the chapter pipeline below means neither can regress the other.
 		if (action === 'cover-concepts') {
-			const concepts = await generateCoverConcepts({
+			const { concepts, usage: conceptUsage } = await generateCoverConcepts({
 				apiKey:    activeApiKey,
 				model:     selectedModel,
 				systemPrompt,
@@ -1003,7 +1003,12 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 				count:     Math.max(1, Math.min(6, conceptCount || 3)),
 				bookTitle: bookTitle || ''
 			});
-			return json({ success: true, concepts, source: 'live' });
+			return json({
+				success: true,
+				concepts,
+				usage: { model: selectedModel, inputTokens: conceptUsage.inputTokens, outputTokens: conceptUsage.outputTokens },
+				source: 'live'
+			});
 		}
 
 		// Make HTTP request to Anthropic
@@ -1118,6 +1123,7 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 		let response: Response;
 		let responseText = '';
 		let stopReason: string | null = null;
+		let claudeUsage: ClaudeUsage = { inputTokens: 0, outputTokens: 0 };
 		try {
 			response = await fetch('https://api.anthropic.com/v1/messages', {
 				method: 'POST',
@@ -1143,7 +1149,7 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 				throw new Error(`Anthropic API error (${response.status}): ${errText}`);
 			}
 
-			({ text: responseText, stopReason } = useStream
+			({ text: responseText, stopReason, usage: claudeUsage } = useStream
 				? await readTextStream(response)
 				: await readTextResponse(response));
 		} catch (fetchErr: any) {
@@ -1154,6 +1160,10 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 		} finally {
 			clearTimeout(timer);
 		}
+
+		// Real token usage for this call, priced by the caller — attached to
+		// every response below so the client can accumulate a running book cost.
+		const usage = { model: requestModel, inputTokens: claudeUsage.inputTokens, outputTokens: claudeUsage.outputTokens };
 
 		if (stopReason === 'max_tokens') {
 			throw new Error(
@@ -1233,6 +1243,7 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 				return json({
 					success: true,
 					chapters: formattedChapters,
+					usage,
 					source: 'live'
 				});
 			} catch (parseError) {
@@ -1260,7 +1271,7 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 						chapter: chapterOrder || 0
 					}));
 
-				return json({ success: true, entries, source: 'live' });
+				return json({ success: true, entries, usage, source: 'live' });
 			} catch (parseError) {
 				console.error('Failed to parse distill JSON:', responseText);
 				throw new Error('Claude did not return a valid JSON distillation.');
@@ -1268,7 +1279,7 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 		} else if (action === 'analyze-cover-reference') {
 			const format = responseText.trim();
 			if (!format) throw new Error('Claude returned an empty reference analysis. Please try again.');
-			return json({ success: true, format, source: 'live' });
+			return json({ success: true, format, usage, source: 'live' });
 		} else if (action === 'art-direct-illustration') {
 			// The no-text ban is appended in code rather than left to the model to
 			// remember. It is the one rule whose failure is visible on every page —
@@ -1288,6 +1299,7 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 					success: true,
 					subject: String(parsed.subject ?? '').trim(),
 					prompt:  `${brief} ${NO_TEXT_CLAUSE}`,
+					usage,
 					source:  'live'
 				});
 			} catch (parseError) {
@@ -1308,7 +1320,7 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 				const reasoning = String(p.reasoning ?? '').trim();
 
 				if (p.mode !== 'form') {
-					return json({ success: true, format: { mode: 'free', reasoning }, source: 'live' });
+					return json({ success: true, format: { mode: 'free', reasoning }, usage, source: 'live' });
 				}
 
 				const fields = (Array.isArray(p.fields) ? p.fields : [])
@@ -1338,6 +1350,7 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 					return json({
 						success: true,
 						format: { mode: 'free', reasoning: reasoning || 'No clear repeating unit, so the book is written free-form.' },
+						usage,
 						source: 'live'
 					});
 				}
@@ -1352,6 +1365,7 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 						fields,
 						reasoning
 					},
+					usage,
 					source: 'live'
 				});
 			} catch (parseError) {
@@ -1359,6 +1373,7 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 				return json({
 					success: true,
 					format: { mode: 'free', reasoning: 'The shape of this book could not be determined, so it is written free-form.' },
+					usage,
 					source: 'live'
 				});
 			}
@@ -1411,6 +1426,7 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 						sourcePrimary: rawPrimary,
 						sourceAccent: rawAccent
 					},
+					usage,
 					source: 'live'
 				});
 			} catch (parseError) {
@@ -1452,7 +1468,7 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 						side: sideFor(Number(l.x), l.side)
 					}));
 
-				return json({ success: true, labels, source: 'live' });
+				return json({ success: true, labels, usage, source: 'live' });
 			} catch (parseError) {
 				console.error('Failed to parse illustration labels:', responseText);
 				throw new Error('Claude did not return valid illustration labels.');
@@ -1461,6 +1477,7 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 			return json({
 				success: true,
 				content: responseText,
+				usage,
 				source: 'live'
 			});
 		} else if (action === 'verify-chapter') {
@@ -1480,6 +1497,7 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 				success: true,
 				verifiedContent,
 				report,
+				usage,
 				source: 'live'
 			});
 		}
@@ -1730,10 +1748,13 @@ async function generateCoverConcepts(opts: {
 	userPrompt: string;
 	count: number;
 	bookTitle: string;
-}): Promise<CoverConcept[]> {
+}): Promise<{ concepts: CoverConcept[]; usage: ClaudeUsage }> {
 	const tool = coverConceptTool(opts.count);
 	let best: CoverConcept[] = [];
 	let problem = '';
+	// A rejected attempt still costs real tokens — summed across every retry,
+	// not just the one whose concepts are ultimately returned.
+	const usage: ClaudeUsage = { inputTokens: 0, outputTokens: 0 };
 
 	for (let attempt = 1; attempt <= CONCEPT_ATTEMPTS; attempt++) {
 		// The repair pass is stateless — the failure is appended to a fresh
@@ -1780,6 +1801,9 @@ async function generateCoverConcepts(opts: {
 			clearTimeout(timer);
 		}
 
+		usage.inputTokens  += data.usage?.input_tokens ?? 0;
+		usage.outputTokens += data.usage?.output_tokens ?? 0;
+
 		if (data.stop_reason === 'max_tokens') {
 			problem = 'the submission was cut off before it was complete — keep each prompt to one tight paragraph';
 			continue;
@@ -1788,24 +1812,29 @@ async function generateCoverConcepts(opts: {
 		const toolInput = data.content?.find((c: any) => c.type === 'tool_use' && c.name === tool.name)?.input;
 		const { ok, problem: found } = validateConcepts(toolInput, opts.count, opts.bookTitle);
 
-		if (ok.length >= opts.count) return ok;
+		if (ok.length >= opts.count) return { concepts: ok, usage };
 		if (ok.length > best.length) best = ok;
 		problem = found;
 		console.warn(`[cover-concepts] attempt ${attempt} rejected: ${found}`);
 	}
 
-	if (best.length > 0) return best;
+	if (best.length > 0) return { concepts: best, usage };
 	throw new Error(`Claude could not produce usable cover concepts (${problem}). Please try again.`);
 }
 
 // ── Response readers ──────────────────────────────────────────────────────
-type ClaudeText = { text: string; stopReason: string | null };
+type ClaudeUsage = { inputTokens: number; outputTokens: number };
+type ClaudeText = { text: string; stopReason: string | null; usage: ClaudeUsage };
 
 async function readTextResponse(response: Response): Promise<ClaudeText> {
 	const data = await response.json();
 	return {
 		text: data.content?.find((c: any) => c.type === 'text')?.text || '',
-		stopReason: data.stop_reason ?? null
+		stopReason: data.stop_reason ?? null,
+		usage: {
+			inputTokens: data.usage?.input_tokens ?? 0,
+			outputTokens: data.usage?.output_tokens ?? 0
+		}
 	};
 }
 
@@ -1821,6 +1850,10 @@ async function readTextStream(response: Response): Promise<ClaudeText> {
 	let buffer = '';
 	let text = '';
 	let stopReason: string | null = null;
+	// input_tokens arrives once on message_start; output_tokens is repeated,
+	// cumulative on every message_delta — the last one seen is the final count.
+	let inputTokens = 0;
+	let outputTokens = 0;
 
 	while (true) {
 		const { done, value } = await reader.read();
@@ -1845,15 +1878,18 @@ async function readTextStream(response: Response): Promise<ClaudeText> {
 
 			if (payload.type === 'content_block_delta' && payload.delta?.type === 'text_delta') {
 				text += payload.delta.text;
-			} else if (payload.type === 'message_delta' && payload.delta?.stop_reason) {
-				stopReason = payload.delta.stop_reason;
+			} else if (payload.type === 'message_start') {
+				inputTokens = payload.message?.usage?.input_tokens ?? 0;
+			} else if (payload.type === 'message_delta') {
+				if (payload.delta?.stop_reason) stopReason = payload.delta.stop_reason;
+				if (payload.usage?.output_tokens != null) outputTokens = payload.usage.output_tokens;
 			} else if (payload.type === 'error') {
 				throw new Error(`Anthropic stream error: ${payload.error?.message || 'unknown'}`);
 			}
 		}
 	}
 
-	return { text, stopReason };
+	return { text, stopReason, usage: { inputTokens, outputTokens } };
 }
 
 // Helper utilities for Mock Content Generation

@@ -256,8 +256,26 @@ export interface Book {
 	currentStep: string;
 	logs: StepLog[];
 
+	/**
+	 * Running AI spend for this book. Claude figures are exact — summed
+	 * straight from Anthropic's real per-call token usage. Image and search
+	 * counts are estimates: those providers return no usage/cost data, so the
+	 * UI prices them off a flat per-call rate rather than a measurement.
+	 * Absent on books generated before this existed.
+	 */
+	usage?: BookUsage;
+
 	createdAt: string;
 	updatedAt: string;
+}
+
+export interface BookUsage {
+	/** Accumulated Claude token usage, keyed by model ID. */
+	claude: Record<string, { inputTokens: number; outputTokens: number; calls: number }>;
+	/** Count of successful image generations (Kie.ai / 69labs). Estimated cost. */
+	images: number;
+	/** Count of successful Exa search calls. Estimated cost. */
+	searches: number;
 }
 
 export interface ApiKeys {

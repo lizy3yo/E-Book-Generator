@@ -189,6 +189,7 @@ Rules:
 
 			const data = await res.json();
 			if (!data.success) throw new Error(data.error || 'Diagram AI edit failed');
+			if (data.usage) globalState.addBookUsage(activeBook.id, { claude: data.usage });
 
 			let newRaw = (data.pageContent || data.content || '').trim();
 			newRaw = newRaw.replace(/^```(?:diagram|mermaid)?\r?\n?/, '').replace(/\r?\n?```\s*$/, '').trim();

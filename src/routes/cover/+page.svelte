@@ -344,6 +344,7 @@
 				useMockMode: keys.useMockMode,
 				isCover:     true
 			});
+			if (imageUrl && !keys.useMockMode && keys.imageKey) globalState.addBookUsage(book.id, { images: 1 });
 
 			const data = { success: true, imageUrl };
 
@@ -468,6 +469,7 @@
 
 			const data = await res.json();
 			if (!data.success) throw new Error(data.error || 'Assistant request failed.');
+			if (data.usage) globalState.addBookUsage(globalState.activeBook.id, { claude: data.usage });
 
 			const mutations = data.mutations as Record<string, unknown>;
 			const hasImagePrompt = 'bgImagePrompt' in mutations && mutations.bgImagePrompt;
