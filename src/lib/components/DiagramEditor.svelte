@@ -2,6 +2,7 @@
 	import { tick } from 'svelte';
 	import { globalState } from '$lib/state.svelte';
 	import { parseMarkdown } from '$lib/diagrams';
+	import { tintWithWhite } from '$lib/coverPalette';
 	import { X, Sparkles, Palette, Eye, Check, FileText, BarChart3 } from '@lucide/svelte';
 
 	let { editTarget, activeBook, onClose, onSave } = $props<{
@@ -65,9 +66,14 @@
 	// Build raw content reactively from the state of manual inputs
 	let liveRaw = $derived(isMarkdownTable(originalRaw) ? originalRaw : buildDiagramRawFromFields(diagramFields, diagramColors));
 	// Render to HTML reactively
+	let editorBookMeta = $derived({
+		navyColor: activeBook?.coverDesign?.primary,
+		amberColor: activeBook?.coverDesign?.accent,
+		cardColor: activeBook?.coverDesign?.accent ? tintWithWhite(activeBook.coverDesign.accent, 0.97) : undefined
+	});
 	let liveHtml = $derived(isMarkdownTable(originalRaw)
-		? parseMarkdown(liveRaw, editTarget.chapterId)
-		: parseMarkdown('```diagram\n' + liveRaw + '\n```', editTarget.chapterId));
+		? parseMarkdown(liveRaw, editTarget.chapterId, editorBookMeta)
+		: parseMarkdown('```diagram\n' + liveRaw + '\n```', editTarget.chapterId, editorBookMeta));
 
 	// ── Helper functions ───────────────────────────────────────────────────────
 	function parseDiagramRawToFields(raw: string): Record<string, string> {
@@ -183,6 +189,7 @@ Rules:
 
 			const data = await res.json();
 			if (!data.success) throw new Error(data.error || 'Diagram AI edit failed');
+			if (data.usage) globalState.addBookUsage(activeBook.id, { claude: data.usage });
 
 			let newRaw = (data.pageContent || data.content || '').trim();
 			newRaw = newRaw.replace(/^```(?:diagram|mermaid)?\r?\n?/, '').replace(/\r?\n?```\s*$/, '').trim();

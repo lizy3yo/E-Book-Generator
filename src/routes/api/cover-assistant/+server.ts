@@ -20,14 +20,33 @@ const CLAUDE_HARD_FAIL_CODES = new Set([400, 401, 403]);
 
 export const POST: RequestHandler = async ({ request }) => {
 	try {
-		const { instruction, apiKey, useMockMode, currentSettings, bookTitle, genre, variants } =
+		const { instruction, apiKey, useMockMode, currentSettings, bookTitle, genre, variants, referenceImage } =
 			await request.json();
 
 		const claudeKey = apiKey || ANTHROPIC_API_KEY;
+		const hasImage  = !!(referenceImage?.mediaType && referenceImage?.data);
+		// An attachment with no instruction is a question, not a command: the user
+		// is showing the assistant something and expecting to be told what it is.
+		const isImageOnly = hasImage && !instruction?.trim();
 
 		// ── Mock mode ──────────────────────────────────────────────────────────
 		if (useMockMode || !claudeKey) {
 			await new Promise((r) => setTimeout(r, 400));
+
+			// Mock mode has no vision — say so rather than inventing a reading of an
+			// image nobody looked at.
+			if (hasImage) {
+				return json({
+					success: true,
+					reply: isImageOnly
+						? "I can see you've attached an image, but mock mode can't actually read it — add an Anthropic API key in Settings and I'll describe its palette, typography and layout, then ask what you'd like applied."
+						: `Mock mode can't read attached images, so I've worked from your text alone: "${instruction}".`,
+					mutations: {},
+					variantIndex: null,
+					source: 'mock'
+				});
+			}
+
 			const lower = instruction.toLowerCase();
 			const mutations: Record<string, any> = {};
 			let reply = `I've updated the cover design based on your feedback: "${instruction}".`;
@@ -65,7 +84,27 @@ export const POST: RequestHandler = async ({ request }) => {
 			    .join('\n')
 			: '';
 
-		const systemContent = `You are an award-winning Creative Director and book cover design expert specializing in commercial publishing for the ebook "${bookTitle}" (${genre}).
+		// The attachment changes what a turn MEANS, so it is stated in the system
+		// prompt rather than left for the model to infer from the image's presence.
+		const imageContext = !hasImage ? '' : isImageOnly
+			? `
+
+THE USER HAS ATTACHED A REFERENCE IMAGE AND WRITTEN NO INSTRUCTION.
+Do NOT change the cover. They are showing you something and want to know what you see.
+- Return an EMPTY mutations object ({}) and variantIndex null.
+- In "reply", describe what you actually read from the image, as a creative director would: its colour palette (name the hex values you'd use), typography (serif/sans, weight, case, hierarchy), imagery treatment, graphic devices, and layout.
+- Describe ONLY what is genuinely visible. Never invent detail you cannot see.
+- End by asking which parts they want applied to "${bookTitle}" — the palette, the typography, the layout, or the whole design language.
+- This reply is prose for a human, NOT a design change. Ignore the minimum-word and bgImagePrompt rules below; they do not apply to this turn.
+- Reply may be up to 200 words. Still return ONLY the JSON object.`
+			: `
+
+THE USER HAS ATTACHED A REFERENCE IMAGE ALONGSIDE THEIR INSTRUCTION.
+Read its design language — palette, typography, imagery treatment, graphic devices, layout — and apply it as their instruction directs.
+Borrow the FORMAT only. Never copy the reference's subject matter, wording, artwork or logos into "${bookTitle}"; this book keeps its own title, author and subject.
+Where the reference conflicts with the current settings, the reference wins — that is why they attached it.`;
+
+		const systemContent = `You are an award-winning Creative Director and book cover design expert specializing in commercial publishing for the ebook "${bookTitle}" (${genre}).${imageContext}
 
 Your role is to interpret the user's natural-language design instruction and return ONLY a structured JSON mutations object. You must think like a senior designer at a major publishing house (Penguin, Knopf, HarperCollins) who understands professional typography, color theory, and market-tested cover design conventions.
 
@@ -177,6 +216,31 @@ Format: {"reply":"...","variantIndex":null,"mutations":{}}`;
 			return { reply: text, variantIndex: null, mutations: {} };
 		}
 
+		/**
+		 * Guarantee that a design turn carries an image prompt.
+		 *
+		 * Generated covers bake their typography into the artwork, so the studio
+		 * skips every text overlay for them: a mutation like titleColor with no
+		 * accompanying bgImagePrompt is invisible, and the client only renders when
+		 * a prompt is present — so the author's instruction lands as a silent no-op.
+		 * The model is told to always return one, but instruction is not a
+		 * guarantee, so rebuild it from the current prompt plus the author's own
+		 * words rather than drop their request.
+		 *
+		 * Turns with NO mutations are left alone by design: those are questions and
+		 * image readings, answered in prose, and must not spend an image render.
+		 */
+		function ensureImagePrompt(result: ReturnType<typeof parseResponse>) {
+			const m = result.mutations;
+			if (!Object.keys(m).length || m.bgImagePrompt) return result;
+
+			const base = String((currentSettings?.bgImagePrompt as string) ?? '').trim();
+			m.bgImagePrompt = base
+				? `${base} Additionally, apply this refinement: ${instruction}.`
+				: `Professional publisher-quality book cover for "${bookTitle}" (${genre}). ${instruction}.`;
+			return result;
+		}
+
 		// ── Fetch helper with AbortController timeout ──────────────────────────
 		async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
 			const ctrl  = new AbortController();
@@ -194,6 +258,25 @@ Format: {"reply":"...","variantIndex":null,"mutations":{}}`;
 		// ── Call Claude ────────────────────────────────────────────────────────
 		const model = CLAUDE_CHAT_MODEL || 'claude-haiku-4-5-20251001';
 
+		// The image leads the turn — Claude attends to text that follows an image
+		// more reliably than text that precedes it.
+		const userContent = hasImage
+			? [
+					{
+						type: 'image',
+						source: {
+							type:       'base64',
+							media_type: referenceImage.mediaType,
+							data:       referenceImage.data
+						}
+					},
+					{
+						type: 'text',
+						text: instruction?.trim() || 'Describe this reference cover, then ask me which parts to apply.'
+					}
+			  ]
+			: instruction;
+
 		const claudeRes = await fetchWithTimeout(
 			'https://api.anthropic.com/v1/messages',
 			{
@@ -205,18 +288,25 @@ Format: {"reply":"...","variantIndex":null,"mutations":{}}`;
 				},
 				body: JSON.stringify({
 					model,
-					max_tokens: 400,
+					// A described reading runs longer than a 1–2 sentence confirmation.
+					max_tokens: isImageOnly ? 900 : 400,
 					system:     systemContent,
-					messages:   [{ role: 'user', content: instruction }]
+					messages:   [{ role: 'user', content: userContent }]
 				})
 			},
-			8000
+			// Vision adds real latency; 8s reliably aborts a legitimate read.
+			hasImage ? 30000 : 8000
 		);
 
 		if (claudeRes.ok) {
 			const data = await claudeRes.json();
 			const raw = (data.content?.find((c: any) => c.type === 'text')?.text || '').trim();
-			return json({ success: true, ...parseResponse(raw), source: 'claude' });
+			const usage = {
+				model,
+				inputTokens: data.usage?.input_tokens ?? 0,
+				outputTokens: data.usage?.output_tokens ?? 0
+			};
+			return json({ success: true, ...ensureImagePrompt(parseResponse(raw)), usage, source: 'claude' });
 		}
 
 		// Open circuit on hard billing/auth failures

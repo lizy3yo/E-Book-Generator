@@ -1,31 +1,54 @@
 <script lang="ts">
 	import { globalState } from '$lib/state.svelte';
-	import type { Book, Chapter, CoverOption } from '$lib/types';
+	import type { Book, Chapter, CoverOption, CoverOrigin, BibleEntry } from '$lib/types';
 	import {
 		BookMarked, Zap, Paintbrush, BookOpen, Trash2,
 		Loader, RefreshCw, CheckCircle, ChevronRight,
-		ArrowLeft, Info, RotateCcw
+		ArrowLeft, Info, RotateCcw, Sparkles, Maximize2, Upload, X
 	} from '@lucide/svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
-	import { generateImage } from '$lib/generateImage';
+	import ChapterPlanError from '$lib/components/ChapterPlanError.svelte';
+	import CoverPreviewDialog from '$lib/components/CoverPreviewDialog.svelte';
+	import BookCostDialog from '$lib/components/BookCostDialog.svelte';
+	import { claudeCallCost, ESTIMATED_COST_PER_IMAGE, ESTIMATED_COST_PER_SEARCH } from '$lib/pricing';
+	import { generationRunner } from '$lib/generationRunner.svelte';
+	import { AI_CONCEPT_COUNT, hasCoverBrief } from '$lib/coverStyles';
+	import { fileToImagePayload } from '$lib/imageInput';
+	import { planForPages, clampPageCount, PAGE_PRESETS, MIN_PAGES, MAX_PAGES } from '$lib/bookPlan';
 
 	// ── Stage 1: concept form ──────────────────────────────────────────────────
 	let title       = $state('');
 	let subtitle    = $state('');
 	let author      = $state('');
 	let genre       = $state('');
+	// Retained only to satisfy the legacy Book.length field on create; page
+	// count is what actually drives the plan now.
 	let length      = $state<'short' | 'medium' | 'long'>('medium');
-	let tone        = $state('Authoritative & Educational');
-	let structure   = $state('Standard Chapters');
+	let pageCount   = $state<number>(100);
+	const bookPlan  = $derived(planForPages(pageCount));
+	const DEFAULT_TONE      = 'Authoritative & Educational';
+	const DEFAULT_STRUCTURE = 'Standard Chapters';
+	let tone        = $state('');
+	let structure   = $state('');
 	let useUltraRealistic   = $state(false);
 	let researchDepth       = $state<'basic' | 'deep'>('basic');
-	let selfCorrectionLevel = $state<'standard' | 'rigorous'>('standard');
+	// Every book ships through the full fact-mesh cross-validation pass.
+	const selfCorrectionLevel: 'standard' | 'rigorous' = 'rigorous';
 	/** Optional background brief — injected into every AI call for deeper grounding */
 	let userContext = $state('');
 
+	/** Guards the create-book form against a double submit. Purely local: the
+	 *  book it would create does not exist yet, so there is no run to consult. */
+	let isCreating = $state(false);
+
 	// ── Stage 2: cover options ─────────────────────────────────────────────────
-	let regeneratingCoverIdx = $state<number | null>(null);
-	let isGeneratingCovers   = $state(false);
+	// Run state (what is generating, what failed) lives in generationRunner so it
+	// outlives this component — see `run` below. Only view state is local.
+	let previewCoverIdx      = $state<number | null>(null);
+	/** Thumbnail of the uploaded reference. Deliberately ephemeral and local:
+	 *  the durable artefact is the design language the runner extracts, and the
+	 *  source image is never persisted. */
+	let referencePreviewUrl  = $state<string | null>(null);
 
 	// ── Delete confirmation ────────────────────────────────────────────────────
 	let deleteConfirmOpen  = $state(false);
@@ -52,14 +75,11 @@
 	}
 
 	// ── Stage 3: chapter plan ──────────────────────────────────────────────────
-	let isGeneratingPlan  = $state(false);
-	let editingChapterIdx = $state<number | null>(null);
+	let editingChapterIdx  = $state<number | null>(null);
 	let editTitle   = $state('');
 	let editSummary = $state('');
 
 	// ── Stage 4: writing ───────────────────────────────────────────────────────
-	let isWriting        = $state(false);
-	let regeneratingChapterIdx = $state<number | null>(null);
 	let logsContainer: HTMLDivElement | null = $state(null);
 
 	// Auto-scroll logs
@@ -71,201 +91,137 @@
 
 	const active = $derived(globalState.activeBook);
 
-	// ── COVER STYLE DEFINITIONS ───────────────────────────────────────────────
-	const COVER_STYLES = [
-		{
-			style: 'Dark Minimalist',
-			buildPrompt: (title: string, subtitle: string, author: string, genre: string, refClause: string) =>
-				`Luxury dark minimalist professional book cover. Title: "${title}"${subtitle ? ` — ${subtitle}` : ''}. Author: ${author}. Genre: ${genre}. ` +
-				`Ultra-deep charcoal or near-black background fills the entire cover. A single powerful thematic object or dramatic silhouette — perfectly relevant to "${title}" — centered with cinematic chiaroscuro side-lighting, casting deep shadows. ` +
-				`Thin gold or silver metallic accent lines framing the composition. ` +
-				`Bold, elegant white or pale-gold serif title text "${title.toUpperCase()}" dominating the upper half of the cover. ` +
-				`Author name "${author}" in small refined serif at the very bottom. ` +
-				`No clutter. Maximum restraint and sophistication. Award-winning book cover design. Photorealistic render quality.${refClause}`
-		},
-		{
-			style: 'Warm Editorial',
-			buildPrompt: (title: string, subtitle: string, author: string, genre: string, refClause: string) =>
-				`Sophisticated warm editorial professional book cover. Title: "${title}"${subtitle ? ` — ${subtitle}` : ''}. Author: ${author}. Genre: ${genre}. ` +
-				`Rich cream, ivory, and warm amber tones throughout. Expressive painterly or fine-art illustration style background — botanical, organic shapes, or thematic symbols directly relevant to "${title}". ` +
-				`Soft natural light, warm paper texture. Elegant dark serif title text "${title}" in the upper-center of the cover. ` +
-				`Tasteful decorative border lines or ornamental elements. Subtitle "${subtitle}" in a smaller refined italic serif below the title. ` +
-				`Author name "${author}" at the bottom in italic serif. ` +
-				`Intellectual and artistic mood, reminiscent of Penguin Books, Knopf, or Farrar Straus & Giroux publishing house. Literary excellence.${refClause}`
-		},
-		{
-			style: 'Bold Graphic',
-			buildPrompt: (title: string, subtitle: string, author: string, genre: string, refClause: string) =>
-				`High-impact commercial non-fiction bestselling book cover — identical quality to Amazon Top 10 titles. Title: "${title}"${subtitle ? ` — ${subtitle}` : ''}. Author: ${author}. Genre: ${genre}. ` +
-				`Upper 55% of cover: solid deep navy blue background. Massive, extra-bold white all-caps sans-serif (Impact or Helvetica Black weight) title text "${title.toUpperCase()}" — each word on its own line, commanding maximum visual weight. ` +
-				`Thin bright gold horizontal accent lines separating the title lines. ` +
-				`Lower 40% of cover: seamless photorealistic cinematic scene directly relevant to "${genre}" and the subject of "${title}" — dramatic natural lighting, high-production-value photography quality. ` +
-				`Bold red circular callout badge in the lower-right corner with a short 3-word benefit phrase. ` +
-				`Very bottom strip: wide solid navy bar with author name "${author.toUpperCase()}" in large white bold condensed-serif text. ` +
-				`Resembles top commercial non-fiction and self-help bestsellers. Publisher-quality production.${refClause}`
-		}
-	];
+	// ── Book cost badge ──────────────────────────────────────────────────────
+	let showCostDialog = $state(false);
+	const activeBookCost = $derived.by(() => {
+		const usage = active?.usage;
+		if (!usage) return 0;
+		const claudeTotal = Object.entries(usage.claude).reduce(
+			(sum, [model, u]) => sum + claudeCallCost(model, u.inputTokens, u.outputTokens),
+			0
+		);
+		return claudeTotal + usage.images * ESTIMATED_COST_PER_IMAGE + usage.searches * ESTIMATED_COST_PER_SEARCH;
+	});
+
+	// ── Run state ─────────────────────────────────────────────────────────────
+	/**
+	 * The active book's in-flight work, owned by the runner rather than this
+	 * component. Reading it through a $derived means navigating away and back
+	 * re-attaches to the run already in progress instead of showing an idle UI
+	 * over work that never stopped.
+	 */
+	const run = $derived(generationRunner.for(active?.id));
+	const coversBusy = $derived(generationRunner.isCoversBusy(active?.id));
+	const hasAiConcepts = $derived((active?.coverOptions ?? []).some(o => o.origin === 'ai'));
+	/** The author's own direction — written brief, uploaded reference, or both —
+	 *  fixes the design language, so Stage 2 renders exactly one cover from it:
+	 *  the template and concept tiers have nothing left to vary. */
+	const hasBrief = $derived(hasCoverBrief({
+		brief:           active?.coverReferencePrompt,
+		referenceFormat: active?.coverReferenceFormat
+	}));
 
 	// ─────────────────────────────────────────────────────────────────────────
-	// STAGE 1 → Create book + immediately kick off cover generation (→ Stage 2)
+	// STAGE 1 → Create book + hand off to the runner (→ Stage 2)
 	// ─────────────────────────────────────────────────────────────────────────
 	async function handleCreateBook(e: Event) {
 		e.preventDefault();
-		if (!title.trim() || isGeneratingCovers) return;
+		if (!title.trim() || isCreating) return;
+		isCreating = true;
 
 		const book = globalState.createBook({
-			title, subtitle, author, genre, length,
-			tone, structure, useUltraRealistic, researchDepth, selfCorrectionLevel,
+			title, subtitle, author, genre, length, pageCount,
+			tone: tone.trim() || DEFAULT_TONE,
+			structure: structure.trim() || DEFAULT_STRUCTURE,
+			useUltraRealistic, researchDepth, selfCorrectionLevel,
 			userContext, coverReferencePrompt: ''
 		});
 
 		title = ''; subtitle = ''; author = ''; userContext = '';
-		await generateCoverOptions(book);
+		isCreating = false;
+		// Not awaited: the runner owns this from here, and the form is already
+		// gone. Awaiting would only tie the run's lifetime to this component.
+		generationRunner.startCovers(book);
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
-	// STAGE 2 helpers
+	// STAGE 2 — cover handlers (thin wrappers over the runner)
 	// ─────────────────────────────────────────────────────────────────────────
-	async function generateCoverOptions(book: Book) {
-		isGeneratingCovers = true;
-		globalState.setPipelineStage(book.id, 2);
-
-		const keys = globalState.apiKeys;
-		const options: CoverOption[] = [];
-		const refClause = book.coverReferencePrompt?.trim()
-			? ` Visual reference & creative direction: ${book.coverReferencePrompt.trim()}.`
-			: '';
-
-		for (let i = 0; i < COVER_STYLES.length; i++) {
-			const styleInfo = COVER_STYLES[i];
-			const prompt = styleInfo.buildPrompt(book.title, book.subtitle ?? '', book.author ?? 'Unknown Author', book.genre, refClause);
-
-			try {
-				const imageUrl = await generateImage({
-					prompt,
-					apiKey:      keys.imageKey,
-					provider:    keys.imageProvider,
-					useMockMode: keys.useMockMode,
-					isCover:     true
-				});
-				options.push({ id: crypto.randomUUID(), prompt, imageUrl, style: styleInfo.style });
-			} catch {
-				options.push({ id: crypto.randomUUID(), prompt, imageUrl: '', style: styleInfo.style });
-			}
-		}
-
-		globalState.setCoverOptions(book.id, options);
-		isGeneratingCovers = false;
+	function loadAiConcepts() {
+		if (active) generationRunner.startAiConcepts(active.id);
 	}
 
-	/** Regenerate a single cover option after user gives feedback */
-	async function regenerateSingleCover(optionIndex: number) {
-		if (!active || regeneratingCoverIdx !== null) return;
-		regeneratingCoverIdx = optionIndex;
+	function regenerateSingleCover(idx: number) {
+		if (active) generationRunner.regenerateCover(active.id, idx);
+	}
 
-		const keys   = globalState.apiKeys;
-		const style  = COVER_STYLES[optionIndex];
-		const refClause = active.coverReferencePrompt?.trim()
-			? ` Visual reference & creative direction: ${active.coverReferencePrompt.trim()}.`
-			: '';
-		const prompt = style.buildPrompt(active.title, active.subtitle ?? '', active.author ?? 'Unknown Author', active.genre, refClause);
+	function createBriefCover() {
+		if (active) generationRunner.createBriefCover(active.id);
+	}
 
+	// ── Reference cover ───────────────────────────────────────────────────────
+
+	/** Read a reference cover's design language and attach it to the book.
+	 *  Only the thumbnail is component-local — the analysis itself runs in the
+	 *  runner so leaving the page doesn't abandon it. */
+	async function handleReferenceUpload(e: Event) {
+		const input = e.target as HTMLInputElement;
+		const file  = input.files?.[0];
+		if (!file || !active) return;
+
+		const bookId = active.id;
 		try {
-			const imageUrl = await generateImage({
-				prompt,
-				apiKey:      keys.imageKey,
-				provider:    keys.imageProvider,
-				useMockMode: keys.useMockMode,
-				isCover:     true
-			});
-			globalState.replaceCoverOption(active.id, optionIndex, {
-				id: crypto.randomUUID(),
-				prompt,
-				imageUrl,
-				style: style.style
-			});
-		} catch (err) {
-			console.error(err);
+			const payload = await fileToImagePayload(file);
+			referencePreviewUrl = payload.previewUrl;
+			await generationRunner.analyzeReference(
+				bookId,
+				{ mediaType: payload.mediaType, data: payload.data },
+				file.name
+			);
+		} catch {
+			// The runner records the failure in run.referenceError; a decode
+			// failure before it is reported the same way.
+			referencePreviewUrl = null;
 		}
 
-		regeneratingCoverIdx = null;
+		// Reset the input so re-picking the same file fires a fresh change event.
+		input.value = '';
 	}
 
-	/** Regenerate ALL three covers with updated visual direction */
-	async function regenerateAllCovers() {
-		if (!active) return;
-		await generateCoverOptions(active);
+	function clearReference() {
+		if (!active || run.referenceBusy) return;
+		globalState.setCoverReferenceFormat(active.id, null, null);
+		generationRunner.clearReferenceError(active.id);
+		referencePreviewUrl = null;
+	}
+
+	// ── Full-size preview ─────────────────────────────────────────────────────
+
+	const previewOption = $derived(
+		previewCoverIdx !== null ? active?.coverOptions[previewCoverIdx] ?? null : null
+	);
+
+	function openPreview(idx: number) { previewCoverIdx = idx; }
+	function closePreview()           { previewCoverIdx = null; }
+
+	function pagePreview(step: number) {
+		if (previewCoverIdx === null || !active) return;
+		const n = active.coverOptions.length;
+		previewCoverIdx = (previewCoverIdx + step + n) % n;
 	}
 
 	function selectCoverAndProceed(index: number) {
 		if (!active) return;
+		previewCoverIdx = null;
 		globalState.selectCoverOption(active.id, index);
-		generateChapterPlan(active);
+		generationRunner.startChapterPlan(active);
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
-	// STAGE 3 helpers
+	// STAGE 3 — chapter plan
 	// ─────────────────────────────────────────────────────────────────────────
-	async function generateChapterPlan(book: Book) {
-		isGeneratingPlan = true;
-		globalState.setPipelineStage(book.id, 3);
-		globalState.updateBookStatus(book.id, 'researching');
-
-		const keys   = globalState.apiKeys;
-		const useMock = keys.useMockMode;
-
-		try {
-			// Research
-			const researchRes = await fetch('/api/research', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					query: `Core concepts and key facts about: ${book.title}. Genre: ${book.genre}.`,
-					apiKey: keys.exaKey,
-					useMockMode: useMock
-				})
-			});
-			const researchData = await researchRes.json();
-			const searchFacts = researchData.success
-				? (researchData.results as any[]).map(f => `[${f.title}] ${f.snippet}`).join('\n\n')
-				: '';
-
-			// Merge user-provided context with retrieved facts
-			const factsSummary = [
-				book.userContext?.trim() ? `[Author Brief]\n${book.userContext.trim()}` : '',
-				searchFacts
-			].filter(Boolean).join('\n\n');
-
-			globalState.updateBookStatus(book.id, 'outlining');
-
-			// Outline
-			const outlineRes = await fetch('/api/write', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					action: 'outline',
-					apiKey: keys.anthropicKey,
-					useMockMode: useMock,
-					bookTitle: book.title,
-					genre: book.genre,
-					length: book.length,
-					tone: book.tone,
-					structure: book.structure,
-					researchNotes: factsSummary
-				})
-			});
-			const outlineData = await outlineRes.json();
-
-			if (!outlineData.success) throw new Error(outlineData.error || 'Outline failed.');
-
-			const chapters: Chapter[] = outlineData.chapters;
-			globalState.updateBookChapters(book.id, chapters);
-		} catch (err: any) {
-			globalState.updateBookStatus(book.id, 'failed');
-			globalState.addLog(book.id, { step: 'outline', status: 'error', message: err.message });
-		}
-
-		isGeneratingPlan = false;
+	function retryChapterPlan() {
+		if (active) generationRunner.startChapterPlan(active);
 	}
 
 	function startEditChapter(idx: number) {
@@ -293,7 +249,7 @@
 		if (lower.startsWith('preface')) return 'P';
 		if (lower.startsWith('introduction') || lower.startsWith('intro')) return 'I';
 		if (lower.startsWith('foreword')) return 'F';
-		
+
 		let prefaceCount = 0;
 		for (let i = 0; i < idx; i++) {
 			const titleLower = chapters[i].title.toLowerCase();
@@ -309,253 +265,17 @@
 		return String(chap.order - prefaceCount);
 	}
 
+	// ─────────────────────────────────────────────────────────────────────────
+	// STAGE 4 — writing
+	// ─────────────────────────────────────────────────────────────────────────
 	function approveChapterPlan() {
 		if (!active) return;
 		globalState.setPipelineStage(active.id, 4);
-		runWritingPipeline(active);
+		generationRunner.startWriting(active);
 	}
 
-	// ─────────────────────────────────────────────────────────────────────────
-	// STAGE 4 helpers — write all chapters
-	// ─────────────────────────────────────────────────────────────────────────
-	async function runWritingPipeline(book: Book) {
-		if (isWriting) return;
-		isWriting = true;
-		globalState.updateBookStatus(book.id, 'writing');
-
-		const keys    = globalState.apiKeys;
-		const useMock = keys.useMockMode;
-
-		// ── Step 1: Book-level research (shared context for all chapters) ─────
-		let bookLevelFacts = '';
-		try {
-			const r = await fetch('/api/research', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					query: `${book.title} ${book.genre} comprehensive overview key concepts`,
-					apiKey: keys.exaKey,
-					useMockMode: useMock
-				})
-			});
-			const rd = await r.json();
-			bookLevelFacts = rd.success
-				? (rd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
-				: '';
-		} catch { /* non-fatal */ }
-
-		const chapters = [...globalState.books.find(b => b.id === book.id)!.chapters];
-
-		for (let i = 0; i < chapters.length; i++) {
-			const chap = chapters[i];
-			if (chap.status === 'completed') continue; // skip already done
-
-			// ── Step 2: Per-chapter targeted research ──────────────────────────
-			let chapterFacts = '';
-			try {
-				const cr = await fetch('/api/research', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({
-						query: `${chap.title} ${book.title} ${book.genre} ${chap.summary ?? ''}`.trim(),
-						apiKey: keys.exaKey,
-						useMockMode: useMock
-					})
-				});
-				const crd = await cr.json();
-				chapterFacts = crd.success
-					? (crd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
-					: '';
-				globalState.addLog(book.id, {
-					step: 'research', status: 'success',
-					message: `Research complete for Chapter ${chap.order}: "${chap.title}"`
-				});
-			} catch { /* non-fatal */ }
-
-			// Merge: author brief + book-level facts + chapter-specific facts
-			const factsSummary = [
-				book.userContext?.trim() ? `[Author Brief]\n${book.userContext.trim()}` : '',
-				bookLevelFacts ? `[Book-Level Research]\n${bookLevelFacts}` : '',
-				chapterFacts   ? `[Chapter-Specific Research for "${chap.title}"]\n${chapterFacts}` : ''
-			].filter(Boolean).join('\n\n');
-
-			await writeSingleChapter(book.id, i, chapters, factsSummary, keys, useMock);
-		}
-
-		globalState.updateBookStatus(book.id, 'completed');
-		globalState.setPipelineStage(book.id, 5);
-		globalState.addLog(book.id, {
-			step: 'complete', status: 'success',
-			message: '🎉 All chapters complete. Ebook ready to read and export.'
-		});
-
-		isWriting = false;
-	}
-
-	/** Write + illustrate exactly one chapter. Shared between pipeline and per-chapter regen. */
-	async function writeSingleChapter(
-		bookId: string,
-		chapIndex: number,
-		chaptersSnapshot: Chapter[],
-		factsSummary: string,
-		keys: typeof globalState.apiKeys,
-		useMock: boolean
-	) {
-		const chap = chaptersSnapshot[chapIndex];
-		const book = globalState.books.find(b => b.id === bookId)!;
-
-		// Mark writing
-		const live = [...globalState.books.find(b => b.id === bookId)!.chapters];
-		live[chapIndex].status = 'writing';
-		globalState.updateBookChapters(bookId, live);
-		globalState.addLog(bookId, {
-			step: 'drafting', status: 'running',
-			message: `Writing Chapter ${chap.order}: "${chap.title}"…`
-		});
-
-		// Draft — include all book context fields so Claude can write unique, informed content
-		const draftRes = await fetch('/api/write', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				action: 'write-chapter',
-				apiKey: keys.anthropicKey,
-				useMockMode: useMock,
-				bookTitle: book.title,
-				genre: book.genre,
-				structure: book.structure,
-				chapterTitle: chap.title,
-				chapterOrder: chap.order,
-				chapterSummary: chap.summary,
-				tone: book.tone,
-				researchNotes: factsSummary
-			})
-		});
-		const draftData = await draftRes.json();
-		if (!draftData.success) throw new Error(draftData.error || `Chapter ${chap.order} draft failed.`);
-
-		// Verify
-		const current = [...globalState.books.find(b => b.id === bookId)!.chapters];
-		current[chapIndex].status = 'verifying';
-		globalState.updateBookChapters(bookId, current);
-
-		const verifyRes = await fetch('/api/write', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				action: 'verify-chapter',
-				apiKey: keys.anthropicKey,
-				useMockMode: useMock,
-				bookTitle: book.title,
-				genre: book.genre,
-				tone: book.tone,
-				chapterTitle: chap.title,
-				chapterContent: draftData.content,
-				researchNotes: factsSummary
-			})
-		});
-		const verifyData = await verifyRes.json();
-		const finalContent = verifyData.success ? verifyData.verifiedContent : draftData.content;
-
-		// Illustration — use chapter summary for a more relevant prompt
-		globalState.addLog(bookId, {
-			step: 'illustrate', status: 'running',
-			message: `Generating illustration for Chapter ${chap.order}…`
-		});
-
-		let illustUrl: string | null = null;
-		try {
-			const illustPrompt = chap.summary
-				? `High-quality editorial illustration for a chapter titled "${chap.title}". Topic: ${chap.summary}. From the book "${book.title}" (${book.genre}). Minimal flat vector style, cream background, sophisticated palette.`
-				: `Minimalist editorial illustration for chapter: "${chap.title}". Cream background, vector style.`;
-			illustUrl = await generateImage({
-				prompt:      illustPrompt,
-				apiKey:      keys.imageKey,
-				provider:    keys.imageProvider,
-				useMockMode: useMock,
-				isCover:     false
-			});
-		} catch { /* non-fatal */ }
-
-		// Commit
-		const final = [...globalState.books.find(b => b.id === bookId)!.chapters];
-		final[chapIndex].content         = finalContent;
-		final[chapIndex].researchNotes   = factsSummary;
-		final[chapIndex].illustrationUrl = illustUrl;
-		final[chapIndex].status          = 'completed';
-		globalState.updateBookChapters(bookId, final);
-
-		globalState.addLog(bookId, {
-			step: 'drafting', status: 'success',
-			message: `Chapter ${chap.order} complete.`
-		});
-	}
-
-	/** Per-chapter regeneration triggered from Stage 4 UI */
-	async function handleRegenerateChapter(chapIndex: number) {
-		if (!active || isWriting || regeneratingChapterIdx !== null) return;
-		regeneratingChapterIdx = chapIndex;
-
-		const keys    = globalState.apiKeys;
-		const useMock = keys.useMockMode;
-		const chap    = active.chapters[chapIndex];
-
-		// ── Book-level background research ──────────────────────────────────
-		let bookLevelFacts = '';
-		try {
-			const r = await fetch('/api/research', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					query: `${active.title} ${active.genre} comprehensive overview key concepts`,
-					apiKey: keys.exaKey,
-					useMockMode: useMock
-				})
-			});
-			const rd = await r.json();
-			bookLevelFacts = rd.success
-				? (rd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
-				: '';
-		} catch { /* non-fatal */ }
-
-		// ── Chapter-specific targeted research ────────────────────────────
-		let chapterFacts = '';
-		try {
-			const cr = await fetch('/api/research', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					query: `${chap.title} ${active.title} ${active.genre} ${chap.summary ?? ''}`.trim(),
-					apiKey: keys.exaKey,
-					useMockMode: useMock
-				})
-			});
-			const crd = await cr.json();
-			chapterFacts = crd.success
-				? (crd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
-				: '';
-		} catch { /* non-fatal */ }
-
-		const factsSummary = [
-			active.userContext?.trim() ? `[Author Brief]\n${active.userContext.trim()}` : '',
-			bookLevelFacts ? `[Book-Level Research]\n${bookLevelFacts}` : '',
-			chapterFacts   ? `[Chapter-Specific Research for "${chap.title}"]\n${chapterFacts}` : ''
-		].filter(Boolean).join('\n\n');
-
-		try {
-			const snapshot = [...active.chapters];
-			await writeSingleChapter(active.id, chapIndex, snapshot, factsSummary, keys, useMock);
-		} catch (err: any) {
-			const current = [...globalState.books.find(b => b.id === active.id)!.chapters];
-			current[chapIndex].status = 'failed';
-			globalState.updateBookChapters(active.id, current);
-			globalState.addLog(active.id, {
-				step: 'drafting', status: 'error',
-				message: `Regeneration failed for Chapter ${chapIndex + 1}: ${err.message}`
-			});
-		}
-
-		regeneratingChapterIdx = null;
+	function handleRegenerateChapter(chapIndex: number) {
+		if (active) generationRunner.regenerateChapter(active.id, chapIndex);
 	}
 </script>
 
@@ -667,12 +387,43 @@
 
 					<div class="form-row grid-2-col">
 						<div class="form-group">
-							<label for="length">Target Length</label>
-							<select id="length" bind:value={length}>
-								<option value="short">Short — 3 chapters (~10–15k words)</option>
-								<option value="medium">Standard — 5 chapters (~25–35k words)</option>
-								<option value="long">Full-Length — 8 chapters (~50–60k words)</option>
-							</select>
+							<label for="pageCount">Target Length</label>
+							<!-- Presets carry the common choices in one click; the number
+							     input catches everything between them. A bare number input
+							     would accept meaningless values and hide what a choice
+							     costs — which the old dropdown at least made explicit. -->
+							<div class="page-presets" role="group" aria-label="Target page count presets">
+								{#each PAGE_PRESETS as preset}
+									<button
+										type="button"
+										class="page-chip"
+										class:page-chip--active={pageCount === preset}
+										aria-pressed={pageCount === preset}
+										onclick={() => (pageCount = preset)}
+									>
+										{preset}
+									</button>
+								{/each}
+								<div class="page-custom">
+									<input
+										id="pageCount"
+										type="number"
+										min={MIN_PAGES}
+										max={MAX_PAGES}
+										step="25"
+										bind:value={pageCount}
+										onblur={() => (pageCount = clampPageCount(pageCount))}
+										aria-label="Target page count"
+									/>
+									<span class="page-custom__unit">pages</span>
+								</div>
+							</div>
+							<p class="page-hint">
+								≈{bookPlan.totalWords.toLocaleString()} words · {bookPlan.chapterCount} chapters · ~{bookPlan.wordsPerChapter.toLocaleString()} words each
+								{#if bookPlan.chapterCount >= 20}
+									<span class="page-hint__warn">· long generation — expect this to take a while</span>
+								{/if}
+							</p>
 						</div>
 					</div>
 
@@ -680,42 +431,52 @@
 					<details class="advanced-settings">
 						<summary class="advanced-settings__toggle font-serif">
 							<span class="advanced-settings__label">Advanced Settings</span>
-							<span class="advanced-settings__hint">Writing tone, book structure, research depth, quality pass, illustrations</span>
+							<span class="advanced-settings__hint">Writing tone, book structure, research depth, illustrations</span>
 						</summary>
 						<div class="advanced-settings__body">
 							<div class="advanced-row grid-2-col">
 								<div class="form-group">
 									<label for="tone">Writing Tone</label>
-									<select id="tone" bind:value={tone}>
-										<optgroup label="Non-Fiction / Professional">
-											<option value="Authoritative & Educational">Authoritative & Educational</option>
-											<option value="Conversational & Accessible">Conversational & Accessible</option>
-											<option value="Practical & Action-Oriented">Practical & Action-Oriented</option>
-											<option value="Academic & Research-Driven">Academic & Research-Driven</option>
-											<option value="Journalistic & Investigative">Journalistic & Investigative</option>
-										</optgroup>
-										<optgroup label="Narrative / Inspirational">
-											<option value="Narrative & Storytelling">Narrative & Storytelling</option>
-											<option value="Inspirational & Motivational">Inspirational & Motivational</option>
-											<option value="Reflective & Philosophical">Reflective & Philosophical</option>
-										</optgroup>
-										<optgroup label="Technical">
-											<option value="Technical & Precise">Technical & Precise</option>
-											<option value="Instructional & Step-by-Step">Instructional & Step-by-Step</option>
-										</optgroup>
-									</select>
+									<input
+										id="tone"
+										type="text"
+										bind:value={tone}
+										list="tone-presets"
+										placeholder="e.g., {DEFAULT_TONE}"
+										autocomplete="off"
+									/>
+									<datalist id="tone-presets">
+										<option value="Authoritative & Educational"></option>
+										<option value="Conversational & Accessible"></option>
+										<option value="Practical & Action-Oriented"></option>
+										<option value="Academic & Research-Driven"></option>
+										<option value="Journalistic & Investigative"></option>
+										<option value="Narrative & Storytelling"></option>
+										<option value="Inspirational & Motivational"></option>
+										<option value="Reflective & Philosophical"></option>
+										<option value="Technical & Precise"></option>
+										<option value="Instructional & Step-by-Step"></option>
+									</datalist>
 								</div>
 								<div class="form-group">
 									<label for="structure">Book Structure</label>
-									<select id="structure" bind:value={structure}>
-										<option value="Standard Chapters">Standard Chapters</option>
-										<option value="Problem–Solution Framework">Problem–Solution Framework</option>
-										<option value="Step-by-Step Blueprint">Step-by-Step Blueprint</option>
-										<option value="Pillar & Chapter Framework">Pillar Framework</option>
-										<option value="Story Narrative">Story Narrative</option>
-										<option value="Academic Thesis">Academic Thesis</option>
-										<option value="Interview & Case Study">Interview & Case Study</option>
-									</select>
+									<input
+										id="structure"
+										type="text"
+										bind:value={structure}
+										list="structure-presets"
+										placeholder="e.g., {DEFAULT_STRUCTURE}"
+										autocomplete="off"
+									/>
+									<datalist id="structure-presets">
+										<option value="Standard Chapters"></option>
+										<option value="Problem–Solution Framework"></option>
+										<option value="Step-by-Step Blueprint"></option>
+										<option value="Pillar & Chapter Framework"></option>
+										<option value="Story Narrative"></option>
+										<option value="Academic Thesis"></option>
+										<option value="Interview & Case Study"></option>
+									</datalist>
 								</div>
 							</div>
 							<div class="advanced-row grid-2-col">
@@ -724,13 +485,6 @@
 									<select id="depth" bind:value={researchDepth}>
 										<option value="basic">Standard — Key facts & citations</option>
 										<option value="deep">Deep — Comprehensive source extraction</option>
-									</select>
-								</div>
-								<div class="form-group">
-									<label for="correction">Quality Pass</label>
-									<select id="correction" bind:value={selfCorrectionLevel}>
-										<option value="standard">Standard — Consistency & copy-edit pass</option>
-										<option value="rigorous">Rigorous — Full fact-mesh cross-validation</option>
 									</select>
 								</div>
 							</div>
@@ -769,8 +523,8 @@
 
 
 					<div class="form-actions">
-						<button type="submit" class="btn btn-primary" disabled={isGeneratingCovers || !title.trim()}>
-							{#if isGeneratingCovers}
+						<button type="submit" class="btn btn-primary" disabled={isCreating || !title.trim()}>
+							{#if isCreating}
 								<span class="btn-spinner"></span> Generating Cover Options…
 							{:else}
 								<Zap size={15} /> Generate Cover Options
@@ -787,10 +541,10 @@
 				<div class="stage-header">
 					<div class="stage-badge">Step 1 of 3</div>
 					<h2 class="font-serif">Choose Your Cover Style</h2>
-					<p>We've generated three distinct cover concepts for <strong>{active.title}</strong>. Pick the one that fits your vision, or give feedback and regenerate.</p>
+					<p>Cover concepts for <strong>{active.title}</strong>. Click any cover to preview it full size. Load more variants below, or give direction and regenerate.</p>
 				</div>
 
-				{#if isGeneratingCovers}
+				{#if run.isGeneratingCovers && active.coverOptions.length === 0}
 					<div class="generating-covers-placeholder">
 						<div class="cover-skeleton-grid">
 							{#each [1,2,3] as _}
@@ -804,37 +558,57 @@
 					</div>
 				{:else}
 					<div class="cover-options-grid">
-						{#each active.coverOptions as opt, idx}
+						{#each active.coverOptions as opt, idx (opt.id)}
+							{@const pending = run.pendingCoverIds.includes(opt.id)}
 							<div class="cover-option-card {active.selectedCoverIndex === idx ? 'selected' : ''}">
-								<div class="cover-option-preview">
+								<button
+									class="cover-option-preview"
+									onclick={() => openPreview(idx)}
+									disabled={pending}
+									aria-label="Preview the {opt.style} cover full size"
+								>
 									{#if opt.imageUrl}
-										<img src={opt.imageUrl} alt="Cover option {idx + 1}" />
-									{:else}
+										<img src={opt.imageUrl} alt="Cover option {idx + 1} — {opt.style}" />
+										<span class="cover-zoom-hint" aria-hidden="true"><Maximize2 size={14} /> Preview</span>
+									{:else if pending}
 										<div class="cover-placeholder">
-											<BookMarked size={32} />
+											<Loader size={24} class="spin-icon" />
+										</div>
+									{:else}
+										<div class="cover-placeholder cover-placeholder--failed">
+											<BookMarked size={28} />
+											<span>Didn't render — regenerate</span>
 										</div>
 									{/if}
-									{#if regeneratingCoverIdx === idx}
+									{#if run.regeneratingCoverIdx === idx}
 										<div class="cover-regenerating-overlay">
 											<Loader size={24} class="spin-icon" />
 										</div>
 									{/if}
-								</div>
+								</button>
 								<div class="cover-option-meta">
-									<span class="cover-style-label font-serif">{opt.style}</span>
+									<div class="cover-style-line">
+										<span class="cover-style-label font-serif">{opt.style}</span>
+										{#if opt.origin === 'ai'}
+											<span class="cover-origin-badge cover-origin-badge--ai"><Sparkles size={10} /> AI</span>
+										{/if}
+									</div>
+									{#if opt.concept}
+										<p class="cover-concept-line">{opt.concept}</p>
+									{/if}
 									<div class="cover-option-actions">
 										<button
 											class="btn btn-ghost btn-xs"
 											onclick={() => regenerateSingleCover(idx)}
-											disabled={regeneratingCoverIdx !== null || isGeneratingCovers}
-											title="Regenerate this style"
+											disabled={pending || run.regeneratingCoverIdx !== null}
+											title="Regenerate this cover"
 										>
 											<RotateCcw size={13} />
 										</button>
 										<button
 											class="btn btn-primary btn-xs"
 											onclick={() => selectCoverAndProceed(idx)}
-											disabled={regeneratingCoverIdx !== null || isGeneratingCovers}
+											disabled={!opt.imageUrl}
 										>
 											Select <ChevronRight size={13} />
 										</button>
@@ -843,6 +617,33 @@
 							</div>
 						{/each}
 					</div>
+
+					<!-- AI concepts: a paid batch the author opts into -->
+					{#if !hasAiConcepts}
+						<div class="cover-more">
+							<div class="cover-more__copy">
+								<span class="cover-more__title font-serif">Want original concepts?</span>
+								<span class="cover-more__hint">Claude reads your brief and art-directs {AI_CONCEPT_COUNT} covers of its own — no templates involved.</span>
+							</div>
+							<div class="cover-more__actions">
+								<button
+									class="btn btn-secondary btn-sm"
+									onclick={loadAiConcepts}
+									disabled={run.loadingBatch === 'ai'}
+								>
+									{#if run.loadingBatch === 'ai'}
+										<span class="btn-spinner"></span> Devising concepts…
+									{:else}
+										<Sparkles size={14} /> {AI_CONCEPT_COUNT} AI concepts from your brief
+									{/if}
+								</button>
+							</div>
+						</div>
+					{/if}
+
+					{#if run.coverError}
+						<p class="cover-error" role="alert">{run.coverError}</p>
+					{/if}
 
 					<!-- Optional cover visual reference / direction in Stage 2 -->
 					<div class="context-section" style="margin-top: 1.5rem;">
@@ -861,20 +662,84 @@
 							oninput={(e) => globalState.updateCoverReferencePrompt(active.id, (e.target as HTMLTextAreaElement).value)}
 							placeholder="e.g., Bold white serif title dominating the upper two-thirds on a deep navy background. A photorealistic scene relevant to the topic fills the bottom half. A red circular badge callout in the lower right. Author name in a contrasting bar at the very bottom. High-impact, non-fiction bestseller style similar to mainstream how-to books."
 							rows="4"
-							disabled={isGeneratingCovers}
+							disabled={coversBusy}
 						></textarea>
 
-						<div class="form-actions" style="margin-top: 1rem; display: flex; justify-content: flex-end; width: 100%;">
+						<!-- ── Reference cover ─────────────────────────────────── -->
+						<div class="ref-cover">
+							<div class="ref-cover__header">
+								<span class="ref-cover__title font-serif">Reference Cover</span>
+								<span class="context-optional">optional</span>
+							</div>
+							<p class="ref-cover__desc">
+								Upload any cover whose <em>format</em> you want to borrow — it can be from a completely different niche. Claude reads its colour scheme, typography, imagery and graphic treatment, then adds a single cover for your book in that design language. The reference's subject matter is never copied.
+							</p>
+
+							{#if active.coverReferenceFormat}
+								<div class="ref-cover__loaded">
+									{#if referencePreviewUrl}
+										<img class="ref-cover__thumb" src={referencePreviewUrl} alt="Uploaded reference cover" />
+									{:else}
+										<div class="ref-cover__thumb ref-cover__thumb--empty"><BookMarked size={18} /></div>
+									{/if}
+									<div class="ref-cover__loaded-body">
+										<span class="ref-cover__loaded-title">
+											<CheckCircle size={13} /> Design language applied
+										</span>
+										<span class="ref-cover__loaded-name">{active.coverReferenceName || 'Reference cover'}</span>
+										<details class="ref-cover__spec">
+											<summary>View what Claude read from it</summary>
+											<pre>{active.coverReferenceFormat}</pre>
+										</details>
+									</div>
+									<button
+										class="btn btn-ghost btn-xs"
+										onclick={clearReference}
+										disabled={coversBusy}
+										title="Remove reference cover"
+									>
+										<X size={13} />
+									</button>
+								</div>
+								<p class="ref-cover__note">Create a cover below to add one in this design language.</p>
+							{:else}
+								<label class="ref-cover__drop {run.referenceBusy ? 'is-busy' : ''}">
+									<input
+										type="file"
+										accept="image/png,image/jpeg,image/webp"
+										onchange={handleReferenceUpload}
+										disabled={coversBusy}
+									/>
+									{#if run.referenceBusy}
+										<Loader size={16} class="spin-icon" />
+										<span>Reading the reference…</span>
+									{:else}
+										<Upload size={16} />
+										<span><strong>Upload a reference cover</strong> — JPG, PNG or WebP</span>
+									{/if}
+								</label>
+							{/if}
+
+							{#if run.referenceError}
+								<p class="cover-error" role="alert">{run.referenceError}</p>
+							{/if}
+						</div>
+
+						<div class="form-actions" style="margin-top: 1rem; display: flex; justify-content: flex-end; align-items: center; gap: 0.75rem; width: 100%;">
+							{#if !hasBrief}
+								<span class="cover-brief-hint">Describe your direction or upload a reference to build a cover from.</span>
+							{/if}
 							<button
 								class="btn btn-primary"
-								onclick={regenerateAllCovers}
-								disabled={isGeneratingCovers}
+								onclick={createBriefCover}
+								disabled={coversBusy || !hasBrief}
+								title={hasBrief ? 'Add a cover built from your brief' : 'Add direction or a reference cover first'}
 								style="background-color: #8b7355; border-color: #8b7355;"
 							>
-								{#if isGeneratingCovers}
-									<span class="btn-spinner"></span> Generating Cover Options…
+								{#if run.loadingBatch === 'brief'}
+									<span class="btn-spinner"></span> Creating cover…
 								{:else}
-									<Zap size={15} /> Generate Cover Options
+									<Zap size={15} /> Create Cover
 								{/if}
 							</button>
 						</div>
@@ -893,7 +758,13 @@
 					<p>AI has structured the outline for <strong>{active.title}</strong>. Edit any chapter title or summary, then approve to begin writing.</p>
 				</div>
 
-				{#if isGeneratingPlan || (active.chapters.length === 0 && active.status !== 'failed')}
+				{#if run.planError || (active.status === 'failed' && active.chapters.length === 0 && !run.isGeneratingPlan)}
+					<ChapterPlanError
+						error={run.planError ?? 'Chapter plan generation failed. Please try again.'}
+						isRetrying={run.isGeneratingPlan}
+						onRetry={retryChapterPlan}
+					/>
+				{:else if run.isGeneratingPlan || active.chapters.length === 0}
 					<div class="plan-loading">
 						<div class="plan-skeleton">
 							{#each [1,2,3,4,5] as _}
@@ -901,31 +772,6 @@
 							{/each}
 						</div>
 						<p class="generating-label font-serif"><Loader size={14} class="spin-icon" /> Building chapter structure…</p>
-					</div>
-				{:else if active.status === 'failed' && active.chapters.length === 0}
-					<div class="plan-error">
-						<div class="plan-error-icon">
-							<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-								<circle cx="12" cy="12" r="10"/>
-								<line x1="12" y1="8" x2="12" y2="12"/>
-								<line x1="12" y1="16" x2="12.01" y2="16"/>
-							</svg>
-						</div>
-						<h3 class="font-serif plan-error-title">Chapter plan generation failed</h3>
-						<p class="plan-error-message">
-							{#if active.logs && active.logs.length > 0}
-								{active.logs[active.logs.length - 1].message}
-							{:else}
-								Something went wrong while building the outline. This is usually a network or API issue.
-							{/if}
-						</p>
-						<button
-							class="btn btn-primary plan-retry-btn"
-							onclick={() => generateChapterPlan(active)}
-							disabled={isGeneratingPlan}
-						>
-							<RefreshCw size={15} /> Retry Generation
-						</button>
 					</div>
 				{:else}
 					{@const cover = active.coverSettings}
@@ -1115,10 +961,10 @@
 										<button
 											class="btn btn-ghost btn-xs"
 											onclick={() => handleRegenerateChapter(idx)}
-											disabled={isWriting || regeneratingChapterIdx !== null}
+											disabled={run.isWriting || run.regeneratingChapterIdx !== null}
 											title="Regenerate this chapter"
 										>
-											{#if regeneratingChapterIdx === idx}
+											{#if run.regeneratingChapterIdx === idx}
 												<Loader size={13} class="spin-icon" />
 											{:else}
 												<RotateCcw size={13} /> Redo
@@ -1146,7 +992,7 @@
 									<span class="msg">{log.message}</span>
 								</div>
 							{/each}
-							{#if isWriting || regeneratingChapterIdx !== null}
+							{#if run.isWriting || run.regeneratingChapterIdx !== null}
 								<div class="log-row running pulse">
 									<span class="ts">[{new Date().toLocaleTimeString()}]</span>
 									<span class="step">SYSTEM</span>
@@ -1192,7 +1038,14 @@
 						</div>
 					{/if}
 
-					<h2 class="font-serif">{active.title}</h2>
+					<div class="complete-title-row">
+						<h2 class="font-serif">{active.title}</h2>
+						<button
+							class="cost-badge"
+							onclick={() => showCostDialog = true}
+							title="Estimated AI generation cost for this book"
+						>~{activeBookCost < 0.01 && activeBookCost > 0 ? '<$0.01' : `$${activeBookCost.toFixed(2)}`}</button>
+					</div>
 					<p class="font-serif">Your ebook is complete — {active.chapters.length} chapters written, verified, and illustrated.</p>
 
 					<div class="complete-actions">
@@ -1210,10 +1063,10 @@
 									<button
 										class="btn btn-ghost btn-xs"
 										onclick={() => handleRegenerateChapter(idx)}
-										disabled={regeneratingChapterIdx !== null}
+										disabled={run.regeneratingChapterIdx !== null}
 										title="Regenerate chapter"
 									>
-										{#if regeneratingChapterIdx === idx}
+										{#if run.regeneratingChapterIdx === idx}
 											<Loader size={12} class="spin-icon" />
 										{:else}
 											<RotateCcw size={12} /> Redo
@@ -1230,6 +1083,12 @@
 	</main>
 </div>
 
+<BookCostDialog
+	open={showCostDialog}
+	usage={active?.usage}
+	onClose={() => showCostDialog = false}
+/>
+
 <!-- Delete confirmation dialog — rendered outside the layout flow -->
 <ConfirmDialog
 	open={deleteConfirmOpen}
@@ -1239,6 +1098,19 @@
 	intent="danger"
 	onConfirm={confirmDeleteBook}
 	onCancel={cancelDeleteBook}
+/>
+
+<CoverPreviewDialog
+	open={previewCoverIdx !== null && previewOption !== null}
+	option={previewOption}
+	index={previewCoverIdx ?? 0}
+	total={active?.coverOptions.length ?? 0}
+	busy={coversBusy}
+	onSelect={() => previewCoverIdx !== null && selectCoverAndProceed(previewCoverIdx)}
+	onRegenerate={() => previewCoverIdx !== null && regenerateSingleCover(previewCoverIdx)}
+	onPrev={() => pagePreview(-1)}
+	onNext={() => pagePreview(1)}
+	onClose={closePreview}
 />
 
 <style>
@@ -1368,6 +1240,46 @@
 
 	.form-group { display: flex; flex-direction: column; gap: 0.35rem; }
 	.form-group label { font-size: 0.84rem; font-weight: 600; }
+
+	/* ── Target length: preset chips + number input ─────────────────── */
+	.page-presets { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+	.page-chip {
+		font: inherit;
+		font-size: 0.82rem;
+		font-weight: 600;
+		padding: 0.4rem 0.7rem;
+		border: 1px solid var(--border-color);
+		border-radius: var(--radius-md, 6px);
+		background: var(--bg-card, #fff);
+		color: var(--text-color, inherit);
+		cursor: pointer;
+		transition: background-color 0.12s, border-color 0.12s, color 0.12s;
+	}
+	.page-chip:hover { border-color: var(--accent-color, #8E7453); }
+	.page-chip--active {
+		background: var(--accent-color, #8E7453);
+		border-color: var(--accent-color, #8E7453);
+		color: #fff;
+	}
+	.page-custom { display: flex; align-items: center; gap: 0.35rem; margin-left: 0.15rem; }
+	.page-custom input {
+		width: 5.5rem;
+		font: inherit;
+		font-size: 0.82rem;
+		padding: 0.4rem 0.5rem;
+		border: 1px solid var(--border-color);
+		border-radius: var(--radius-md, 6px);
+		background: var(--bg-card, #fff);
+		color: inherit;
+	}
+	.page-custom__unit { font-size: 0.78rem; color: var(--text-muted, #6A6055); }
+	.page-hint {
+		margin: 0.15rem 0 0;
+		font-size: 0.76rem;
+		color: var(--text-muted, #6A6055);
+	}
+	/* A 20+ chapter book is a long, costly run — say so before they commit. */
+	.page-hint__warn { color: var(--accent-color, #8E7453); font-weight: 600; }
 
 	.parameters-section {
 		border: 1px solid var(--border-color); background-color: var(--bg-inset);
@@ -1584,6 +1496,12 @@
 	}
 	@media (max-width: 700px) { .cover-options-grid { grid-template-columns: 1fr; } }
 
+	/* Says why Create Cover is disabled — a dead button with no reason reads as
+	   a bug rather than a precondition. */
+	.cover-brief-hint {
+		font-size: 0.78rem; color: var(--text-muted); text-align: right;
+	}
+
 	.cover-option-card {
 		border: 2px solid var(--border-color); border-radius: var(--radius-md);
 		overflow: hidden; transition: var(--transition); background: var(--bg-card);
@@ -1591,17 +1509,43 @@
 	.cover-option-card:hover { border-color: var(--border-focus); box-shadow: var(--shadow-md); }
 	.cover-option-card.selected { border-color: var(--accent); }
 
+	/* The tile carries the cover's own 2:3 trim size, so the artwork fills it
+	   edge to edge with nothing cropped and no letterbox field behind it. */
 	.cover-option-preview {
-		position: relative; height: 280px; overflow: hidden;
+		position: relative; aspect-ratio: 2 / 3; overflow: hidden;
 		background-color: var(--bg-inset);
 		display: flex; align-items: center; justify-content: center;
+		width: 100%; padding: 0; border: none;
+		font: inherit; color: inherit; cursor: zoom-in;
 	}
-	.cover-option-preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+	.cover-option-preview:disabled { cursor: default; }
+	.cover-option-preview img {
+		width: 100%; height: 100%;
+		object-fit: cover; display: block;
+	}
+	.cover-option-preview:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+	/* Preview affordance — the cursor alone doesn't advertise that these open */
+	.cover-zoom-hint {
+		position: absolute; bottom: 0.5rem; right: 0.5rem;
+		display: inline-flex; align-items: center; gap: 0.25rem;
+		font-size: 0.68rem; font-weight: 600;
+		padding: 0.22rem 0.45rem; border-radius: 4px;
+		background: rgba(0,0,0,0.55); color: #fff;
+		opacity: 0; transition: opacity 0.15s;
+		pointer-events: none;
+	}
+	.cover-option-preview:hover .cover-zoom-hint,
+	.cover-option-preview:focus-visible .cover-zoom-hint { opacity: 1; }
 
 	.cover-placeholder {
 		color: var(--text-muted); display: flex; align-items: center;
 		justify-content: center; width: 100%; height: 100%;
 	}
+	.cover-placeholder--failed {
+		flex-direction: column; gap: 0.45rem; text-align: center; padding: 0 1rem;
+	}
+	.cover-placeholder--failed span { font-size: 0.72rem; }
 
 	.cover-regenerating-overlay {
 		position: absolute; inset: 0;
@@ -1611,11 +1555,108 @@
 
 	.cover-option-meta {
 		padding: 0.85rem 1rem;
-		display: flex; justify-content: space-between; align-items: center;
+		display: flex; flex-direction: column; gap: 0.4rem;
 		border-top: 1px solid var(--border-color);
 	}
+	.cover-style-line { display: flex; align-items: center; gap: 0.4rem; }
 	.cover-style-label { font-size: 0.88rem; font-weight: 600; }
-	.cover-option-actions { display: flex; gap: 0.5rem; }
+
+	.cover-origin-badge {
+		display: inline-flex; align-items: center; gap: 0.2rem;
+		font-size: 0.6rem; font-weight: 700; letter-spacing: 0.05em;
+		text-transform: uppercase;
+		padding: 0.12rem 0.3rem; border-radius: 3px;
+		background: #F3F0EB; color: var(--text-muted);
+	}
+	.cover-origin-badge--ai { background: #F0EAFB; color: #6D4AAE; }
+
+	/* Two lines, so a long rationale can't push the Select button out of
+	   alignment with the neighbouring cards in the row. */
+	.cover-concept-line {
+		margin: 0; font-size: 0.74rem; line-height: 1.5; color: var(--text-muted);
+		display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2;
+		-webkit-box-orient: vertical; overflow: hidden;
+		min-height: 2.2em;
+	}
+
+	.cover-option-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: auto; }
+
+	/* ── More variants ─────────────────────────────────────────────────── */
+	.cover-more {
+		margin-top: 1.25rem; padding: 0.9rem 1.1rem;
+		border: 1px dashed var(--border-color); border-radius: var(--radius-md);
+		background: var(--bg-inset);
+		display: flex; align-items: center; justify-content: space-between;
+		gap: 1rem; flex-wrap: wrap;
+	}
+	.cover-more__copy { display: flex; flex-direction: column; gap: 0.1rem; }
+	.cover-more__title { font-size: 0.88rem; font-weight: 600; }
+	.cover-more__hint  { font-size: 0.75rem; color: var(--text-muted); }
+	.cover-more__actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+
+	.cover-error {
+		margin: 0.75rem 0 0; font-size: 0.78rem; color: #B91C1C;
+		background: #FEF2F2; border: 1px solid #FECACA;
+		border-radius: var(--radius-md); padding: 0.5rem 0.7rem;
+	}
+
+	/* ── Reference cover ───────────────────────────────────────────────── */
+	.ref-cover {
+		margin-top: 1.1rem; padding-top: 1rem;
+		border-top: 1px solid var(--border-color);
+		display: flex; flex-direction: column; gap: 0.4rem;
+	}
+	.ref-cover__header { display: flex; align-items: center; gap: 0.5rem; }
+	.ref-cover__title  { font-size: 0.86rem; font-weight: 600; }
+	.ref-cover__desc   { margin: 0 0 0.35rem; font-size: 0.78rem; line-height: 1.6; color: var(--text-muted); }
+	.ref-cover__note   { margin: 0; font-size: 0.73rem; color: var(--text-muted); }
+
+	.ref-cover__drop {
+		display: flex; align-items: center; justify-content: center; gap: 0.5rem;
+		padding: 1rem; border: 1px dashed var(--border-color);
+		border-radius: var(--radius-md); background: var(--bg-card);
+		font-size: 0.8rem; color: var(--text-muted);
+		cursor: pointer; transition: border-color 0.15s, background 0.15s;
+	}
+	.ref-cover__drop:hover { border-color: var(--accent); background: var(--bg-inset); }
+	.ref-cover__drop.is-busy { cursor: progress; }
+	.ref-cover__drop input { display: none; }
+	.ref-cover__drop strong { color: var(--text-color); font-weight: 600; }
+
+	.ref-cover__loaded {
+		display: flex; align-items: flex-start; gap: 0.75rem;
+		padding: 0.75rem; border: 1px solid var(--border-color);
+		border-radius: var(--radius-md); background: var(--bg-card);
+	}
+	.ref-cover__thumb {
+		width: 44px; height: 62px; object-fit: cover; flex-shrink: 0;
+		border-radius: 3px; border: 1px solid var(--border-color);
+	}
+	.ref-cover__thumb--empty {
+		display: flex; align-items: center; justify-content: center;
+		background: var(--bg-inset); color: var(--text-muted);
+	}
+	.ref-cover__loaded-body { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; flex: 1; }
+	.ref-cover__loaded-title {
+		display: inline-flex; align-items: center; gap: 0.3rem;
+		font-size: 0.8rem; font-weight: 600; color: #15803D;
+	}
+	.ref-cover__loaded-name {
+		font-size: 0.73rem; color: var(--text-muted);
+		overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	}
+	.ref-cover__spec { margin-top: 0.3rem; }
+	.ref-cover__spec summary {
+		font-size: 0.73rem; color: var(--accent); cursor: pointer; user-select: none;
+	}
+	.ref-cover__spec pre {
+		margin: 0.4rem 0 0; padding: 0.6rem 0.7rem;
+		background: var(--bg-inset); border: 1px solid var(--border-color);
+		border-radius: 4px;
+		font-size: 0.7rem; line-height: 1.6; color: var(--text-muted);
+		white-space: pre-wrap; word-break: break-word;
+		max-height: 160px; overflow-y: auto;
+	}
 
 	/* Generating skeletons */
 	.generating-covers-placeholder { display: flex; flex-direction: column; align-items: center; gap: 2rem; }
@@ -1631,29 +1672,6 @@
 	.plan-loading { display: flex; flex-direction: column; gap: 1.5rem; align-items: center; }
 	.plan-skeleton { display: flex; flex-direction: column; gap: 0.75rem; width: 100%; }
 	.chapter-skeleton { height: 72px; border-radius: var(--radius-sm); background: var(--bg-inset); }
-
-	/* Error / retry state */
-	.plan-error {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 1rem;
-		padding: 3rem 2rem;
-		text-align: center;
-		background: var(--bg-inset);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-md);
-	}
-	.plan-error-icon { color: #c0392b; opacity: 0.85; }
-	.plan-error-title { font-size: 1.15rem; color: var(--text-primary); margin: 0; }
-	.plan-error-message {
-		font-size: 0.875rem;
-		color: var(--text-muted);
-		max-width: 480px;
-		line-height: 1.6;
-		margin: 0;
-	}
-	.plan-retry-btn { gap: 0.45rem; margin-top: 0.5rem; }
 
 	/* Wide variant for Stage 3 two-column layout */
 	.stage-workspace--wide { max-width: 1200px; }
@@ -2112,6 +2130,21 @@
 	}
 	.complete-card h2 { font-size: 2rem; margin: 0; }
 	.complete-card > p { color: var(--text-muted); font-size: 0.95rem; margin: 0; }
+	.complete-title-row { display: flex; align-items: center; justify-content: center; gap: 0.6rem; flex-wrap: wrap; }
+	.complete-title-row h2 { margin: 0; }
+	.cost-badge {
+		font-family: var(--font-sans, 'Inter', sans-serif);
+		font-size: 0.78rem;
+		font-weight: 600;
+		color: var(--accent, #8E7453);
+		background: var(--accent-light);
+		border: 1px solid var(--accent, #8E7453);
+		border-radius: 999px;
+		padding: 0.2rem 0.65rem;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+	.cost-badge:hover { opacity: 0.85; }
 	.complete-actions { display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center; }
 	.complete-chapter-summary { width: 100%; text-align: left; margin-top: 1rem; border-top: 1px solid var(--border-color); padding-top: 1rem; }
 	.complete-chapter-summary h4 { font-size: 0.95rem; margin-bottom: 0.75rem; color: var(--text-muted); }

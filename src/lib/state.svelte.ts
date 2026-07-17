@@ -1,4 +1,5 @@
-import type { Book, ApiKeys, StepLog, Chapter, CoverSettings, CoverOption, PipelineStage } from './types';
+import type { Book, ApiKeys, StepLog, Chapter, CoverSettings, CoverOption, PipelineStage, BibleEntry, IllustrationLabel, BookFormat, BookUsage } from './types';
+import type { CoverDesign } from './coverPalette';
 import { supabase } from './supabase';
 
 class GlobalState {
@@ -182,6 +183,8 @@ class GlobalState {
 		author: string;
 		genre: string;
 		length: 'short' | 'medium' | 'long';
+		/** Target pages, 50–600. Drives the chapter plan; see $lib/bookPlan. */
+		pageCount?: number;
 		tone: string;
 		structure: string;
 		useUltraRealistic: boolean;
@@ -197,6 +200,7 @@ class GlobalState {
 			author: params.author || 'AI Automator',
 			genre: params.genre || 'General',
 			length: params.length,
+			pageCount: params.pageCount,
 			tone: params.tone || 'Informative',
 			structure: params.structure || 'Standard Chapters',
 			useUltraRealistic: params.useUltraRealistic,
@@ -295,11 +299,53 @@ class GlobalState {
 		this.persistBook(updatedBook);
 	}
 
+	/** Replace the rolling book bible — called once per batch fold. */
+	updateBookBible(bookId: string, bible: BibleEntry[]) {
+		const bookIndex = this.books.findIndex(b => b.id === bookId);
+		if (bookIndex === -1) return;
+
+		const updatedBook: Book = { ...this.books[bookIndex], bible, updatedAt: new Date().toISOString() };
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
+	}
+
 	updateBookInteriorDesign(bookId: string, interiorDesign: Record<string, string>) {
 		const bookIndex = this.books.findIndex(b => b.id === bookId);
 		if (bookIndex === -1) return;
 
 		const updatedBook: Book = { ...this.books[bookIndex], interiorDesign, updatedAt: new Date().toISOString() };
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
+	}
+
+	/**
+	 * Add one AI call's cost to a book's running total. `claude` carries real
+	 * token usage from an Anthropic response and is summed per model; `images`
+	 * / `searches` are call counts for providers that report no usage data —
+	 * their cost is only ever an estimate (see $lib/pricing).
+	 */
+	addBookUsage(bookId: string, entry: { claude?: { model: string; inputTokens: number; outputTokens: number } | null; images?: number; searches?: number }) {
+		const bookIndex = this.books.findIndex(b => b.id === bookId);
+		if (bookIndex === -1) return;
+
+		const current: BookUsage = this.books[bookIndex].usage ?? { claude: {}, images: 0, searches: 0 };
+		const claude = { ...current.claude };
+		if (entry.claude) {
+			const { model, inputTokens, outputTokens } = entry.claude;
+			const prior = claude[model] ?? { inputTokens: 0, outputTokens: 0, calls: 0 };
+			claude[model] = {
+				inputTokens: prior.inputTokens + inputTokens,
+				outputTokens: prior.outputTokens + outputTokens,
+				calls: prior.calls + 1
+			};
+		}
+		const usage: BookUsage = {
+			claude,
+			images: current.images + (entry.images ?? 0),
+			searches: current.searches + (entry.searches ?? 0)
+		};
+
+		const updatedBook: Book = { ...this.books[bookIndex], usage, updatedAt: new Date().toISOString() };
 		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
 		this.persistBook(updatedBook);
 	}
@@ -328,7 +374,21 @@ class GlobalState {
 		this.persistBook(updatedBook);
 	}
 
-	updateChapterIllustration(bookId: string, chapterId: string, illustrationUrl: string) {
+	/**
+	 * Replace a chapter's illustration.
+	 *
+	 * `illustrationLabels` is REQUIRED, not optional, and always overwritten —
+	 * labels are coordinates into one specific picture. Carrying the old ones
+	 * over to a new image leaves every callout pointing at a part that is no
+	 * longer there, which is the one failure mode this whole feature exists to
+	 * prevent. A caller with no labels passes [] and says so.
+	 */
+	updateChapterIllustration(
+		bookId: string,
+		chapterId: string,
+		illustrationUrl: string,
+		illustrationLabels: IllustrationLabel[]
+	) {
 		const bookIndex = this.books.findIndex(b => b.id === bookId);
 		if (bookIndex === -1) return;
 
@@ -336,11 +396,52 @@ class GlobalState {
 		if (chapIndex === -1) return;
 
 		const updatedChapters = this.books[bookIndex].chapters.map((c, i) =>
-			i === chapIndex ? { ...c, illustrationUrl } : c
+			i === chapIndex ? { ...c, illustrationUrl, illustrationLabels } : c
 		);
 		const updatedBook: Book = {
 			...this.books[bookIndex],
 			chapters: updatedChapters,
+			updatedAt: new Date().toISOString()
+		};
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
+	}
+
+	/**
+	 * Record the shape the book will be written in.
+	 *
+	 * Written once, before the outline, and read by every chapter afterwards.
+	 * It is persisted rather than recomputed because chapters are written
+	 * concurrently: a format re-derived per chapter would drift, and the whole
+	 * point of a form is that it does not.
+	 */
+	updateBookFormat(bookId: string, format: BookFormat) {
+		const bookIndex = this.books.findIndex(b => b.id === bookId);
+		if (bookIndex === -1) return;
+
+		const updatedBook: Book = {
+			...this.books[bookIndex],
+			format,
+			updatedAt: new Date().toISOString()
+		};
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
+	}
+
+	/**
+	 * Record the colour and type read off the chosen cover.
+	 *
+	 * Persisted rather than derived on render because getting it costs a canvas
+	 * read plus a vision call — doing that on every paint would be absurd, and
+	 * the answer only changes when the cover does.
+	 */
+	updateBookCoverDesign(bookId: string, coverDesign: CoverDesign) {
+		const bookIndex = this.books.findIndex(b => b.id === bookId);
+		if (bookIndex === -1) return;
+
+		const updatedBook: Book = {
+			...this.books[bookIndex],
+			coverDesign,
 			updatedAt: new Date().toISOString()
 		};
 		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
@@ -413,12 +514,55 @@ class GlobalState {
 		this.persistBook(updatedBook);
 	}
 
+	/**
+	 * Append a batch of cover candidates, keeping the ones already on screen.
+	 * Stage 2 loads covers in tiers on demand, so batches accumulate rather
+	 * than replace — use setCoverOptions to start a run from scratch.
+	 */
+	appendCoverOptions(bookId: string, options: CoverOption[]) {
+		const bookIndex = this.books.findIndex(b => b.id === bookId);
+		if (bookIndex === -1) return;
+
+		const existing = this.books[bookIndex].coverOptions;
+		// Re-entrant by id: a batch streams in one cover at a time and calls
+		// this on every arrival, so the same option is appended repeatedly.
+		const merged = [...existing];
+		for (const opt of options) {
+			const at = merged.findIndex(o => o.id === opt.id);
+			if (at === -1) merged.push(opt);
+			else merged[at] = opt;
+		}
+
+		const updatedBook: Book = { ...this.books[bookIndex], coverOptions: merged, updatedAt: new Date().toISOString() };
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
+	}
+
 	/** Update the cover reference / visual direction creative brief. */
 	updateCoverReferencePrompt(bookId: string, prompt: string) {
 		const bookIndex = this.books.findIndex(b => b.id === bookId);
 		if (bookIndex === -1) return;
 
 		const updatedBook: Book = { ...this.books[bookIndex], coverReferencePrompt: prompt, updatedAt: new Date().toISOString() };
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
+	}
+
+	/**
+	 * Store the design language extracted from an uploaded reference cover.
+	 * Pass nulls to clear it. The source image is never stored — see
+	 * `coverReferenceFormat` in $lib/types.
+	 */
+	setCoverReferenceFormat(bookId: string, format: string | null, name: string | null) {
+		const bookIndex = this.books.findIndex(b => b.id === bookId);
+		if (bookIndex === -1) return;
+
+		const updatedBook: Book = {
+			...this.books[bookIndex],
+			coverReferenceFormat: format ?? undefined,
+			coverReferenceName:   name   ?? undefined,
+			updatedAt: new Date().toISOString()
+		};
 		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
 		this.persistBook(updatedBook);
 	}

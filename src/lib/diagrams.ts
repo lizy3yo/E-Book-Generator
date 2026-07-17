@@ -6,6 +6,56 @@
  * Supports rendering 45+ industry-standard diagram types (Pie, Bar, SWOT, Flowcharts, Hierarchies, Blueprints, Venns, and more).
  */
 
+/**
+ * Editorial diagram palette — the house style for every rendered diagram.
+ *
+ * Diagrams are framed like plates in a printed manual: a deep navy header bar
+ * carrying the title, an amber rule beneath it, and a warm cream field holding
+ * white cards outlined in navy. A diagram may override any of these per-block
+ * via `color1:` / `color2:` in the DSL; these are the defaults when it doesn't.
+ */
+const DIAGRAM_NAVY   = '#0F2231'; // header bar, card strokes, body text
+const DIAGRAM_AMBER  = '#E07B20'; // accent rule, connectors, step labels
+const DIAGRAM_CREAM  = '#FAF5EA'; // diagram field background
+const DIAGRAM_CARD   = '#FFFFFF'; // node/card fill
+
+/**
+ * Book identity printed in a plate's footer. A plate on a bleed page has no
+ * running footer above it (bleed suppresses the page chrome), so it carries
+ * its own — this is what puts the book back on the page.
+ */
+export interface BookMeta {
+	title?: string;
+	author?: string;
+	/** Cover-derived primary/dark colour. Falls back to DIAGRAM_NAVY when the
+	 *  book has no cover read yet, so a diagram's dark tone follows the same
+	 *  colour the rest of the interior (chapter titles, table headers) does. */
+	navyColor?: string;
+	/** Cover-derived accent colour. Falls back to DIAGRAM_AMBER. */
+	amberColor?: string;
+	/** Pale, cover-derived tint for a node/card's fill. Falls back to DIAGRAM_CARD (white). */
+	cardColor?: string;
+}
+
+/**
+ * Classes for an image plate that owns its page.
+ *
+ * `diagram-box--fullpage` is the canonical "owns its page" hook — every CSS
+ * rule that makes a plate fill its sheet keys on it. The paginator matches the
+ * looser '--fullpage' substring, so `diagram-box--image--fullpage` alone was
+ * enough to win a page but NOT enough to match those rules, which left image
+ * plates on a bleed page without the styles that fill it. Carry both:
+ * `--image--fullpage` for the figure/img layout, `--fullpage` for the page fill.
+ */
+const FULLPAGE_IMAGE_CLASSES =
+	'diagram-box diagram-box--image diagram-box--image--fullpage diagram-box--fullpage';
+
+/**
+ * Keys whose values are free prose or URLs. Every other unrecognised key is
+ * treated as a comma-separated list, which would corrupt these.
+ */
+const PROSE_KEYS = new Set(['image', 'url', 'takeaway', 'takeawaytitle', 'root', 'caption', 'callouts']);
+
 interface DiagramData {
 	type: string;
 	title: string;
@@ -47,6 +97,10 @@ function parseDiagramLines(content: string): DiagramData {
 			data.labels = val.split(',').map(s => s.trim());
 		} else if (key === 'values') {
 			data.values = val.split(',').map(s => parseFloat(s.trim()));
+		} else if (PROSE_KEYS.has(key)) {
+			// Prose and URLs are opaque single values — the comma-split below
+			// would shred a sentence or a data: URL into fragments.
+			data[key] = val;
 		} else {
 			if (val.includes(',')) {
 				data[key] = val.split(',').map(s => s.trim());
@@ -57,6 +111,24 @@ function parseDiagramLines(content: string): DiagramData {
 	}
 
 	return data;
+}
+
+/** XML-safe escape for text inside an SVG <text> node. */
+const svgEsc = (s: string) =>
+	String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+/** Greedy word-wrap into lines of at most maxChars characters. */
+function wrapSvgText(text: string, maxChars: number): string[] {
+	const words = String(text).split(' ');
+	const lines: string[] = [];
+	let cur = '';
+	for (const w of words) {
+		const candidate = cur ? `${cur} ${w}` : w;
+		if (candidate.length > maxChars && cur) { lines.push(cur); cur = w; }
+		else cur = candidate;
+	}
+	if (cur) lines.push(cur);
+	return lines.length ? lines : [''];
 }
 
 function hexToRgbA(color: string, alpha = 0.1): string {
@@ -81,7 +153,8 @@ function renderDiagram(
 	rawBlocksLength: number,
 	rawBlocks: string[],
 	chapterId: string = '',
-	diagramIndex: number = 0
+	diagramIndex: number = 0,
+	bookMeta: BookMeta = {}
 ): string {
 	const type = data.type.toLowerCase().replace(/[^a-z0-9]/g, '');
 	const title = data.title || 'Diagram';
@@ -276,55 +349,207 @@ function renderDiagram(
 
 	// 6. FLOWCHART / TIMELINE / GANTT / PROCESS / WORKFLOW
 	else if (type.includes('flowchart') || type.includes('process') || type.includes('timeline') || type.includes('gantt') || type.includes('workflow') || type.includes('dfd') || type.includes('sequence') || type.includes('activity') || type.includes('state') || type.includes('swimlane')) {
-		const steps = data.steps || data.nodes || [];
-		const stepList = Array.isArray(steps) ? steps : [steps];
-		const c1 = data.color1 || 'var(--r-accent, #C9A84C)';
+		const accent = data.color1 || bookMeta.amberColor || DIAGRAM_AMBER;
+		const dark   = data.color2 || bookMeta.navyColor || DIAGRAM_NAVY;
+		const card   = bookMeta.cardColor || DIAGRAM_CARD;
 
-		const htmlSteps = stepList.map((step, idx) => {
-			const arrow = idx < stepList.length - 1 ? `<div style="font-size: 1.25rem; color: ${c1}; margin: 0.25rem 0.5rem; text-align: center; align-self: center;">➔</div>` : '';
-			return `
-				<div style="display: flex; flex-direction: column; align-items: center; margin-bottom: 0.5rem;">
-					<div style="background-color: var(--r-table-stripe, #f8fafc); border: 1.5px solid var(--r-border, #cbd5e1); border-radius: 6px; padding: 0.5rem 0.75rem; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.05); min-width: 110px;">
-						<span style="font-size: 0.65rem; font-weight: bold; color: ${c1}; display: block; text-transform: uppercase;">Step 0${idx + 1}</span>
-						<span style="font-size: 0.8rem; font-weight: 600; color: var(--r-title-color);">${step}</span>
-					</div>
-				</div>
-				${arrow}
-			`;
-		}).join('');
+		// Steps may arrive as an array of individual labels, or as a single
+		// '->' delimited string produced by the AI (e.g. "A -> B -> C").
+		// Normalise both forms into a flat array of step strings.
+		const rawSteps = data.steps || data.nodes || [];
+		const stepList: string[] = (Array.isArray(rawSteps) ? rawSteps : [rawSteps])
+			.flatMap((s: string) => String(s).split(/\s*->\s*/).map((x: string) => x.trim()))
+			.filter(Boolean);
+		const steps = stepList.length ? stepList : ['No steps defined'];
+
+		// SVG layout constants
+		const SVG_W    = 480;
+		const FONT_PX  = 10.5;
+		const LINE_H   = 15;
+		const PAD_V    = 11;
+		const LABEL_H  = 14;
+		const ARROW_H  = 24;
+		const COL_GAP  = 30;
+
+		// The plate is capped at ~504px of page height (DIAGRAM_SVG_MAX_H in
+		// exportHtml.ts). Past that the SVG scales down, and a long single
+		// column shrinks the text to ~7px — legible on screen, not in print.
+		// So a long flow snakes into two columns instead, keeping every node
+		// at full size. Step numbers carry the reading order down column one
+		// then down column two, which is how a printed manual sets a long
+		// procedure; no inter-column connector is needed (and one drawn back
+		// up the page would have to cross column two's nodes).
+		const MAX_NATURAL_H = 500;
+
+		const esc = svgEsc;
+		const wrapText = wrapSvgText;
+
+		// Lay the steps out in `cols` columns and report the geometry. Narrower
+		// columns wrap text harder, so heights must be recomputed per layout
+		// rather than scaled from the single-column pass.
+		const layOut = (cols: number) => {
+			const nodeW  = (SVG_W - 20 - (cols - 1) * COL_GAP) / cols;
+			const chars  = Math.max(12, Math.floor(nodeW / 8.2));
+			const perCol = Math.ceil(steps.length / cols);
+			const wrapped = steps.map(s => wrapText(s, chars));
+			const heights = wrapped.map(l => PAD_V * 2 + LABEL_H + l.length * LINE_H);
+
+			// Tallest column decides the diagram height
+			let tallest = 0;
+			for (let c = 0; c < cols; c++) {
+				const slice = heights.slice(c * perCol, (c + 1) * perCol);
+				if (!slice.length) continue;
+				const colH = slice.reduce((a, b) => a + b, 0) + (slice.length - 1) * ARROW_H;
+				tallest = Math.max(tallest, colH);
+			}
+			return { cols, nodeW, perCol, wrapped, heights, totalH: tallest + 40 };
+		};
+
+		let L = layOut(1);
+		if (L.totalH > MAX_NATURAL_H && steps.length >= 6) {
+			const two = layOut(2);
+			// Only accept two columns if it actually buys height back
+			if (two.totalH < L.totalH) L = two;
+		}
+		const totalH = L.totalH;
+
+		let svgBody = '';
+		steps.forEach((step, idx) => {
+			const col     = Math.floor(idx / L.perCol);
+			const rowIdx  = idx % L.perCol;
+			const isLastInCol = rowIdx === L.perCol - 1 || idx === steps.length - 1;
+
+			// y is the sum of the nodes above this one within its own column
+			let y = 20;
+			for (let i = col * L.perCol; i < idx; i++) y += L.heights[i] + ARROW_H;
+
+			const x  = 10 + col * (L.nodeW + COL_GAP);
+			const cx = x + L.nodeW / 2;
+			const h  = L.heights[idx];
+
+			// Node rectangle
+			svgBody += `<rect x="${x}" y="${y}" width="${L.nodeW}" height="${h}"
+				rx="7" ry="7" fill="${card}" stroke="${dark}" stroke-width="1.5"/>`;
+
+			// Step label in accent colour
+			svgBody += `<text x="${cx}" y="${y + PAD_V + 10}" text-anchor="middle"
+				font-family="Georgia,serif" font-size="8" font-weight="700"
+				fill="${accent}" letter-spacing="0.8">${esc(`STEP ${String(idx + 1).padStart(2, '0')}`)}</text>`;
+
+			// Wrapped step text
+			L.wrapped[idx].forEach((line, li) => {
+				svgBody += `<text x="${cx}" y="${y + PAD_V + LABEL_H + (li + 1) * LINE_H}"
+					text-anchor="middle" font-family="Georgia,serif"
+					font-size="${FONT_PX}" fill="${dark}">${esc(line)}</text>`;
+			});
+
+			// Arrow down to the next node in this column
+			if (!isLastInCol) {
+				svgBody += `<line x1="${cx}" y1="${y + h + 2}" x2="${cx}" y2="${y + h + ARROW_H - 6}"
+					stroke="${accent}" stroke-width="1.5" marker-end="url(#fc-arrow)"/>`;
+			}
+		});
 
 		body = `
-			<div style="display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 0.5rem; padding: 0.5rem 0; width: 100%;">
-				${htmlSteps}
-			</div>
+			<svg viewBox="0 0 ${SVG_W} ${totalH}" preserveAspectRatio="xMidYMid meet"
+				xmlns="http://www.w3.org/2000/svg" class="diagram-svg"
+				style="display:block;margin:0 auto;width:100%;height:auto;max-width:${SVG_W}px;">
+				<defs>
+					<marker id="fc-arrow" markerWidth="8" markerHeight="6"
+						refX="7" refY="3" orient="auto">
+						<path d="M0,0 L8,3 L0,6 Z" fill="${accent}"/>
+					</marker>
+				</defs>
+				${svgBody}
+			</svg>
 		`;
 	}
 
 	// 7. HIERARCHY / MIND MAP / ORG CHART / TREE / CONCEPT / USE CASE / CLASS
 	else if (type.includes('mindmap') || type.includes('hierarchy') || type.includes('orgchart') || type.includes('tree') || type.includes('concept') || type.includes('classdiagram') || type.includes('usecase') || type.includes('taxonomy')) {
-		const nodes = data.nodes || data.steps || [];
-		const nodeList = Array.isArray(nodes) ? nodes : [nodes];
-		const root = data.root || data.title || 'Hierarchy';
-		const c1 = data.color1 || 'var(--r-title-color, #1E293B)';
-		const c2 = data.color2 || 'var(--r-accent, #C9A84C)';
+		const dark   = data.color1 || bookMeta.navyColor || DIAGRAM_NAVY;
+		const accent = data.color2 || bookMeta.amberColor || DIAGRAM_AMBER;
+		const card   = bookMeta.cardColor || DIAGRAM_CARD;
+		const root   = data.root || data.title || 'Hierarchy';
 
-		const children = nodeList.map((n) => {
-			return `<div style="background-color: #fff; border: 1px solid var(--r-border); border-radius: 4px; padding: 0.4rem 0.6rem; font-size: 0.75rem; color: var(--r-text); text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05); min-width: 85px;">${n}</div>`;
-		}).join('');
+		const rawNodes = data.nodes || data.steps || [];
+		const nodeList: string[] = (Array.isArray(rawNodes) ? rawNodes : [rawNodes])
+			.flatMap((s: string) => String(s).split(/\s*,\s*/).map((x: string) => x.trim()))
+			.filter(Boolean);
+
+		// Indented spine layout: root at top-left, a single spine dropping down
+		// its left edge, and one elbow branching right into each child stacked
+		// vertically.
+		//
+		// This replaces a bus-over-a-grid, which could not express a flat list
+		// of more than COLS siblings: every child hung off one bus, so a child
+		// in row 2 needed a drop line that ran from the bus straight down THROUGH
+		// the nodes in row 0 and 1. A spine has no such crossing at any length,
+		// and children wrap their text instead of being truncated to 20 chars.
+		const SVG_W    = 480;
+		const ROOT_X   = 16;
+		const ROOT_Y   = 16;
+		const ROOT_H   = 40;
+		const ROOT_W   = Math.min(260, SVG_W - 32);
+		const SPINE_X  = ROOT_X + 26;          // drops from inside the root's left
+		const CHILD_X  = SPINE_X + 22;         // elbow lands here
+		const CHILD_W  = SVG_W - CHILD_X - 16;
+		const CHILD_PAD_V = 8;
+		const CHILD_LINE_H = 13;
+		const CHILD_GAP = 10;
+		const CHILD_CHARS = Math.max(12, Math.floor((CHILD_W - 20) / 5.4));
+
+		const wrapped = nodeList.map(n => wrapSvgText(n, CHILD_CHARS));
+		const heights = wrapped.map(l => CHILD_PAD_V * 2 + l.length * CHILD_LINE_H);
+
+		// Root box
+		let svgBody = `
+			<rect x="${ROOT_X}" y="${ROOT_Y}" width="${ROOT_W}" height="${ROOT_H}"
+				rx="8" ry="8" fill="${dark}"/>
+			<text x="${ROOT_X + ROOT_W / 2}" y="${ROOT_Y + ROOT_H / 2 + 4}" text-anchor="middle"
+				font-family="Georgia,serif" font-size="11" font-weight="700"
+				fill="#FFFFFF">${svgEsc(root)}</text>
+		`;
+
+		// Children, stacked; remember each one's centre for the elbows
+		let cy = ROOT_Y + ROOT_H + 16;
+		const centres: number[] = [];
+		nodeList.forEach((node, idx) => {
+			const h = heights[idx];
+			const centre = cy + h / 2;
+			centres.push(centre);
+
+			// Elbow: spine → child
+			svgBody += `<line x1="${SPINE_X}" y1="${centre}" x2="${CHILD_X}" y2="${centre}"
+				stroke="${accent}" stroke-width="1.5"/>`;
+
+			svgBody += `<rect x="${CHILD_X}" y="${cy}" width="${CHILD_W}" height="${h}"
+				rx="6" ry="6" fill="${card}" stroke="${dark}" stroke-width="1.2"/>`;
+
+			wrapped[idx].forEach((line, li) => {
+				svgBody += `<text x="${CHILD_X + CHILD_W / 2}"
+					y="${cy + CHILD_PAD_V + (li + 1) * CHILD_LINE_H - 3}" text-anchor="middle"
+					font-family="Georgia,serif" font-size="9.5" fill="${dark}">${svgEsc(line)}</text>`;
+			});
+
+			cy += h + CHILD_GAP;
+		});
+
+		// Spine last so it sits under nothing it shouldn't: root bottom down to
+		// the final child's centre, stopping there rather than overshooting.
+		if (centres.length) {
+			svgBody = `<line x1="${SPINE_X}" y1="${ROOT_Y + ROOT_H}" x2="${SPINE_X}"
+				y2="${centres[centres.length - 1]}" stroke="${accent}" stroke-width="1.5"/>` + svgBody;
+		}
+
+		const totalH = cy - CHILD_GAP + 16;
 
 		body = `
-			<div style="display: flex; flex-direction: column; align-items: center; gap: 0.75rem; padding: 0.5rem 0; width: 100%;">
-				<!-- Root node -->
-				<div style="background: linear-gradient(135deg, ${c1} 0%, ${c2} 100%); color: #fff; border-radius: 6px; padding: 0.5rem 1rem; font-size: 0.85rem; font-weight: bold; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.08);">
-					${root}
-				</div>
-				<!-- Connective line -->
-				<div style="width: 2px; height: 12px; background-color: ${c2};"></div>
-				<!-- Children nodes grid -->
-				<div style="display: flex; justify-content: center; gap: 0.5rem; flex-wrap: wrap; width: 100%;">
-					${children}
-				</div>
-			</div>
+			<svg viewBox="0 0 ${SVG_W} ${totalH}" preserveAspectRatio="xMidYMid meet"
+				xmlns="http://www.w3.org/2000/svg" class="diagram-svg"
+				style="display:block;margin:0 auto;width:100%;height:auto;max-width:${SVG_W}px;">
+				${svgBody}
+			</svg>
 		`;
 	}
 
@@ -375,17 +600,20 @@ function renderDiagram(
 	}
 
 	const html = `
-		<div class="diagram-box">
+		<div class="diagram-box diagram-box--fullpage">
 			<div class="diagram-box__actions">
 				<button class="edit-trigger edit-trigger--diagram" data-chapter-id="${chapterId}" data-diagram-index="${diagramIndex}" title="Edit this diagram" aria-label="Edit diagram">
 					<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pen-line"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg> Edit
 				</button>
 			</div>
-			<div class="diagram-box__title" style="color: var(--r-title-color); font-weight: bold; border-bottom: 1.5px solid var(--r-accent, #C9A84C); padding-bottom: 0.3rem; margin-bottom: 0.6rem; font-size: 0.95rem;">📊 ${title}</div>
-			${subtitle ? `<div class="diagram-box__subtitle" style="font-size: 0.75rem; color: var(--r-text-muted); margin-top: -0.4rem; margin-bottom: 0.6rem;">${subtitle}</div>` : ''}
-			<div style="display: flex; justify-content: center; width: 100%; box-sizing: border-box;">
+			<div class="diagram-box__header">
+				<div class="diagram-box__title">${title}</div>
+				${subtitle ? `<div class="diagram-box__subtitle">${subtitle}</div>` : ''}
+			</div>
+			<div class="diagram-box__body">
 				${body}
 			</div>
+			${renderPlateFooter(bookMeta)}
 		</div>
 	`;
 
@@ -394,7 +622,182 @@ function renderDiagram(
 	return placeholder;
 }
 
-export function parseMarkdown(md: string, chapterId: string = ''): string {
+/**
+ * Footer band closing a plate: book title left, author right. Renders nothing
+ * when neither is known, so a plate never shows an empty band.
+ */
+function renderPlateFooter(bookMeta: BookMeta): string {
+	const title  = bookMeta.title?.trim() ?? '';
+	const author = bookMeta.author?.trim() ?? '';
+	if (!title && !author) return '';
+	return `<div class="diagram-box__footer">` +
+		`<span class="diagram-box__footer-book">${svgEsc(title)}</span>` +
+		`<span class="diagram-box__footer-author">${svgEsc(author)}</span>` +
+		`</div>`;
+}
+
+/**
+ * Bring an image plate stored by an earlier edit drawer up to current chrome.
+ *
+ * The drawer splices RENDERED HTML into chapter.content rather than markdown,
+ * so an image written before a chrome change stays frozen at that old markup —
+ * no navy header bar, plus a figcaption the bar has since replaced. Fixing the
+ * drawer only helps new writes; this repairs what is already stored, at render
+ * time, so every image matches the diagram plates.
+ */
+function normaliseStoredImagePlate(html: string, chapterId: string, bookMeta: BookMeta): string {
+	if (!html.includes('diagram-box--image')) return html;
+	if (html.includes('diagram-box__header')) return html; // already current
+
+	const src = html.match(/<img[^>]*\ssrc="([^"]+)"/i)?.[1] ?? '';
+	const alt = html.match(/<img[^>]*\salt="([^"]*)"/i)?.[1] ?? '';
+	if (!src || !alt) return html; // no image, or nothing to title the bar with
+
+	// Rebuild rather than patch a bar onto the old markup. The stored HTML
+	// carries frozen inline styles (figure margins, img max-width) that the
+	// current stylesheet cannot override, so a patched block keeps the old
+	// geometry — flush to the plate edge, no cream inset, no photo frame.
+	// Rebuilding drops those inline styles and lets the CSS govern, which is
+	// what makes it match a plate rendered from markdown today.
+	//
+	// This does discard per-image border/radius the drawer may have written.
+	// That is the deliberate trade: consistency with the house plate over
+	// preserving styling frozen against a chrome that no longer exists.
+	const idx = html.match(/data-table-index="(\d+)"/)?.[1] ?? '0';
+	const raw = html.match(/data-table-raw="([^"]*)"/)?.[1]
+		?? encodeURIComponent(`![${alt}](${src})`);
+
+	const editBtn =
+		`<button class="edit-trigger edit-trigger--diagram edit-trigger--inline" ` +
+		`data-chapter-id="${chapterId}" data-table-index="${idx}" data-table-raw="${raw}" ` +
+		`title="Regenerate or edit this image" aria-label="Edit image">${PLATE_EDIT_ICON} Edit</button>`;
+
+	return `<div class="${FULLPAGE_IMAGE_CLASSES}">` +
+		`<div class="diagram-box__actions">${editBtn}</div>` +
+		`<div class="diagram-box__header"><div class="diagram-box__title">${alt}</div></div>` +
+		`<figure><img src="${src}" alt="${alt}" loading="lazy" /></figure>` +
+		`${renderPlateFooter(bookMeta)}` +
+		`</div>`;
+}
+
+const PLATE_EDIT_ICON =
+	'<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pen-line"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>';
+
+/**
+ * The image of a plate, plus its callout labels.
+ *
+ * The picture carries no text — an image model cannot spell, so anything it
+ * letters arrives as convincing gibberish. The labels therefore live in the
+ * fence as data and are set here in real type, which is the only way they are
+ * correct. `callouts` is a JSON array: [{text,x,y,side}], where x/y are
+ * percentages of the IMAGE.
+ *
+ * `.illust-frame` shrink-wraps the image on purpose. The figure is a centred
+ * flex box and the image inside is bounded by max-width/max-height, so it is
+ * usually NARROWER than the figure — positioning a callout at "50%" of the
+ * figure would not put it at 50% of the picture. Percentages only mean what the
+ * labels intend when their containing block is the rendered image box itself.
+ */
+function renderPlateImage(image: string, title: string, calloutsRaw: unknown): string {
+	const img = `<img src="${image}" alt="${svgEsc(title)}" loading="lazy" />`;
+
+	let callouts: any[] = [];
+	if (typeof calloutsRaw === 'string' && calloutsRaw.trim()) {
+		try {
+			const parsed = JSON.parse(calloutsRaw);
+			if (Array.isArray(parsed)) callouts = parsed;
+		} catch {
+			// A malformed callout list is a plate with no labels, never a broken
+			// plate: the picture is the thing worth keeping.
+			console.error('Failed to parse plate callouts:', calloutsRaw);
+		}
+	}
+
+	const valid = callouts.filter(
+		c => c && typeof c.text === 'string' && c.text.trim() &&
+		     Number.isFinite(Number(c.x)) && Number.isFinite(Number(c.y)) &&
+		     Number(c.x) >= 0 && Number(c.x) <= 100 &&
+		     Number(c.y) >= 0 && Number(c.y) <= 100
+	);
+
+	if (!valid.length) return img;
+
+	const marks = valid
+		.map(c =>
+			`<span class="illust-callout illust-callout--${c.side === 'left' ? 'left' : 'right'}" ` +
+			`style="left:${Number(c.x)}%;top:${Number(c.y)}%;">` +
+			`<span class="illust-callout__dot"></span>` +
+			`<span class="illust-callout__line"></span>` +
+			`<span class="illust-callout__text">${svgEsc(String(c.text))}</span>` +
+			`</span>`
+		)
+		.join('');
+
+	return `<span class="illust-frame">${img}${marks}</span>`;
+}
+
+/**
+ * Full-page image plate — the house figure format.
+ *
+ * Renders like a plate in a printed manual: a navy header bar carrying the
+ * title and subtitle, the image filling the cream field beneath it, and an
+ * optional takeaway box closing the page.
+ *
+ * The wrapper must carry `diagram-box--image--fullpage` and contain a <figure>:
+ * that pair is what exportHtml's paginator keys on to hand the block a whole
+ * page (it assigns BODY_H rather than measuring, and flushes around it).
+ */
+function renderPlate(
+	data: DiagramData,
+	rawBlocks: string[],
+	chapterId: string,
+	visualBlockIndex: number,
+	bookMeta: BookMeta = {}
+): string {
+	const title    = data.title || '';
+	const subtitle = data.subtitle || '';
+	const image    = data.image || data.url || '';
+	const takeaway = data.takeaway || '';
+	const takeawayTitle = data.takeawaytitle || 'Reader takeaway';
+
+	if (!image) {
+		return `<div class="diagram-error">Plate${title ? ` "${title}"` : ''} is missing an "image:" URL.</div>`;
+	}
+
+	const editBtn =
+		`<button class="edit-trigger edit-trigger--diagram" data-chapter-id="${chapterId}" ` +
+		`data-diagram-index="${visualBlockIndex}" title="Edit this plate" aria-label="Edit plate">` +
+		`${PLATE_EDIT_ICON} Edit</button>`;
+
+	const header = title || subtitle
+		? `<div class="diagram-box__header">` +
+		  (title ? `<div class="diagram-box__title">${title}</div>` : '') +
+		  (subtitle ? `<div class="diagram-box__subtitle">${subtitle}</div>` : '') +
+		  `</div>`
+		: '';
+
+	const takeawayHtml = takeaway
+		? `<div class="plate-takeaway">` +
+		  `<div class="plate-takeaway__title">${takeawayTitle}</div>` +
+		  `<p class="plate-takeaway__body">${takeaway}</p>` +
+		  `</div>`
+		: '';
+
+	const html =
+		`<div class="${FULLPAGE_IMAGE_CLASSES} diagram-box--plate">` +
+		`<div class="diagram-box__actions">${editBtn}</div>` +
+		`${header}` +
+		`<figure>${renderPlateImage(image, title, data.callouts)}</figure>` +
+		`${takeawayHtml}` +
+		`${renderPlateFooter(bookMeta)}` +
+		`</div>`;
+
+	const placeholder = `\x02RAWBLOCK${rawBlocks.length}\x03`;
+	rawBlocks.push(html);
+	return placeholder;
+}
+
+export function parseMarkdown(md: string, chapterId: string = '', bookMeta: BookMeta = {}): string {
 	if (!md) return '<p>No content written for this chapter yet.</p>';
 
 	let src = md.trim();
@@ -460,12 +863,36 @@ export function parseMarkdown(md: string, chapterId: string = ''): string {
 	// Restore any temporarily renamed brackets
 	src = src.replace(/\x01/g, '<');
 
+	// Image plates spliced into content by the edit drawer are stored as
+	// rendered HTML, so they are frozen at the chrome of whenever they were
+	// written. Repair them here rather than leaving old books stranded.
+	for (let i = 0; i < rawBlocks.length; i++) {
+		rawBlocks[i] = normaliseStoredImagePlate(rawBlocks[i], chapterId, bookMeta);
+	}
+
+	// ── Step 1.45: Parse full-page image plates before escaping ─────────────
+	// The extended image form: carries a title, subtitle and takeaway that a
+	// bare ![alt](url) has nowhere to put. Runs before the image extractor in
+	// Step 1.6 so a plate's image: line is never mistaken for a loose image.
+	const plateRegex = /```plate\r?\n([\s\S]*?)```/g;
+	src = src.replace(plateRegex, (_match, blockContent) => {
+		try {
+			const parsed = parseDiagramLines(blockContent);
+			const html = renderPlate(parsed, rawBlocks, chapterId, visualBlockCounter, bookMeta);
+			visualBlockCounter++;
+			return html;
+		} catch (err) {
+			console.error('Failed to render plate:', err);
+			return `<div class="diagram-error">Failed to render plate: ${(err as Error).message}</div>`;
+		}
+	});
+
 	// ── Step 1.5: Parse custom diagram blocks before escaping ───────────────
 	const blockRegex = /```(?:diagram|mermaid)\r?\n([\s\S]*?)```/g;
 	src = src.replace(blockRegex, (match, blockContent) => {
 		try {
 			const parsed = parseDiagramLines(blockContent);
-			const html = renderDiagram(parsed, rawBlocks.length, rawBlocks, chapterId, visualBlockCounter);
+			const html = renderDiagram(parsed, rawBlocks.length, rawBlocks, chapterId, visualBlockCounter, bookMeta);
 			diagramCounter++;
 			visualBlockCounter++;
 			return html;
@@ -481,15 +908,19 @@ export function parseMarkdown(md: string, chapterId: string = ''): string {
 	// as raw text instead of <img> tags. We pull them out as raw blocks here so
 	// they survive escaping intact and display correctly in the reader / PDF.
 	//
-	// Handles both standalone image lines (own paragraph) and inline images
-	// embedded mid-sentence.  Standalone images get a centred figure wrapper
-	// with a caption; inline images are replaced with a plain <img> tag.
+	// Every image renders as a full-page plate: the alt text is promoted into
+	// the navy header bar and the image fills the cream field below, matching
+	// the ```plate form minus the subtitle and takeaway it has no room for.
+	// Note this applies to an image written mid-sentence too — it will break
+	// its paragraph onto a page of its own. Use ```plate for authored figures.
 	src = src.replace(/!\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g, (_fullMatch, alt, url) => {
-		const caption = alt ? `<figcaption style="text-align:center;font-size:0.78rem;color:var(--r-text-muted,#64748B);margin-top:0.35rem;font-style:italic;">${alt}</figcaption>` : '';
-		// Wrap in diagram-box so the edit overlay pattern is consistent with
-		// all other visual blocks and the edit drawer can splice it correctly.
-		const editBtn = `<button class="edit-trigger edit-trigger--diagram edit-trigger--inline" data-chapter-id="${chapterId}" data-table-index="${visualBlockCounter}" data-table-raw="${encodeURIComponent(`![${alt}](${url})`)}" title="Regenerate or edit this image" aria-label="Edit image"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pen-line"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg> Edit</button>`;
-		const figHtml = `<div class="diagram-box diagram-box--image"><div class="diagram-box__actions">${editBtn}</div><figure style="margin:0.5rem auto 0;text-align:center;max-width:100%;page-break-inside:avoid;"><img src="${url}" alt="${alt}" loading="lazy" style="max-width:100%;height:auto;border-radius:6px;display:block;margin:0 auto;box-shadow:0 2px 8px rgba(0,0,0,0.12);" />${caption}</figure></div>`;
+		// data-table-index/-raw keep the edit drawer's image path working: it
+		// splices the original ![alt](url) out of the markdown source.
+		const editBtn = `<button class="edit-trigger edit-trigger--diagram edit-trigger--inline" data-chapter-id="${chapterId}" data-table-index="${visualBlockCounter}" data-table-raw="${encodeURIComponent(`![${alt}](${url})`)}" title="Regenerate or edit this image" aria-label="Edit image">${PLATE_EDIT_ICON} Edit</button>`;
+		const header = alt
+			? `<div class="diagram-box__header"><div class="diagram-box__title">${alt}</div></div>`
+			: '';
+		const figHtml = `<div class="${FULLPAGE_IMAGE_CLASSES}"><div class="diagram-box__actions">${editBtn}</div>${header}<figure><img src="${url}" alt="${alt}" loading="lazy" /></figure>${renderPlateFooter(bookMeta)}</div>`;
 		visualBlockCounter++;
 		const placeholder = `\x02RAWBLOCK${rawBlocks.length}\x03`;
 		rawBlocks.push(figHtml);

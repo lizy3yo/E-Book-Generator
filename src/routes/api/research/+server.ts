@@ -137,20 +137,29 @@ Do not include any markdown formatting, code block markers (like \`\`\`json), or
 		}
 
 		// Live API Call to Exa AI
-		const response = await fetch('https://api.exa.ai/search', {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), 12_000);
+
+	let response: Response;
+	try {
+		response = await fetch('https://api.exa.ai/search', {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',
 				'x-api-key': activeApiKey
 			},
+			signal: controller.signal,
 			body: JSON.stringify({
 				query: query,
 				useAutoprompt: true,
-				numResults: 8,
+				numResults: 5,
 				type: 'neural',
-				contents: { text: true }
+				contents: { text: { maxCharacters: 800 } }
 			})
 		});
+	} finally {
+		clearTimeout(timeout);
+	}
 
 		if (!response.ok) {
 			const errText = await response.text();
@@ -163,7 +172,7 @@ Do not include any markdown formatting, code block markers (like \`\`\`json), or
 			title: item.title || 'Untitled Source',
 			url: item.url || '#',
 			snippet: (item.text || item.extract || item.summary || '')
-				? (item.text || item.extract || item.summary).substring(0, 500) + '...'
+				? (item.text || item.extract || item.summary).substring(0, 400)
 				: 'No snippet available.'
 		}));
 

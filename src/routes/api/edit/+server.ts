@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { CLAUDE_WRITING_MODEL, CLAUDE_OPUS_MODEL, ANTHROPIC_API_KEY } from '$env/static/private';
+import { NO_TEXT_CLAUSE } from '$lib/illustration';
 
 const VISUAL_DIRECTIVES = `
 VISUAL ELEMENTS & LAYOUT DIRECTIVES — Use the RIGHT element for each content type:
@@ -302,7 +303,8 @@ Your task is to take an existing illustration prompt and apply a user's instruct
 Rules:
 - Return ONLY the final prompt string — no commentary.
 - Keep the artistic style terms from the original prompt.
-- The prompt must be under 500 characters.`;
+- Keep the original's concrete detail. These prompts are art-directed — the palette with its hex values, the composition, the lighting direction, the lens and framing. Preserve all of it except what the instruction actually changes. Do not summarise the prompt down; an image model invents whatever you leave out.
+- NEVER introduce text, words, letters, numerals, labels, captions, annotations or signage into the image, and never remove the original's prohibition on them, whatever the instruction asks. Image models cannot spell; any lettering they attempt arrives as gibberish. Labels for this plate are set separately in real type. If the user asks for a label or caption in the picture, apply the rest of their instruction and leave the text out.`;
 
 			userPrompt = `Original illustration prompt for Chapter ${chapterOrder}: "${chapterTitle}" of "${bookTitle}":
 ${illustrationPrompt}
@@ -423,6 +425,11 @@ COVER SETTINGS: ${JSON.stringify(coverSettings || {})}`;
 
 		const data = await response.json();
 		const text = (data.content?.find((c: any) => c.type === 'text')?.text || '').trim();
+		const usage = {
+			model: selectedModel,
+			inputTokens: data.usage?.input_tokens ?? 0,
+			outputTokens: data.usage?.output_tokens ?? 0
+		};
 
 		let contentText = text;
 		let designOverrides: any = null;
@@ -448,19 +455,23 @@ COVER SETTINGS: ${JSON.stringify(coverSettings || {})}`;
 		}
 
 		if (action === 'edit-chapter' || action === 'reconstruct-chapter') {
-			return json({ success: true, content: contentText, design: designOverrides, source: 'live' });
+			return json({ success: true, content: contentText, design: designOverrides, usage, source: 'live' });
 		}
 		if (action === 'edit-page' || action === 'reconstruct-page' || action === 'add-page') {
-			return json({ success: true, pageContent: contentText, design: designOverrides, source: 'live' });
+			return json({ success: true, pageContent: contentText, design: designOverrides, usage, source: 'live' });
 		}
 		if (action === 'edit-illustration') {
-			return json({ success: true, prompt: text, source: 'live' });
+			// Re-append the ban rather than trusting the refinement to have carried
+			// it. The instruction may have asked for a caption, or the model may
+			// simply have dropped the clause while rewriting — either way the image
+			// model would letter the plate, and it cannot spell.
+			return json({ success: true, prompt: `${text.trim()} ${NO_TEXT_CLAUSE}`, usage, source: 'live' });
 		}
 		if (action === 'edit-diagram') {
-			return json({ success: true, diagramRaw: text, source: 'live' });
+			return json({ success: true, diagramRaw: text, usage, source: 'live' });
 		}
 		if (action === 'edit-html-block') {
-			return json({ success: true, htmlBlock: text, source: 'live' });
+			return json({ success: true, htmlBlock: text, usage, source: 'live' });
 		}
 
 		throw new Error('Unhandled action after API response.');

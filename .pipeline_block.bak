@@ -1,0 +1,830 @@
+	// ─────────────────────────────────────────────────────────────────────────
+	// STAGE 1 → Create book + immediately kick off cover generation (→ Stage 2)
+	// ─────────────────────────────────────────────────────────────────────────
+	async function handleCreateBook(e: Event) {
+		e.preventDefault();
+		if (!title.trim() || isGeneratingCovers) return;
+
+		const book = globalState.createBook({
+			title, subtitle, author, genre, length, pageCount,
+			tone: tone.trim() || DEFAULT_TONE,
+			structure: structure.trim() || DEFAULT_STRUCTURE,
+			useUltraRealistic, researchDepth, selfCorrectionLevel,
+			userContext, coverReferencePrompt: ''
+		});
+
+		title = ''; subtitle = ''; author = ''; userContext = '';
+		await generateCoverOptions(book);
+	}
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// STAGE 2 helpers
+	// ─────────────────────────────────────────────────────────────────────────
+
+	/** The author's written brief plus any design language read off a reference
+	 *  cover, composed into the clause appended to every cover prompt. */
+	function coverDirection(book: Book): string {
+		return buildCoverDirection({
+			brief:           book.coverReferencePrompt,
+			referenceFormat: book.coverReferenceFormat
+		});
+	}
+
+	function templatePrompt(template: CoverTemplate, book: Book): string {
+		return template.buildPrompt({
+			title:     book.title,
+			subtitle:  book.subtitle ?? '',
+			author:    book.author ?? 'Unknown Author',
+			genre:     book.genre,
+			direction: coverDirection(book)
+		});
+	}
+
+	/**
+	 * Render a batch of covers concurrently.
+	 *
+	 * Every slot is seeded into state before any image is requested, so covers
+	 * hold their position in the grid no matter what order they finish in, and
+	 * each card can show its own progress. Slots are keyed by id and updated in
+	 * place as results land.
+	 */
+	async function renderCoverBatch(book: Book, specs: CoverOption[]) {
+		const keys = globalState.apiKeys;
+
+		globalState.appendCoverOptions(book.id, specs);
+		pendingCoverIds = [...pendingCoverIds, ...specs.map(s => s.id)];
+
+		await Promise.all(
+			specs.map(async (spec) => {
+				let imageUrl = '';
+				try {
+					imageUrl = await generateImage({
+						prompt:      spec.prompt,
+						apiKey:      keys.imageKey,
+						provider:    keys.imageProvider,
+						useMockMode: keys.useMockMode,
+						isCover:     true
+					});
+				} catch (err: any) {
+					// Keep the slot: an empty imageUrl renders as a failed card the
+					// user can retry, which beats a cover silently going missing.
+					// Surface the provider's reason too — "didn't render" alone gives
+					// the author nothing to act on.
+					console.error(`Cover "${spec.style}" failed to render:`, err);
+					coverBatchError = `"${spec.style}" didn't render: ${err?.message || 'unknown error'}`;
+				}
+
+				globalState.appendCoverOptions(book.id, [{ ...spec, imageUrl }]);
+				pendingCoverIds = pendingCoverIds.filter(id => id !== spec.id);
+			})
+		);
+	}
+
+	function templateSpecs(templates: CoverTemplate[], book: Book): CoverOption[] {
+		return templates.map(t => ({
+			id:      crypto.randomUUID(),
+			prompt:  templatePrompt(t, book),
+			imageUrl: '',
+			style:   t.style,
+			origin:  'template' as CoverOrigin,
+			styleId: t.id,
+			concept: t.rationale
+		}));
+	}
+
+	/** Entry into Stage 2 — renders the template tier. The AI concepts are a
+	 *  further paid batch the author opts into. */
+	async function generateCoverOptions(book: Book) {
+		isGeneratingCovers = true;
+		coverBatchError = null;
+		globalState.setPipelineStage(book.id, 2);
+
+		await renderCoverBatch(book, templateSpecs(COVER_TEMPLATES, book));
+
+		isGeneratingCovers = false;
+	}
+
+	/**
+	 * Ask Claude to devise original cover concepts from the Step 1 brief, then
+	 * render them. Claude writes the image prompts itself, so these are art
+	 * direction the template library has no equivalent for.
+	 */
+	async function generateAiConcepts() {
+		// Independent of the template batch by design — only its own run, or a
+		// full regenerate rebuilding the grid underneath it, can block it.
+		if (!active || loadingBatch === 'ai' || isRegeneratingAll) return;
+		const book = active;
+		loadingBatch = 'ai';
+		coverBatchError = null;
+
+		try {
+			const keys = globalState.apiKeys;
+			const res = await fetch('/api/write', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					action:       'cover-concepts',
+					apiKey:       keys.anthropicKey,
+					useMockMode:  keys.useMockMode,
+					bookTitle:    book.title,
+					bookSubtitle: book.subtitle,
+					bookAuthor:   book.author,
+					genre:        book.genre,
+					tone:         book.tone,
+					structure:    book.structure,
+					length:       book.length,
+					pageCount:    book.pageCount,
+					authorBrief:  book.userContext,
+					// Claude folds the direction into the prompts it writes, so the
+					// clause is NOT appended again downstream.
+					coverDirection: coverDirection(book).trim(),
+					conceptCount: AI_CONCEPT_COUNT
+				})
+			});
+			const data = await res.json();
+			if (!data.success) throw new Error(data.error || 'Could not generate cover concepts.');
+
+			const specs: CoverOption[] = (data.concepts as any[]).map(c => ({
+				id:       crypto.randomUUID(),
+				prompt:   c.prompt,
+				imageUrl: '',
+				style:    c.style,
+				origin:   'ai' as CoverOrigin,
+				concept:  c.concept,
+				basis:    c.basis
+			}));
+
+			// The server degrades to a partial set rather than failing outright, so
+			// say so instead of letting a short grid look like a silent bug.
+			if (specs.length < AI_CONCEPT_COUNT) {
+				coverBatchError = `Claude returned ${specs.length} of ${AI_CONCEPT_COUNT} concepts. Regenerate to try for the rest.`;
+			}
+
+			await renderCoverBatch(book, specs);
+		} catch (err: any) {
+			coverBatchError = err.message || 'Could not generate cover concepts.';
+		}
+
+		loadingBatch = null;
+	}
+
+	/** Regenerate one cover in place, keeping its slot and its art direction. */
+	async function regenerateSingleCover(optionIndex: number) {
+		if (!active || regeneratingCoverIdx !== null || isRegeneratingAll) return;
+		const book = active;
+		const option = book.coverOptions[optionIndex];
+		if (!option) return;
+
+		regeneratingCoverIdx = optionIndex;
+
+		// Templates rebuild from the library so the cover picks up any direction
+		// added since it was first rendered. An AI concept has no template to
+		// rebuild from — its prompt IS the concept — so it re-runs as written.
+		const template = option.styleId
+			? COVER_TEMPLATES.find(t => t.id === option.styleId)
+			: undefined;
+		const prompt = template ? templatePrompt(template, book) : option.prompt;
+
+		try {
+			const keys = globalState.apiKeys;
+			const imageUrl = await generateImage({
+				prompt,
+				apiKey:      keys.imageKey,
+				provider:    keys.imageProvider,
+				useMockMode: keys.useMockMode,
+				isCover:     true
+			});
+			globalState.replaceCoverOption(book.id, optionIndex, { ...option, prompt, imageUrl });
+		} catch (err) {
+			console.error(err);
+			coverBatchError = 'That cover failed to render. Please try again.';
+		}
+
+		regeneratingCoverIdx = null;
+	}
+
+	/**
+	 * Re-render every cover currently loaded, with the latest direction applied.
+	 * Whichever tiers the author had on screen come back — including fresh AI
+	 * concepts, which are re-devised rather than re-rendered, because new
+	 * direction should change the idea and not just the picture.
+	 */
+	async function regenerateAllCovers() {
+		if (!active || coversBusy) return;
+		const book = active;
+		const hadAi = hasAiConcepts;
+
+		isRegeneratingAll = true;
+		globalState.setCoverOptions(book.id, []);
+		pendingCoverIds = [];
+
+		await generateCoverOptions(book);
+		// Released before the concepts run so its own button reflects its own
+		// state rather than staying dead for the whole sequence.
+		isRegeneratingAll = false;
+		if (hadAi) await generateAiConcepts();
+	}
+
+	// ── Reference cover ───────────────────────────────────────────────────────
+
+	/** Read a reference cover's design language and attach it to the book.
+	 *  The image is analysed once and discarded — only the spec is kept. */
+	async function handleReferenceUpload(e: Event) {
+		const input = e.target as HTMLInputElement;
+		const file  = input.files?.[0];
+		if (!file || !active) return;
+
+		const book = active;
+		referenceBusy  = true;
+		referenceError = null;
+
+		try {
+			const payload = await fileToImagePayload(file);
+			referencePreviewUrl = payload.previewUrl;
+
+			const keys = globalState.apiKeys;
+			const res = await fetch('/api/write', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					action:      'analyze-cover-reference',
+					apiKey:      keys.anthropicKey,
+					useMockMode: keys.useMockMode,
+					referenceImage: { mediaType: payload.mediaType, data: payload.data }
+				})
+			});
+			const data = await res.json();
+			if (!data.success) throw new Error(data.error || 'Could not read that cover.');
+
+			globalState.setCoverReferenceFormat(book.id, data.format, file.name);
+		} catch (err: any) {
+			referenceError = err.message || 'Could not read that cover.';
+			referencePreviewUrl = null;
+		}
+
+		referenceBusy = false;
+		// Reset the input so re-picking the same file fires a fresh change event.
+		input.value = '';
+	}
+
+	function clearReference() {
+		if (!active || referenceBusy) return;
+		globalState.setCoverReferenceFormat(active.id, null, null);
+		referencePreviewUrl = null;
+		referenceError = null;
+	}
+
+	// ── Full-size preview ─────────────────────────────────────────────────────
+
+	const previewOption = $derived(
+		previewCoverIdx !== null ? active?.coverOptions[previewCoverIdx] ?? null : null
+	);
+
+	function openPreview(idx: number) { previewCoverIdx = idx; }
+	function closePreview()           { previewCoverIdx = null; }
+
+	function pagePreview(step: number) {
+		if (previewCoverIdx === null || !active) return;
+		const n = active.coverOptions.length;
+		previewCoverIdx = (previewCoverIdx + step + n) % n;
+	}
+
+	function selectCoverAndProceed(index: number) {
+		if (!active) return;
+		previewCoverIdx = null;
+		globalState.selectCoverOption(active.id, index);
+		generateChapterPlan(active);
+	}
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// STAGE 3 helpers
+	// ─────────────────────────────────────────────────────────────────────────
+	async function generateChapterPlan(book: Book) {
+		isGeneratingPlan = true;
+		chapterPlanError = null;
+		globalState.setPipelineStage(book.id, 3);
+		globalState.updateBookStatus(book.id, 'researching');
+
+		const keys   = globalState.apiKeys;
+		const useMock = keys.useMockMode;
+
+		try {
+			// Research
+			const researchRes = await fetch('/api/research', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					query: `Core concepts and key facts about: ${book.title}. Genre: ${book.genre}.`,
+					apiKey: keys.exaKey,
+					useMockMode: useMock
+				})
+			});
+			const researchData = await researchRes.json();
+			const searchFacts = researchData.success
+				? (researchData.results as any[]).map(f => `[${f.title}] ${f.snippet}`).join('\n\n')
+				: '';
+
+			// Merge user-provided context with retrieved facts
+			const factsSummary = [
+				book.userContext?.trim() ? `[Author Brief]\n${book.userContext.trim()}` : '',
+				searchFacts
+			].filter(Boolean).join('\n\n');
+
+			globalState.updateBookStatus(book.id, 'outlining');
+
+			// Outline
+			const outlineRes = await fetch('/api/write', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					action: 'outline',
+					apiKey: keys.anthropicKey,
+					useMockMode: useMock,
+					bookTitle: book.title,
+					genre: book.genre,
+					length: book.length,
+					pageCount: book.pageCount,
+					tone: book.tone,
+					structure: book.structure,
+					researchNotes: factsSummary
+				})
+			});
+			const outlineData = await outlineRes.json();
+
+			if (!outlineData.success) throw new Error(outlineData.error || 'Outline failed.');
+
+			const chapters: Chapter[] = outlineData.chapters;
+			globalState.updateBookChapters(book.id, chapters);
+		} catch (err: any) {
+			chapterPlanError = err.message || 'An unexpected error occurred. Please try again.';
+			globalState.updateBookStatus(book.id, 'failed');
+			globalState.addLog(book.id, { step: 'outline', status: 'error', message: err.message });
+		}
+
+		isGeneratingPlan = false;
+	}
+
+	function startEditChapter(idx: number) {
+		if (!active) return;
+		editingChapterIdx = idx;
+		editTitle   = active.chapters[idx].title;
+		editSummary = active.chapters[idx].summary;
+	}
+
+	function saveChapterEdit() {
+		if (!active || editingChapterIdx === null) return;
+		const updated = active.chapters.map((c, i) =>
+			i === editingChapterIdx ? { ...c, title: editTitle, summary: editSummary } : c
+		);
+		globalState.updateBookChapters(active.id, updated);
+		editingChapterIdx = null;
+	}
+
+	function cancelChapterEdit() {
+		editingChapterIdx = null;
+	}
+
+	function getChapterOrderLabel(chap: any, idx: number, chapters: any[]): string {
+		const lower = chap.title.toLowerCase();
+		if (lower.startsWith('preface')) return 'P';
+		if (lower.startsWith('introduction') || lower.startsWith('intro')) return 'I';
+		if (lower.startsWith('foreword')) return 'F';
+		
+		let prefaceCount = 0;
+		for (let i = 0; i < idx; i++) {
+			const titleLower = chapters[i].title.toLowerCase();
+			if (
+				titleLower.startsWith('preface') ||
+				titleLower.startsWith('introduction') ||
+				titleLower.startsWith('foreword') ||
+				titleLower.startsWith('intro')
+			) {
+				prefaceCount++;
+			}
+		}
+		return String(chap.order - prefaceCount);
+	}
+
+	function approveChapterPlan() {
+		if (!active) return;
+		globalState.setPipelineStage(active.id, 4);
+		runWritingPipeline(active);
+	}
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// STAGE 4 helpers — write all chapters
+	// ─────────────────────────────────────────────────────────────────────────
+	async function runWritingPipeline(book: Book) {
+		if (isWriting) return;
+		isWriting = true;
+		// try/finally so isWriting always clears. It used to be reset only on
+		// the success path, so any throw left it stuck true and the pipeline
+		// refused to start again (the guard above) until a full page reload.
+		try {
+			await writeAllChapters(book);
+		} finally {
+			isWriting = false;
+		}
+	}
+
+	/** Chapters that threw during this run; reported at the end. */
+	let failedChapters: number[] = [];
+
+	async function writeAllChapters(book: Book) {
+		failedChapters = [];
+		globalState.updateBookStatus(book.id, 'writing');
+
+		const keys    = globalState.apiKeys;
+		const useMock = keys.useMockMode;
+
+		// ── Step 1: Book-level research (shared context for all chapters) ─────
+		let bookLevelFacts = '';
+		try {
+			const r = await fetch('/api/research', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					query: `${book.title} ${book.genre} comprehensive overview key concepts`,
+					apiKey: keys.exaKey,
+					useMockMode: useMock
+				})
+			});
+			const rd = await r.json();
+			bookLevelFacts = rd.success
+				? (rd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
+				: '';
+		} catch { /* non-fatal */ }
+
+		const chapters = [...globalState.books.find(b => b.id === book.id)!.chapters];
+
+		// Build the list of chapter indices that still need to be written.
+		const allPending = chapters
+			.map((c, i) => i)
+			.filter(i => chapters[i].status !== 'completed');
+
+		// Start a run from a clean bible. Entries carry the chapter that wrote
+		// them, and a re-run rewrites those chapters — keeping the old ones would
+		// tell chapter 7's author that chapter 7 already said something.
+		let bible: BibleEntry[] = [];
+		globalState.updateBookBible(book.id, bible);
+
+		// The queue the workers drain. Refilled one batch at a time.
+		const pending: number[] = [];
+
+		// ── Worker pool — process up to CONCURRENCY chapters simultaneously ──────
+		// Each worker claims the next available index from the shared queue,
+		// runs the full research → write → verify → illustrate pipeline for it,
+		// then immediately picks up the next. This means the user sees the first
+		// chapter appear as soon as it's done rather than waiting for all of them,
+		// while still limiting concurrent API pressure to CONCURRENCY slots.
+		const CONCURRENCY = 2;
+
+		async function processNextChapter(): Promise<void> {
+			while (pending.length > 0) {
+				const i = pending.shift()!;
+				const chap = chapters[i];
+
+				// Per-chapter targeted research
+				let chapterFacts = '';
+				try {
+					const cr = await fetch('/api/research', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							query: `${chap.title} ${book.title} ${book.genre} ${chap.summary ?? ''}`.trim(),
+							apiKey: keys.exaKey,
+							useMockMode: useMock
+						})
+					});
+					const crd = await cr.json();
+					chapterFacts = crd.success
+						? (crd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
+						: '';
+					globalState.addLog(book.id, {
+						step: 'research', status: 'success',
+						message: `Research complete for Chapter ${chap.order}: "${chap.title}"`
+					});
+				} catch { /* non-fatal */ }
+
+				const factsSummary = [
+					book.userContext?.trim() ? `[Author Brief]\n${book.userContext.trim()}` : '',
+					bookLevelFacts ? `[Book-Level Research]\n${bookLevelFacts}` : '',
+					chapterFacts   ? `[Chapter-Specific Research for "${chap.title}"]\n${chapterFacts}` : ''
+				].filter(Boolean).join('\n\n');
+
+				// One chapter must never take the book down with it.
+				// writeSingleChapter throws on a failed draft; unguarded, that
+				// rejects this worker, rejects the Promise.all below, and aborts
+				// the whole run — discarding every chapter that already
+				// succeeded. Survivable at 5 chapters, fatal at 30, where ~120
+				// API calls make a transient 429 or timeout near-certain.
+				// Mark it failed, log it, keep going: the reader can regenerate
+				// the one chapter instead of losing the book.
+				try {
+					await writeSingleChapter(book.id, i, chapters, factsSummary, keys, useMock, bible);
+				} catch (err: any) {
+					failedChapters.push(chap.order);
+					const live = [...globalState.books.find(b => b.id === book.id)!.chapters];
+					live[i].status = 'failed';
+					globalState.updateBookChapters(book.id, live);
+					globalState.addLog(book.id, {
+						step: 'drafting', status: 'error',
+						message: `Chapter ${chap.order} failed: ${err?.message ?? err}. Continuing with the rest — regenerate it from the reader.`
+					});
+				}
+			}
+		}
+
+		// ── Batched fan-out with a fold ───────────────────────────────────────
+		// Write a batch in parallel, distil what it actually said into the bible,
+		// then write the next batch WITH that bible. Chapters within a batch stay
+		// blind to each other — that's the price of parallelism, and it's bounded
+		// to BATCH_SIZE chapters rather than the whole book. Batch 1 runs with an
+		// empty bible; there is nothing written yet for it to know.
+		const batches = batched(allPending, BATCH_SIZE);
+
+		for (const [batchNum, batch] of batches.entries()) {
+			pending.push(...batch);
+			// Spawn CONCURRENCY workers and let them race through this batch.
+			await Promise.all(Array.from({ length: CONCURRENCY }, processNextChapter));
+
+			// No point distilling after the final batch — nobody reads it.
+			if (batchNum === batches.length - 1) break;
+
+			globalState.addLog(book.id, {
+				step: 'review', status: 'running',
+				message: `Folding batch ${batchNum + 1}/${batches.length} into the book bible…`
+			});
+
+			// Distil each chapter this batch actually wrote. Every failure mode
+			// here is non-fatal: a chapter that failed to write has nothing to
+			// distil, and a distillation that throws just means the next batch
+			// runs with a slightly thinner bible. Neither is worth losing a book
+			// over, so nothing in this fold is allowed to reject.
+			const live = globalState.books.find(b => b.id === book.id)!.chapters;
+			const distilled = await Promise.all(
+				batch.map(async (i) => {
+					const c = live[i];
+					if (c.status !== 'completed' || !c.content?.trim()) return [];
+					try {
+						return await distillChapter(book, c, keys, useMock);
+					} catch (err: any) {
+						globalState.addLog(book.id, {
+							step: 'review', status: 'error',
+							message: `Could not distil Chapter ${c.order} into the book bible: ${err?.message ?? err}. Continuing — later chapters just won't know about it.`
+						});
+						return [];
+					}
+				})
+			);
+
+			bible = mergeBible(bible, distilled.flat());
+			globalState.updateBookBible(book.id, bible);
+			globalState.addLog(book.id, {
+				step: 'review', status: 'success',
+				message: `Book bible now holds ${bible.length} entries (~${bibleTokens(bible)} tokens) for the next batch.`
+			});
+		}
+
+		const wrote = chapters.length - failedChapters.length;
+		globalState.updateBookStatus(book.id, failedChapters.length ? 'failed' : 'completed');
+		globalState.setPipelineStage(book.id, 5);
+		globalState.addLog(book.id, failedChapters.length
+			? {
+				step: 'complete', status: 'error',
+				message: `${wrote}/${chapters.length} chapters written. Failed: ${failedChapters.join(', ')}. Regenerate those from the reader.`
+			}
+			: {
+				step: 'complete', status: 'success',
+				message: '🎉 All chapters complete. Ebook ready to read and export.'
+			});
+	}
+
+	/**
+	 * Ask the cheap model what a finished chapter committed to. Throws on
+	 * failure — every caller is expected to treat that as "no entries".
+	 */
+	async function distillChapter(
+		book: Book,
+		chap: Chapter,
+		keys: typeof globalState.apiKeys,
+		useMock: boolean
+	): Promise<BibleEntry[]> {
+		const res = await fetch('/api/write', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				action: 'distill-chapter',
+				apiKey: keys.anthropicKey,
+				useMockMode: useMock,
+				bookTitle: book.title,
+				chapterTitle: chap.title,
+				chapterOrder: chap.order,
+				chapterContent: chap.content
+			})
+		});
+		const data = await res.json();
+		if (!data.success) throw new Error(data.error || 'distillation failed');
+		return (data.entries ?? []) as BibleEntry[];
+	}
+
+	/** Write + illustrate exactly one chapter. Shared between pipeline and per-chapter regen. */
+	async function writeSingleChapter(
+		bookId: string,
+		chapIndex: number,
+		chaptersSnapshot: Chapter[],
+		factsSummary: string,
+		keys: typeof globalState.apiKeys,
+		useMock: boolean,
+		bookBible: BibleEntry[] = []
+	) {
+		const chap = chaptersSnapshot[chapIndex];
+		const book = globalState.books.find(b => b.id === bookId)!;
+
+		// Mark writing
+		const live = [...globalState.books.find(b => b.id === bookId)!.chapters];
+		live[chapIndex].status = 'writing';
+		globalState.updateBookChapters(bookId, live);
+		globalState.addLog(bookId, {
+			step: 'drafting', status: 'running',
+			message: `Writing Chapter ${chap.order}: "${chap.title}"…`
+		});
+
+		// Draft — include all book context fields so Claude can write unique, informed content
+		const draftRes = await fetch('/api/write', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				action: 'write-chapter',
+				apiKey: keys.anthropicKey,
+				useMockMode: useMock,
+				bookTitle: book.title,
+				genre: book.genre,
+				structure: book.structure,
+				// Sizes the per-chapter output budget on the server.
+				length: book.length,
+				pageCount: book.pageCount,
+				chapterTitle: chap.title,
+				chapterOrder: chap.order,
+				chapterSummary: chap.summary,
+				tone: book.tone,
+				researchNotes: factsSummary,
+				// The whole plan, so a chapter knows its place in the book.
+				// Chapters are written concurrently and never see each other's
+				// output, so without this each one is blind to the rest and
+				// re-explains the same foundations. ~40 tokens per chapter
+				// against a 200k window — it is what makes long books cohere.
+				bookOutline: chaptersSnapshot.map(c => ({
+					order:   c.order,
+					title:   c.title,
+					summary: c.summary
+				})),
+				// What the already-written chapters SAID, as opposed to what the
+				// outline planned for them. Bounded to ~2.5k tokens however long
+				// the book is — that bound is the whole reason this scales.
+				bookBible
+
+			})
+		});
+		const draftData = await draftRes.json();
+		if (!draftData.success) throw new Error(draftData.error || `Chapter ${chap.order} draft failed.`);
+
+		// Verify
+		const current = [...globalState.books.find(b => b.id === bookId)!.chapters];
+		current[chapIndex].status = 'verifying';
+		globalState.updateBookChapters(bookId, current);
+
+		const verifyRes = await fetch('/api/write', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				action: 'verify-chapter',
+				apiKey: keys.anthropicKey,
+				useMockMode: useMock,
+				bookTitle: book.title,
+				genre: book.genre,
+				tone: book.tone,
+				chapterTitle: chap.title,
+				chapterContent: draftData.content,
+				researchNotes: factsSummary
+			})
+		});
+		const verifyData = await verifyRes.json();
+		const finalContent = verifyData.success ? verifyData.verifiedContent : draftData.content;
+
+		// Illustration — use chapter summary for a more relevant prompt
+		globalState.addLog(bookId, {
+			step: 'illustrate', status: 'running',
+			message: `Generating illustration for Chapter ${chap.order}…`
+		});
+
+		let illustUrl: string | null = null;
+		try {
+			// House style — match the editorial diagram plates: warm cream field,
+			// deep navy subject, amber accents. Honour the book's ultra-realistic
+			// flag the same way the cover and the reader's edit drawer do.
+			const ultraRealistic = book.useUltraRealistic || book.coverSettings?.useUltraRealistic;
+			const styleClause = ultraRealistic
+				? 'Ultra-realistic reference photograph, documentary product photography, sharp focus, ' +
+				  'natural directional lighting, shallow depth of field, 8k, highly detailed. ' +
+				  'Neutral warm cream backdrop, deep navy and amber colour accents. No text, no labels, no watermarks.'
+				: 'High-quality editorial illustration, clean flat vector style with subtle depth. ' +
+				  'Warm cream background (#FAF5EA), deep navy linework (#0F2231), amber accents (#E07B20). ' +
+				  'Restrained sophisticated palette. No text, no labels, no watermarks.';
+
+			const illustPrompt = chap.summary
+				? `${styleClause} Subject: a clear, instructive visual for a chapter titled "${chap.title}". Topic: ${chap.summary}. From the book "${book.title}" (${book.genre}).`
+				: `${styleClause} Subject: a clear, instructive visual for a chapter titled "${chap.title}". From the book "${book.title}" (${book.genre}).`;
+			illustUrl = await generateImage({
+				prompt:      illustPrompt,
+				apiKey:      keys.imageKey,
+				provider:    keys.imageProvider,
+				useMockMode: useMock,
+				isCover:     false
+			});
+		} catch { /* non-fatal */ }
+
+		// Commit
+		const final = [...globalState.books.find(b => b.id === bookId)!.chapters];
+		final[chapIndex].content         = finalContent;
+		final[chapIndex].researchNotes   = factsSummary;
+		final[chapIndex].illustrationUrl = illustUrl;
+		final[chapIndex].status          = 'completed';
+		globalState.updateBookChapters(bookId, final);
+
+		globalState.addLog(bookId, {
+			step: 'drafting', status: 'success',
+			message: `Chapter ${chap.order} complete.`
+		});
+	}
+
+	/** Per-chapter regeneration triggered from Stage 4 UI */
+	async function handleRegenerateChapter(chapIndex: number) {
+		if (!active || isWriting || regeneratingChapterIdx !== null) return;
+		regeneratingChapterIdx = chapIndex;
+
+		const keys    = globalState.apiKeys;
+		const useMock = keys.useMockMode;
+		const chap    = active.chapters[chapIndex];
+
+		// ── Book-level background research ──────────────────────────────────
+		let bookLevelFacts = '';
+		try {
+			const r = await fetch('/api/research', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					query: `${active.title} ${active.genre} comprehensive overview key concepts`,
+					apiKey: keys.exaKey,
+					useMockMode: useMock
+				})
+			});
+			const rd = await r.json();
+			bookLevelFacts = rd.success
+				? (rd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
+				: '';
+		} catch { /* non-fatal */ }
+
+		// ── Chapter-specific targeted research ────────────────────────────
+		let chapterFacts = '';
+		try {
+			const cr = await fetch('/api/research', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					query: `${chap.title} ${active.title} ${active.genre} ${chap.summary ?? ''}`.trim(),
+					apiKey: keys.exaKey,
+					useMockMode: useMock
+				})
+			});
+			const crd = await cr.json();
+			chapterFacts = crd.success
+				? (crd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
+				: '';
+		} catch { /* non-fatal */ }
+
+		const factsSummary = [
+			active.userContext?.trim() ? `[Author Brief]\n${active.userContext.trim()}` : '',
+			bookLevelFacts ? `[Book-Level Research]\n${bookLevelFacts}` : '',
+			chapterFacts   ? `[Chapter-Specific Research for "${chap.title}"]\n${chapterFacts}` : ''
+		].filter(Boolean).join('\n\n');
+
+		try {
+			const snapshot = [...active.chapters];
+			// Regenerate against the book bible so the new draft honours what the
+			// rest of the book already established — minus this chapter's own
+			// entries, which describe the draft we are about to throw away.
+			const bible = (active.bible ?? []).filter(e => e.chapter !== snapshot[chapIndex].order);
+			await writeSingleChapter(active.id, chapIndex, snapshot, factsSummary, keys, useMock, bible);
+		} catch (err: any) {
+			const current = [...globalState.books.find(b => b.id === active.id)!.chapters];
+			current[chapIndex].status = 'failed';
+			globalState.updateBookChapters(active.id, current);
+			globalState.addLog(active.id, {
+				step: 'drafting', status: 'error',
+				message: `Regeneration failed for Chapter ${chapIndex + 1}: ${err.message}`
+			});
+		}
+
+		regeneratingChapterIdx = null;
+	}
