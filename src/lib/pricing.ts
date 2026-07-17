@@ -40,8 +40,44 @@ export function claudeCallCost(model: string, inputTokens: number, outputTokens:
  * Deliberately rough — these exist so the total isn't silently missing a
  * whole category, not to match a real invoice.
  */
-export const ESTIMATED_COST_PER_IMAGE = 0.04; // Kie.ai / 69labs image generation
-export const ESTIMATED_COST_PER_SEARCH = 0.005; // Exa search
+/**
+ * Per-image list price by image provider, for the exact request this app makes.
+ *
+ *   kie    — Black Forest Labs FLUX.2 [pro] text-to-image at 1K, billed through
+ *            Kie.ai at 5 credits = $0.025/image (Kie published price, Jul 2026;
+ *            BFL official $0.03). Covers and illustrations both request 1K, so
+ *            one rate covers both.
+ *   69labs — 69labs is subscription / credit-based, not pay-per-call, so it has
+ *            no single per-call price. This is the entry image-credit-pack rate,
+ *            $50 / 1,000 credits = $0.05/image for a standard 1-credit model
+ *            (69labs.vip pricing, Jul 2026); larger packs fall to ~$0.03 and
+ *            heavier models cost >1 credit, so treat it as approximate.
+ *
+ * The provider is a global setting, not recorded per book (see ApiKeys), so the
+ * estimate prices a book's images at whichever provider is currently selected.
+ * See src/routes/api/image/+server.ts for the provider calls.
+ */
+export const IMAGE_COST_PER_IMAGE: Record<'kie' | '69labs', number> = {
+	kie:      0.025,
+	'69labs': 0.05
+};
+
+/**
+ * Per-image estimate for a provider. Falls back to the Kie rate for any unknown
+ * value, since Kie is the app's default image provider.
+ */
+export function imageUnitCost(provider: string | null | undefined): number {
+	return IMAGE_COST_PER_IMAGE[(provider ?? '') as 'kie' | '69labs'] ?? IMAGE_COST_PER_IMAGE.kie;
+}
+
+/**
+ * Per-call list price for the Exa request the app makes: a neural POST /search
+ * returning ≤10 results with inline text contents, billed at $7 / 1,000
+ * requests = $0.007/search, with the first 10 results' contents included (Exa
+ * published pricing, Jul 2026). The app asks for 5 results, so there is no
+ * per-result add-on. See src/routes/api/research/+server.ts.
+ */
+export const ESTIMATED_COST_PER_SEARCH = 0.007;
 
 /**
  * Every distinct generated (billed) image embedded in a chapter's prose.

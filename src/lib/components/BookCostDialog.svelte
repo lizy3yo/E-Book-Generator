@@ -12,7 +12,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import type { BookUsage } from '$lib/types';
-	import { claudeCallCost, ESTIMATED_COST_PER_IMAGE, ESTIMATED_COST_PER_SEARCH } from '$lib/pricing';
+	import { claudeCallCost, imageUnitCost, ESTIMATED_COST_PER_SEARCH } from '$lib/pricing';
 
 	interface Props {
 		open: boolean;
@@ -21,10 +21,13 @@
 		 *  candidates + chapter illustrations), not just the billed-at-generation
 		 *  counter — see `estimatedImageCount` in $lib/pricing. */
 		imageCount: number;
+		/** Currently-selected image provider — sets the per-image rate and label.
+		 *  Provider isn't recorded per book, so this is the live global setting. */
+		imageProvider: string;
 		onClose: () => void;
 	}
 
-	let { open, usage, imageCount, onClose }: Props = $props();
+	let { open, usage, imageCount, imageProvider, onClose }: Props = $props();
 
 	let claudeRows = $derived(
 		Object.entries(usage?.claude ?? {}).map(([model, u]) => ({
@@ -37,7 +40,12 @@
 	);
 	let claudeTotal   = $derived(claudeRows.reduce((sum, r) => sum + r.cost, 0));
 	let imagesCount   = $derived(imageCount);
-	let imagesCost    = $derived(imagesCount * ESTIMATED_COST_PER_IMAGE);
+	let imagesCost    = $derived(imagesCount * imageUnitCost(imageProvider));
+	let imagesLabel   = $derived(
+		imageProvider === '69labs'
+			? '69labs generation'
+			: 'Kie.ai — FLUX.2 [pro], 1K'
+	);
 	let searchesCount = $derived(usage?.searches ?? 0);
 	let searchesCost  = $derived(searchesCount * ESTIMATED_COST_PER_SEARCH);
 	let grandTotal    = $derived(claudeTotal + imagesCost + searchesCost);
@@ -90,7 +98,7 @@
 				<span class="bcd-badge bcd-badge--estimate">Estimated</span>
 			</div>
 			<div class="bcd-row">
-				<span class="bcd-row-label">Kie.ai / 69labs generation</span>
+				<span class="bcd-row-label">{imagesLabel}</span>
 				<span class="bcd-row-value">{fmt(imagesCost)}</span>
 			</div>
 		</div>
@@ -109,12 +117,15 @@
 		<p class="bcd-disclaimer">
 			Claude costs are calculated from the real number of tokens each call used, priced at
 			Anthropic's standard rate — this matches what Anthropic actually bills for these calls.
-			Image and search costs are rough estimates: neither provider returns usage or cost data,
-			so these are flat per-call guesses, not a measurement of what you were charged. Image
-			costs are estimated from the images the book actually contains (its cover and chapter
-			illustrations), so regenerated or discarded attempts may not be reflected. Check your
-			Kie.ai / 69labs / Exa dashboard for your actual bill. Claude and search totals only
-			reflect calls made since this feature was added — they do not include cost from before.
+			Image and search costs are estimates: neither provider returns per-call cost data, so
+			each is priced at the provider's current list rate for the exact call this app makes —
+			images at Kie.ai FLUX.2 [pro] 1K ($0.025) or 69labs (~$0.05, credit-based), whichever
+			provider is selected, and Exa neural search ($0.007). Image counts come from the images
+			the book actually contains (cover and chapter illustrations), so regenerated or discarded
+			attempts may not be reflected; the provider isn't recorded per image, so a book made on a
+			different provider is priced at today's setting. Check your Kie.ai / 69labs / Exa
+			dashboard for your actual bill. Claude and search totals only reflect calls made since
+			this feature was added.
 		</p>
 	</div>
 {/if}

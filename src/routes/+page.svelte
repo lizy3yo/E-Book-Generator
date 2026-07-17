@@ -10,7 +10,7 @@
 	import ChapterPlanError from '$lib/components/ChapterPlanError.svelte';
 	import CoverPreviewDialog from '$lib/components/CoverPreviewDialog.svelte';
 	import BookCostDialog from '$lib/components/BookCostDialog.svelte';
-	import { claudeCallCost, estimatedImageCount, ESTIMATED_COST_PER_IMAGE, ESTIMATED_COST_PER_SEARCH } from '$lib/pricing';
+	import { claudeCallCost, estimatedImageCount, imageUnitCost, ESTIMATED_COST_PER_SEARCH } from '$lib/pricing';
 	import { generationRunner } from '$lib/generationRunner.svelte';
 	import { AI_CONCEPT_COUNT, hasCoverBrief } from '$lib/coverStyles';
 	import { fileToImagePayload } from '$lib/imageInput';
@@ -103,9 +103,10 @@
 			)
 			: 0;
 		// Images are counted from the book's actual contents (see estimatedImageCount),
-		// so the estimate holds up for books generated before usage tracking existed.
+		// so the estimate holds up for books generated before usage tracking existed,
+		// and priced at the currently-selected image provider's rate.
 		return claudeTotal
-			+ estimatedImageCount(active) * ESTIMATED_COST_PER_IMAGE
+			+ estimatedImageCount(active) * imageUnitCost(globalState.apiKeys.imageProvider)
 			+ (usage?.searches ?? 0) * ESTIMATED_COST_PER_SEARCH;
 	});
 
@@ -1093,6 +1094,7 @@
 	open={showCostDialog}
 	usage={active?.usage}
 	imageCount={active ? estimatedImageCount(active) : 0}
+	imageProvider={globalState.apiKeys.imageProvider}
 	onClose={() => showCostDialog = false}
 />
 
