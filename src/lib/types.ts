@@ -25,12 +25,31 @@ export interface CoverSettings {
 	overlayOpacity: number; // 0 to 1
 }
 
+/**
+ * Where a cover candidate came from:
+ *  'template' — one of the built-in art-directed presets (see $lib/coverStyles)
+ *  'ai'       — an original concept Claude devised from the Step 1 brief
+ */
+export type CoverOrigin = 'template' | 'ai';
+
 /** One of N cover candidates shown to the user during Stage 2 */
 export interface CoverOption {
 	id: string;
 	prompt: string;
 	imageUrl: string;
 	style: string; // human-readable label e.g. "Dark Minimalist"
+	/** Optional on books persisted before origins existed — treat as 'template'. */
+	origin?: CoverOrigin;
+	/** Stable id of the built-in template that produced it. Templates only —
+	 *  lets a single option be regenerated without depending on grid position. */
+	styleId?: string;
+	/** One-sentence art-direction rationale. AI-originated concepts only. */
+	concept?: string;
+	/** The specific element of the author's Step 1 input this concept was built
+	 *  on, in the author's own words where possible. AI concepts only — it is
+	 *  what makes the correlation between brief and cover auditable rather than
+	 *  asserted. */
+	basis?: string;
 }
 
 
@@ -100,6 +119,20 @@ export interface Book {
 	/** Optional visual reference / creative direction for cover generation.
 	 *  Appended to every cover image prompt. */
 	coverReferencePrompt: string;
+
+	/** Design language extracted by Claude from a reference cover the author
+	 *  uploaded — palette, typography, imagery treatment, graphic devices,
+	 *  layout. Applied to every variant so a format can be borrowed from a
+	 *  cover in a completely different niche.
+	 *
+	 *  Only the derived spec is kept. The source image is deliberately NOT
+	 *  persisted: the whole book is serialised into one Supabase row and one
+	 *  localStorage entry on every mutation, and an inlined base64 cover would
+	 *  bloat both past their practical limits. */
+	coverReferenceFormat?: string;
+
+	/** Filename of the analysed reference cover. Display only. */
+	coverReferenceName?: string;
 
 	/** Cover candidates generated in Stage 2 */
 	coverOptions: CoverOption[];

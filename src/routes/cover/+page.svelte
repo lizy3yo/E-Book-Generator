@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { globalState } from '$lib/state.svelte';
-	import type { CoverSettings } from '$lib/types';
-	import { RefreshCw, Download, Bot, User, Check } from '@lucide/svelte';
+	import type { CoverSettings, CoverOption } from '$lib/types';
+	import { RefreshCw, Download, Bot, User, Check, Paperclip, X } from '@lucide/svelte';
 	import { generateImage } from '$lib/generateImage';
+	import { fileToImagePayload, type ImagePayload } from '$lib/imageInput';
 
 	let canvas: HTMLCanvasElement | null = $state(null);
 	let chatViewport: HTMLDivElement | null = $state(null);
@@ -25,12 +26,48 @@
 	
 	// Chat Assistant State
 	let chatInput = $state('');
-	let chatMessages = $state<{ sender: 'user' | 'assistant'; text: string }[]>([
+	/** `imageUrl` renders the attachment inside the user's own bubble, so the
+	 *  transcript still shows what a reply was about after the composer clears. */
+	let chatMessages = $state<{ sender: 'user' | 'assistant'; text: string; imageUrl?: string }[]>([
 		{
 			sender: 'assistant',
-			text: "Hello! I'm your Cover Design Assistant. Tell me how you'd like to refine your cover. You can type instructions like: \n- 'Change font to Georgia'\n- 'Make title color gold'\n- 'Change layout to bottom alignment'\n- Or prompt a new image like: 'Generate a dark forest illustration'"
+			text: "Describe a cover and I'll create it — each request adds a new one, never replaces.\n\nTry: 'Bold white sans-serif on a deep navy field'\nOr attach a cover you like and I'll read its design."
 		}
 	]);
+
+	// ── Chat attachment ───────────────────────────────────────────────────────
+	/** The image staged in the composer, not yet sent. */
+	let attachment = $state<ImagePayload | null>(null);
+	let attachmentName = $state('');
+	let attachError = $state('');
+	let attachBusy = $state(false);
+
+	async function handleChatAttach(e: Event) {
+		const input = e.target as HTMLInputElement;
+		const file  = input.files?.[0];
+		// Reset immediately: without this, re-picking the same file fires no change
+		// event and the attachment silently fails to reload.
+		input.value = '';
+		if (!file) return;
+
+		attachBusy = true;
+		attachError = '';
+		try {
+			attachment     = await fileToImagePayload(file);
+			attachmentName = file.name;
+		} catch (err: any) {
+			attachError = err?.message || 'Could not read that image.';
+			attachment  = null;
+		} finally {
+			attachBusy = false;
+		}
+	}
+
+	function clearAttachment() {
+		attachment     = null;
+		attachmentName = '';
+		attachError    = '';
+	}
 
 	// Fetch active book settings or use default mock settings
 	let settings = $derived.by(() => {
@@ -263,7 +300,18 @@
 		ctx.fillText(settings.author, x, authorY);
 	}
 
-	async function generateNewCoverArt() {
+	/**
+	 * Render cover art from the current settings.
+	 *
+	 * 'replace' overwrites the selected variant in place — what "Regenerate Base
+	 * Art" means, and the only caller that should destroy an existing cover.
+	 *
+	 * 'append' adds the result as a new variant and selects it, leaving every
+	 * earlier cover intact. The assistant uses this: a chat instruction is a new
+	 * idea to try, so each turn accumulates a candidate the author can compare
+	 * against and return to, rather than silently consuming the one before it.
+	 */
+	async function generateNewCoverArt(mode: 'replace' | 'append' = 'replace', concept?: string) {
 		if (isGeneratingImage || !globalState.activeBookId) return;
 		isGeneratingImage = true;
 		generateError = '';
@@ -303,28 +351,50 @@
 			bgImage    = null;
 			bgImageSrc = '';
 
-			// 1. Update coverSettings so the canvas redraws with the new image
-			updateSetting('bgImageUrl', data.imageUrl);
-			updateSetting('bgImagePrompt', prompt);
+			if (mode === 'append') {
+				// Selecting the new variant is what syncs coverSettings.bgImageUrl and
+				// redraws the canvas, so no updateSetting call is needed here.
+				const newOption: CoverOption = {
+					id:       crypto.randomUUID(),
+					prompt,
+					imageUrl: data.imageUrl,
+					style:    'Studio Edit',
+					origin:   'ai',
+					concept:  concept?.trim() || 'Refined in the Cover Studio assistant.'
+				};
+				globalState.appendCoverOptions(book.id, [newOption]);
 
-			// 2. Write the new imageUrl and prompt back into the selected variant slot so the
-			//    thumbnail in the Design Variants panel reflects the new generation.
-			if (selectedCoverIndex !== null && coverOptions[selectedCoverIndex]) {
-				globalState.replaceCoverOption(book.id, selectedCoverIndex, {
-					...coverOptions[selectedCoverIndex],
-					imageUrl: data.imageUrl,
-					prompt
-				});
-			} else if (coverOptions.length > 0) {
-				// No variant selected — update slot 0 as a sensible default
-				globalState.replaceCoverOption(book.id, 0, {
-					...coverOptions[0],
-					imageUrl: data.imageUrl,
-					prompt
-				});
+				// Locate by id rather than by length — appendCoverOptions merges by id,
+				// so position is its result to report, not ours to assume.
+				const newIndex = (globalState.activeBook?.coverOptions ?? [])
+					.findIndex(o => o.id === newOption.id);
+				if (newIndex !== -1) globalState.selectCoverOption(book.id, newIndex);
+
+				addAssistantMessage('Added this as a new cover variant — your earlier covers are untouched.');
+			} else {
+				// 1. Update coverSettings so the canvas redraws with the new image
+				updateSetting('bgImageUrl', data.imageUrl);
+				updateSetting('bgImagePrompt', prompt);
+
+				// 2. Write the new imageUrl and prompt back into the selected variant slot so the
+				//    thumbnail in the Design Variants panel reflects the new generation.
+				if (selectedCoverIndex !== null && coverOptions[selectedCoverIndex]) {
+					globalState.replaceCoverOption(book.id, selectedCoverIndex, {
+						...coverOptions[selectedCoverIndex],
+						imageUrl: data.imageUrl,
+						prompt
+					});
+				} else if (coverOptions.length > 0) {
+					// No variant selected — update slot 0 as a sensible default
+					globalState.replaceCoverOption(book.id, 0, {
+						...coverOptions[0],
+						imageUrl: data.imageUrl,
+						prompt
+					});
+				}
+
+				addAssistantMessage('New cover art generated and applied.');
 			}
-
-			addAssistantMessage('New cover art generated and applied.');
 		} catch (err: any) {
 			console.error('[Cover] generateNewCoverArt error:', err);
 			generateError = err.message || 'Image generation failed. Check your API key and try again.';
@@ -336,13 +406,21 @@
 
 	function handleAssistantSubmit(e: Event) {
 		e.preventDefault();
-		if (!chatInput.trim() || isProcessingChat) return;
+		// An attachment on its own is a valid turn — "here, look at this".
+		if ((!chatInput.trim() && !attachment) || isProcessingChat || attachBusy) return;
 
 		const userMsg = chatInput.trim();
-		chatMessages = [...chatMessages, { sender: 'user', text: userMsg }];
-		chatInput = '';
+		const image   = attachment;
 
-		processAssistantCommand(userMsg);
+		chatMessages = [...chatMessages, {
+			sender: 'user',
+			text: userMsg || (image ? 'What do you make of this cover?' : ''),
+			imageUrl: image?.previewUrl
+		}];
+		chatInput = '';
+		clearAttachment();
+
+		processAssistantCommand(userMsg, image);
 	}
 
 	function addAssistantMessage(text: string) {
@@ -357,7 +435,7 @@
 	 * directly to coverSettings.  If bgImagePrompt is included, we also
 	 * kick off a new image generation.
 	 */
-	async function processAssistantCommand(msg: string) {
+	async function processAssistantCommand(msg: string, image: ImagePayload | null = null) {
 		if (!globalState.activeBook) return;
 		isProcessingChat = true;
 
@@ -379,7 +457,12 @@
 					currentSettings: settings,
 					bookTitle: globalState.activeBook.title,
 					genre: globalState.activeBook.genre,
-					variants
+					variants,
+					// previewUrl is display-only and stays in the browser — the API
+					// takes the bare base64 it re-encoded.
+					referenceImage: image
+						? { mediaType: image.mediaType, data: image.data }
+						: undefined
 				})
 			});
 
@@ -401,8 +484,8 @@
 				}
 			}
 
-			// If Claude identified a specific variant slot, activate it first so
-			// the generated image lands in the right slot.
+			// If Claude identified a specific variant slot, activate it first — the
+			// new cover is then built from that variant as its starting point.
 			if (typeof data.variantIndex === 'number' && globalState.activeBookId) {
 				activateVariant(data.variantIndex);
 			}
@@ -413,7 +496,9 @@
 			if (hasImagePrompt) {
 				updateSetting('bgImagePrompt', mutations.bgImagePrompt as string);
 				addAssistantMessage('Generating new cover art now…');
-				await generateNewCoverArt();
+				// Additive: each instruction yields a cover to compare, not a
+				// replacement for the one the author is looking at.
+				await generateNewCoverArt('append', msg);
 			}
 
 		} catch (err: any) {
@@ -596,7 +681,12 @@
 										<User size={16} />
 									{/if}
 								</div>
-								<div class="text font-serif">{msg.text}</div>
+								<div class="text font-serif">
+									{#if msg.imageUrl}
+										<img class="chat-attachment" src={msg.imageUrl} alt="Reference cover you attached" />
+									{/if}
+									{msg.text}
+								</div>
 							</div>
 						{/each}
 						{#if isProcessingChat}
@@ -613,16 +703,52 @@
 						{/if}
 					</div>
 
+					<!-- Staged attachment sits above the composer, as in any chat client:
+					     the user sees what they are about to send and can drop it. -->
+					{#if attachment}
+						<div class="chat-attach-chip">
+							<img src={attachment.previewUrl} alt="Staged reference cover" />
+							<span class="chat-attach-name">{attachmentName}</span>
+							<button
+								type="button"
+								class="chat-attach-remove"
+								onclick={clearAttachment}
+								aria-label="Remove attached image"
+							>
+								<X size={13} />
+							</button>
+						</div>
+					{/if}
+					{#if attachError}
+						<p class="chat-attach-error" role="alert">{attachError}</p>
+					{/if}
+
 					<form onsubmit={handleAssistantSubmit} class="chat-form flex gap-1">
-						<input 
-							type="text" 
-							placeholder="Ask assistant to modify layout, fonts, colors, or images..." 
-							bind:value={chatInput} 
+						<label
+							class="chat-attach-btn"
+							title="Attach a reference cover"
+							aria-disabled={isGeneratingImage || isProcessingChat || attachBusy}
+						>
+							<input
+								type="file"
+								accept="image/png,image/jpeg,image/webp"
+								aria-label="Attach a reference cover"
+								onchange={handleChatAttach}
+								disabled={isGeneratingImage || isProcessingChat || attachBusy}
+							/>
+							<Paperclip size={16} />
+						</label>
+						<input
+							type="text"
+							placeholder={attachment ? 'Ask about this cover, or send to have it read…' : 'Describe a cover to create…'}
+							bind:value={chatInput}
 							disabled={isGeneratingImage || isProcessingChat}
 						/>
-						<button type="submit" class="btn btn-primary" disabled={isGeneratingImage || isProcessingChat || !chatInput.trim()}>
+						<button type="submit" class="btn btn-primary" disabled={isGeneratingImage || isProcessingChat || attachBusy || (!chatInput.trim() && !attachment)}>
 							{#if isProcessingChat || isGeneratingImage}
 								…
+							{:else if attachBusy}
+								Reading…
 							{:else}
 								Send
 							{/if}
@@ -694,7 +820,7 @@
 					<div class="actions-row">
 						<button 
 							class="btn btn-secondary" 
-							onclick={generateNewCoverArt}
+							onclick={() => generateNewCoverArt('replace')}
 							disabled={isGeneratingImage}
 						>
 							{#if isGeneratingImage}
@@ -944,8 +1070,69 @@
 		}
 	}
 
-	.chat-form input {
+	.chat-form input[type="text"] {
 		flex: 1;
+	}
+
+	/* ── Chat attachment ──────────────────────────────────────────────────── */
+
+	/* The label IS the button; the file input inside it is the click target, so
+	   it is stretched over the label rather than hidden with display:none —
+	   a display:none input is unreachable from the keyboard. */
+	.chat-attach-btn {
+		position: relative;
+		display: inline-flex; align-items: center; justify-content: center;
+		width: 38px; height: 38px; flex-shrink: 0;
+		border: 1px solid var(--border-color);
+		border-radius: var(--radius-sm);
+		background-color: var(--bg-card);
+		color: var(--text-muted);
+		cursor: pointer;
+		transition: var(--transition);
+	}
+	.chat-attach-btn:hover { border-color: var(--border-focus); color: var(--text-main); }
+	.chat-attach-btn:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+	.chat-attach-btn[aria-disabled="true"] { opacity: 0.5; pointer-events: none; }
+	.chat-attach-btn input[type="file"] {
+		position: absolute; inset: 0;
+		opacity: 0; cursor: pointer;
+	}
+
+	.chat-attach-chip {
+		display: flex; align-items: center; gap: 0.6rem;
+		padding: 0.4rem 0.5rem; margin-bottom: 0.6rem;
+		border: 1px solid var(--border-color);
+		border-radius: var(--radius-sm);
+		background-color: var(--bg-inset);
+	}
+	.chat-attach-chip img {
+		width: 32px; height: 44px; object-fit: cover;
+		border-radius: 2px; flex-shrink: 0;
+		border: 1px solid var(--border-color);
+	}
+	.chat-attach-name {
+		flex: 1; min-width: 0;
+		font-size: 0.78rem; color: var(--text-muted);
+		overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	}
+	.chat-attach-remove {
+		display: inline-flex; align-items: center; justify-content: center;
+		width: 24px; height: 24px; flex-shrink: 0;
+		border: none; border-radius: 4px;
+		background: transparent; color: var(--text-muted);
+		cursor: pointer;
+	}
+	.chat-attach-remove:hover { background-color: var(--border-color); color: var(--text-main); }
+
+	.chat-attach-error {
+		font-size: 0.78rem; color: #B91C1C; margin: 0 0 0.6rem;
+	}
+
+	/* Sits inside the user's bubble, above their text. */
+	.chat-attachment {
+		display: block; max-width: 160px; width: 100%;
+		border-radius: var(--radius-sm);
+		margin-bottom: 0.5rem;
 	}
 
 	/* Canvas Preview Area */
@@ -999,7 +1186,16 @@
 
 	.variants-grid {
 		display: grid;
-		grid-template-columns: repeat(3, 1fr);
+		/* minmax(0, 1fr), not 1fr. A bare `1fr` is `minmax(auto, 1fr)`, and that
+		   auto minimum is a min-content floor. The labels below are `nowrap`, so
+		   each one's min-content is its WHOLE string — meaning every column
+		   refused to shrink below the width of its longest label
+		   ("Photographic Documentary" floored its column at 168px, "The Essential
+		   Kit" floored its own at 108px). Once the panel was narrower than those
+		   floors the tracks stopped sharing the row equally, and since each
+		   thumbnail is 2:3 of its own column, every variant rendered at a
+		   different size. Flooring at 0 keeps the tracks equal at any width. */
+		grid-template-columns: repeat(3, minmax(0, 1fr));
 		gap: 0.75rem;
 	}
 
@@ -1012,6 +1208,11 @@
 		padding: 0.35rem;
 		border: 2px solid transparent;
 		transition: border-color 0.18s ease, box-shadow 0.18s ease;
+		/* The other half of the same fix: a grid item's automatic minimum size is
+		   also its min-content, so the nowrap label would floor the ITEM even
+		   once the track is free to shrink. With this, the label's existing
+		   ellipsis finally does the job it was written for. */
+		min-width: 0;
 	}
 
 	.variant-thumb:hover {

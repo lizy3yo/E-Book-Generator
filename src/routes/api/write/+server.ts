@@ -28,7 +28,14 @@ export const POST: RequestHandler = async ({ request }) => {
 			bookOutline,
 			bookBible,
 			pageCount,
-			chapterContent
+			chapterContent,
+			// ── Cover actions ──────────────────────────────────────────────
+			bookSubtitle,
+			bookAuthor,
+			authorBrief,
+			coverDirection,
+			conceptCount,
+			referenceImage
 		} = await request.json();
 
 		const activeApiKey = (apiKey?.trim()) || ANTHROPIC_API_KEY;
@@ -90,6 +97,33 @@ export const POST: RequestHandler = async ({ request }) => {
 						entries: [
 							{ kind: 'term', label: `Mock Term ${chapterOrder}`, detail: 'A placeholder definition introduced by mock mode.', chapter: chapterOrder || 1 }
 						],
+						source: 'mock'
+					});
+				}
+
+				if (action === 'cover-concepts') {
+					const count = Math.max(1, Math.min(6, conceptCount || 3));
+					return json({
+						success: true,
+						concepts: Array.from({ length: count }, (_, i) => ({
+							style: `Mock Concept ${i + 1}`,
+							basis: 'Mock mode — no brief was analysed.',
+							concept: `A placeholder art direction devised by mock mode for "${bookTitle}".`,
+							prompt: `Professional book cover for "${bookTitle}". Genre: ${genre}. Mock concept ${i + 1}.`
+						})),
+						source: 'mock'
+					});
+				}
+
+				if (action === 'analyze-cover-reference') {
+					return json({
+						success: true,
+						format: `[Mock reference analysis]
+Palette: deep navy, warm gold accent, bone white.
+Typography: extra-bold condensed sans title, small letter-spaced caps for the author.
+Imagery: single photographic subject, lower half, dark gradient scrim.
+Graphics: thin horizontal rules separating title lines; circular badge lower right.
+Layout: title occupies the upper 55%, author in a solid bar at the foot.`,
 						source: 'mock'
 					});
 				}
@@ -434,6 +468,102 @@ Draft chapter to review:
 ${chapterContent}
 
 Review, correct, and return in the required format.`;
+
+		} else if (action === 'cover-concepts') {
+			const count = Math.max(1, Math.min(6, conceptCount || 3));
+
+			systemPrompt = `You are an award-winning book cover art director at a major trade publisher. You have designed covers that sold millions of copies. You are briefed on a book and you respond with original cover concepts.
+
+═══ 1. EVERY CONCEPT MUST BE DERIVED FROM THIS SPECIFIC BOOK ═══
+
+You are given the author's own words about their book. That brief is your source material, not background colour. For each concept, find one specific idea, tension, image, object, moment, or metaphor that is IN the brief, and build the cover around it. Record exactly what you built on in the "basis" field, quoting the author's own words where you can.
+
+A concept whose "basis" is a genre generality ("it's about business", "it's a memoir") is a failed concept — that is the description of a category, not of this book. If you cannot point to the specific thing in the brief that produced the image, you have not designed for this book, you have decorated its genre.
+
+If the brief is thin, derive from the title, subtitle, genre and tone — but still name the precise element you used.
+
+═══ 2. THE ${count} CONCEPTS MUST COHERE AS ONE SET ═══
+
+All ${count} must be recognisably covers for the SAME book — same subject, same argument, same promise to the same reader, and consistent with the declared writing tone. A quiet, reflective book does not get a loud badge-and-arrow cover. The author should feel they are choosing between ${count} interpretations of their book, not between ${count} different books.
+
+Within that, each must be visually DISTINCT from the others: a different palette, a different compositional strategy, and a different kind of imagery. Do not submit variations of one idea with the colours changed.
+
+═══ 3. EVERY PROMPT MUST BE CONCRETE ═══
+
+The prompt is handed to an image model that knows nothing about this book and cannot ask questions. Vagueness there becomes a generic cover. Each prompt MUST specify, explicitly:
+- The background and full palette — name the actual colours, with approximate hex values, and which one is the accent.
+- The composition, as zones with rough percentages of the cover ("upper 55%…", "bottom 12% strip…"), and where the visual weight falls.
+- The single focal image, described concretely enough to picture it: what the object or scene IS, its material, its lighting direction and quality, and its framing. If photographic, state the lens character and depth of field.
+- The title text reproduced VERBATIM and in quotes exactly as supplied, plus its typeface character, weight, case, alignment, and placement, and its size relative to everything else.
+- The subtitle and author treatment, in the same specificity.
+- The finish: flat, matte, glossy, textured, cinematic, vector-crisp — and the render quality.
+- That it must remain legible at thumbnail size.
+
+BANNED, because they instruct an image model to do nothing: "evocative", "striking", "compelling", "modern design", "beautiful typography", "eye-catching", "professional look", "artistic flair". If you would write one, replace it with the concrete thing it is standing in for.
+
+The ONLY text anywhere on the cover is the title, the subtitle, and the author name. Never instruct the image model to render any other words, labels, or captions.
+
+Avoid the obvious genre cliché. If the subject is time, do not reach for an hourglass. If it is growth, do not reach for a bar chart or a sapling. Earn the image.
+
+Write each prompt as dense descriptive prose in one paragraph — not a bullet list.
+
+Submit your ${count} concepts with the submit_cover_concepts tool. It is the only way to respond.`;
+
+			userPrompt = `Brief for the cover concepts:
+
+Title: "${bookTitle}"
+${bookSubtitle ? `Subtitle: "${bookSubtitle}"` : 'Subtitle: none'}
+Author: ${bookAuthor || 'Unknown Author'}
+Genre / Subject: ${genre}
+Writing Tone: ${tone}
+  → ${toneGuide}
+Book Structure: ${structure}
+  → ${structureGuide}
+
+Author's background brief — the richest signal you have about what this book actually argues. This is the material you mine for every concept:
+${authorBrief?.trim() || 'None provided. Derive the concepts from the title, subtitle, genre and tone above, and say in "basis" which of them you used.'}
+${coverDirection?.trim() ? `\nThe author has also given this art direction. Every concept must honour it:\n${coverDirection.trim()}` : ''}
+
+The title must appear in every prompt exactly as written above: "${bookTitle}"
+
+Submit exactly ${count} concepts.`;
+
+		} else if (action === 'analyze-cover-reference') {
+			systemPrompt = `You are a design director reverse-engineering the visual system of a book cover so it can be applied to a completely different book in a completely different subject area.
+
+Extract ONLY the transferable design language — the format. Never the content.
+
+Record:
+- Palette: the specific colours (name them concretely, with approximate hex), their proportions, and which one carries the accent.
+- Typography: typeface character (serif/sans/slab/condensed/display), weight, case, letter-spacing, alignment, and the size relationship between title, subtitle and author.
+- Imagery: whether photographic, illustrated, vector, or absent; how it is treated (lighting, cropping, scrims, duotone, texture); and how much of the cover it occupies.
+- Graphic devices: rules, bars, badges, borders, blocks, framing — the repeatable ornament vocabulary.
+- Layout: the compositional grid — what sits where, the proportions of each zone, and where the visual weight falls.
+- Finish: the overall production feel (flat, glossy, textured, matte, cinematic).
+
+Absolute rules:
+- Do NOT describe or name the reference's subject matter, imagery content, niche, genre, title text, author, publisher, or any logo or trademark. Someone reading your output must not be able to tell what the reference book was about.
+- Do NOT reproduce the reference's wording.
+- Describe structure and treatment only, so the format survives being moved to an unrelated subject.
+
+Respond with a plain-text spec under those six headings. No preamble, no commentary, no markdown fences.`;
+
+			userPrompt = `Extract the transferable design language from this cover. Remember: format only — no subject matter, no wording, no niche.`;
+		}
+
+		// Cover concepts run on their own call path: they are the only action that
+		// forces a tool schema and retries on a quality failure, and keeping that
+		// out of the chapter pipeline below means neither can regress the other.
+		if (action === 'cover-concepts') {
+			const concepts = await generateCoverConcepts({
+				apiKey:    activeApiKey,
+				model:     selectedModel,
+				systemPrompt,
+				userPrompt,
+				count:     Math.max(1, Math.min(6, conceptCount || 3)),
+				bookTitle: bookTitle || ''
+			});
+			return json({ success: true, concepts, source: 'live' });
 		}
 
 		// Make HTTP request to Anthropic
@@ -444,6 +574,10 @@ Review, correct, and return in the required format.`;
 			? (CLAUDE_CHAT_MODEL || 'claude-haiku-4-5-20251001')
 			: selectedModel;
 
+		// Reading a reference cover is a small, non-streamed vision call like the
+		// outline — it must never be held to the 10-minute chapter timeout.
+		const isCoverAction = action === 'analyze-cover-reference';
+
 		// Size the output budget from the actual work, not a fixed guess. A
 		// verify pass echoes the whole chapter back after the report, so its
 		// budget has to scale with the draft it is given or long chapters get
@@ -451,6 +585,7 @@ Review, correct, and return in the required format.`;
 		const maxTokens =
 			action === 'write-chapter'  ? budgetForWrite(plan.wordsPerChapter) :
 			action === 'verify-chapter' ? budgetForVerify(chapterContent) :
+			action === 'analyze-cover-reference' ? 1_500 :
 			/* distill — at most 8 short entries; the cap is deliberate, an
 			   overlong distillation is a bug, not a feature. */
 			action === 'distill-chapter' ? 1_500 :
@@ -461,13 +596,33 @@ Review, correct, and return in the required format.`;
 		const controller = new AbortController();
 		// Streamed requests only need to survive gaps between chunks, so the
 		// ceiling can be generous without risking a silent HTTP timeout.
-		const timeoutMs = action === 'outline' || action === 'distill-chapter' ? 60_000 : 600_000;
+		const timeoutMs = action === 'outline' || action === 'distill-chapter' || isCoverAction ? 60_000 : 600_000;
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
 
 		// Anthropic requires streaming once max_tokens is large enough that a
 		// single buffered response could exceed the request timeout. The small
 		// JSON actions are nowhere near it.
-		const useStream = action !== 'outline' && action !== 'distill-chapter';
+		const useStream = action !== 'outline' && action !== 'distill-chapter' && !isCoverAction;
+
+		// Reference-cover analysis is the only vision call in the app: the image
+		// rides as a content block ahead of the instruction text.
+		const userContent = action === 'analyze-cover-reference' && referenceImage?.data
+			? [
+					{
+						type: 'image',
+						source: {
+							type: 'base64',
+							media_type: referenceImage.mediaType || 'image/jpeg',
+							data: referenceImage.data
+						}
+					},
+					{ type: 'text', text: userPrompt }
+				]
+			: userPrompt;
+
+		if (action === 'analyze-cover-reference' && !referenceImage?.data) {
+			throw new Error('No reference cover image was supplied.');
+		}
 
 		let response: Response;
 		let responseText = '';
@@ -487,7 +642,7 @@ Review, correct, and return in the required format.`;
 					stream: useStream,
 					system: systemPrompt,
 					messages: [
-						{ role: 'user', content: userPrompt }
+						{ role: 'user', content: userContent }
 					]
 				})
 			});
@@ -583,6 +738,10 @@ Review, correct, and return in the required format.`;
 				console.error('Failed to parse distill JSON:', responseText);
 				throw new Error('Claude did not return a valid JSON distillation.');
 			}
+		} else if (action === 'analyze-cover-reference') {
+			const format = responseText.trim();
+			if (!format) throw new Error('Claude returned an empty reference analysis. Please try again.');
+			return json({ success: true, format, source: 'live' });
 		} else if (action === 'write-chapter') {
 			return json({
 				success: true,
@@ -663,6 +822,209 @@ function budgetForVerify(chapterContent: string): number {
 	const draft = estimateTokens(chapterContent);
 	const needed = Math.ceil(draft * 1.5) + 4_000;
 	return Math.min(Math.max(needed, 12_000), MODEL_OUTPUT_CAP);
+}
+
+// ── Cover concepts ────────────────────────────────────────────────────────
+
+export interface CoverConcept {
+	style:   string;
+	basis:   string;
+	concept: string;
+	prompt:  string;
+}
+
+/** Dense prose specifying palette, composition, focal image, typography and
+ *  finish does not fit in less than this. A prompt under it is a sketch, and a
+ *  sketch handed to an image model comes back as a generic cover. */
+const MIN_CONCEPT_PROMPT_CHARS = 500;
+const CONCEPT_MAX_TOKENS       = 6_000;
+const CONCEPT_TIMEOUT_MS       = 180_000;
+/** One repair pass. A second has never been worth the wall-clock in practice —
+ *  if the model misses twice, the brief is the problem, not the sampling. */
+const CONCEPT_ATTEMPTS         = 2;
+
+/**
+ * Forcing a tool call is what makes this robust: the API validates the shape
+ * before we ever see it, so malformed JSON — the failure mode of asking for a
+ * bare array in prose — cannot reach us. What the schema cannot enforce is
+ * whether a concept is concrete or actually derived from the brief, which is
+ * what validateConcepts and the repair pass are for.
+ */
+function coverConceptTool(count: number) {
+	return {
+		name: 'submit_cover_concepts',
+		description: `Submit exactly ${count} original, fully-specified book cover concepts derived from the author's brief.`,
+		input_schema: {
+			type: 'object',
+			properties: {
+				concepts: {
+					type: 'array',
+					minItems: count,
+					maxItems: count,
+					items: {
+						type: 'object',
+						properties: {
+							style: {
+								type: 'string',
+								description: 'A 2–4 word name for this concept, e.g. "The Last Drop".'
+							},
+							basis: {
+								type: 'string',
+								description:
+									"The specific element of the author's brief this concept is built on, quoting their own words where possible. " +
+									'Must name a concrete idea, image, object, moment or tension from THIS book — never a genre generality.'
+							},
+							concept: {
+								type: 'string',
+								description: 'One sentence: the visual idea, and why it fits this particular book.'
+							},
+							prompt: {
+								type: 'string',
+								description:
+									'The complete image-generation prompt, as one paragraph of dense descriptive prose. Must fully specify palette with approximate hex values, ' +
+									'composition zones with rough percentages, the focal image and its lighting, the verbatim title text in quotes with its typeface character, weight, case and placement, ' +
+									'the subtitle and author treatment, and the finish and render quality.'
+							}
+						},
+						required: ['style', 'basis', 'concept', 'prompt']
+					}
+				}
+			},
+			required: ['concepts']
+		}
+	};
+}
+
+/**
+ * Reject what the schema cannot: prompts too thin to produce a designed cover,
+ * concepts that never name what in the brief produced them, a title the image
+ * model was never given, and duplicates. Returns the survivors plus a
+ * description of what went wrong, which is fed back on the repair pass.
+ */
+function validateConcepts(raw: any, count: number, bookTitle: string): { ok: CoverConcept[]; problem: string } {
+	const list = Array.isArray(raw?.concepts) ? raw.concepts : [];
+	const ok: CoverConcept[] = [];
+	const problems: string[] = [];
+	const seen = new Set<string>();
+
+	for (const c of list) {
+		const style   = String(c?.style   ?? '').trim();
+		const basis   = String(c?.basis   ?? '').trim();
+		const concept = String(c?.concept ?? '').trim();
+		const prompt  = String(c?.prompt  ?? '').trim();
+		const label   = style || 'an unnamed concept';
+
+		if (!style || !prompt) {
+			problems.push(`${label} was missing its style name or its prompt`);
+			continue;
+		}
+		if (prompt.length < MIN_CONCEPT_PROMPT_CHARS) {
+			problems.push(
+				`the prompt for "${style}" was only ${prompt.length} characters — too thin to specify palette, composition, focal image, typography and finish`
+			);
+			continue;
+		}
+		// Case-insensitive: a prompt may legitimately set the title in caps.
+		if (bookTitle && !prompt.toLowerCase().includes(bookTitle.toLowerCase())) {
+			problems.push(`the prompt for "${style}" never contains the title text "${bookTitle}", so the image model cannot set it`);
+			continue;
+		}
+		if (!basis) {
+			problems.push(`"${style}" did not state which part of the author's brief it derives from`);
+			continue;
+		}
+		if (seen.has(style.toLowerCase())) {
+			problems.push(`two concepts were both named "${style}"`);
+			continue;
+		}
+
+		seen.add(style.toLowerCase());
+		ok.push({ style, basis, concept, prompt });
+	}
+
+	if (ok.length < count) problems.push(`only ${ok.length} of ${count} concepts were usable`);
+	return { ok: ok.slice(0, count), problem: problems.join('; ') };
+}
+
+/**
+ * Devise cover concepts from the Step 1 brief, with one repair pass.
+ *
+ * Degrades rather than fails: a partial set of good concepts beats an error,
+ * because the author still has the templates and can simply ask again.
+ */
+async function generateCoverConcepts(opts: {
+	apiKey: string;
+	model: string;
+	systemPrompt: string;
+	userPrompt: string;
+	count: number;
+	bookTitle: string;
+}): Promise<CoverConcept[]> {
+	const tool = coverConceptTool(opts.count);
+	let best: CoverConcept[] = [];
+	let problem = '';
+
+	for (let attempt = 1; attempt <= CONCEPT_ATTEMPTS; attempt++) {
+		// The repair pass is stateless — the failure is appended to a fresh
+		// request rather than continued as a conversation, because the previous
+		// turn was a forced tool call and replaying it buys nothing.
+		const userPrompt = attempt === 1
+			? opts.userPrompt
+			: `${opts.userPrompt}\n\nYour previous submission was rejected: ${problem}.\nEvery concept must satisfy every requirement. Submit ${opts.count} corrected concepts.`;
+
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), CONCEPT_TIMEOUT_MS);
+
+		let data: any;
+		try {
+			const response = await fetch('https://api.anthropic.com/v1/messages', {
+				method: 'POST',
+				signal: controller.signal,
+				headers: {
+					'Content-Type': 'application/json',
+					'x-api-key': opts.apiKey,
+					'anthropic-version': '2023-06-01'
+				},
+				body: JSON.stringify({
+					model: opts.model,
+					max_tokens: CONCEPT_MAX_TOKENS,
+					system: opts.systemPrompt,
+					tools: [tool],
+					tool_choice: { type: 'tool', name: tool.name },
+					messages: [{ role: 'user', content: userPrompt }]
+				})
+			});
+
+			if (!response.ok) {
+				const errText = await response.text();
+				throw new Error(`Anthropic API error (${response.status}): ${errText}`);
+			}
+			data = await response.json();
+		} catch (err: any) {
+			if (err.name === 'AbortError') {
+				throw new Error(`Claude timed out after ${CONCEPT_TIMEOUT_MS / 1000}s devising cover concepts. Please try again.`);
+			}
+			throw err;
+		} finally {
+			clearTimeout(timer);
+		}
+
+		if (data.stop_reason === 'max_tokens') {
+			problem = 'the submission was cut off before it was complete — keep each prompt to one tight paragraph';
+			continue;
+		}
+
+		const toolInput = data.content?.find((c: any) => c.type === 'tool_use' && c.name === tool.name)?.input;
+		const { ok, problem: found } = validateConcepts(toolInput, opts.count, opts.bookTitle);
+
+		if (ok.length >= opts.count) return ok;
+		if (ok.length > best.length) best = ok;
+		problem = found;
+		console.warn(`[cover-concepts] attempt ${attempt} rejected: ${found}`);
+	}
+
+	if (best.length > 0) return best;
+	throw new Error(`Claude could not produce usable cover concepts (${problem}). Please try again.`);
 }
 
 // ── Response readers ──────────────────────────────────────────────────────

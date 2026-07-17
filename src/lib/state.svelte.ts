@@ -426,12 +426,55 @@ class GlobalState {
 		this.persistBook(updatedBook);
 	}
 
+	/**
+	 * Append a batch of cover candidates, keeping the ones already on screen.
+	 * Stage 2 loads covers in tiers on demand, so batches accumulate rather
+	 * than replace — use setCoverOptions to start a run from scratch.
+	 */
+	appendCoverOptions(bookId: string, options: CoverOption[]) {
+		const bookIndex = this.books.findIndex(b => b.id === bookId);
+		if (bookIndex === -1) return;
+
+		const existing = this.books[bookIndex].coverOptions;
+		// Re-entrant by id: a batch streams in one cover at a time and calls
+		// this on every arrival, so the same option is appended repeatedly.
+		const merged = [...existing];
+		for (const opt of options) {
+			const at = merged.findIndex(o => o.id === opt.id);
+			if (at === -1) merged.push(opt);
+			else merged[at] = opt;
+		}
+
+		const updatedBook: Book = { ...this.books[bookIndex], coverOptions: merged, updatedAt: new Date().toISOString() };
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
+	}
+
 	/** Update the cover reference / visual direction creative brief. */
 	updateCoverReferencePrompt(bookId: string, prompt: string) {
 		const bookIndex = this.books.findIndex(b => b.id === bookId);
 		if (bookIndex === -1) return;
 
 		const updatedBook: Book = { ...this.books[bookIndex], coverReferencePrompt: prompt, updatedAt: new Date().toISOString() };
+		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
+		this.persistBook(updatedBook);
+	}
+
+	/**
+	 * Store the design language extracted from an uploaded reference cover.
+	 * Pass nulls to clear it. The source image is never stored — see
+	 * `coverReferenceFormat` in $lib/types.
+	 */
+	setCoverReferenceFormat(bookId: string, format: string | null, name: string | null) {
+		const bookIndex = this.books.findIndex(b => b.id === bookId);
+		if (bookIndex === -1) return;
+
+		const updatedBook: Book = {
+			...this.books[bookIndex],
+			coverReferenceFormat: format ?? undefined,
+			coverReferenceName:   name   ?? undefined,
+			updatedAt: new Date().toISOString()
+		};
 		this.books = this.books.map((b, i) => i === bookIndex ? updatedBook : b);
 		this.persistBook(updatedBook);
 	}

@@ -1,16 +1,18 @@
 <script lang="ts">
 	import { globalState } from '$lib/state.svelte';
-	import type { Book, Chapter, CoverOption, BibleEntry } from '$lib/types';
+	import type { Book, Chapter, CoverOption, CoverOrigin, BibleEntry } from '$lib/types';
 	import {
 		BookMarked, Zap, Paintbrush, BookOpen, Trash2,
 		Loader, RefreshCw, CheckCircle, ChevronRight,
-		ArrowLeft, Info, RotateCcw
+		ArrowLeft, Info, RotateCcw, Sparkles, Maximize2, Upload, X
 	} from '@lucide/svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import ChapterPlanError from '$lib/components/ChapterPlanError.svelte';
-	import { generateImage } from '$lib/generateImage';
-	import { planForPages, clampPageCount, PAGE_PRESETS, MIN_PAGES, MAX_PAGES, batched, BATCH_SIZE } from '$lib/bookPlan';
-	import { mergeBible, bibleTokens } from '$lib/bookBible';
+	import CoverPreviewDialog from '$lib/components/CoverPreviewDialog.svelte';
+	import { generationRunner } from '$lib/generationRunner.svelte';
+	import { AI_CONCEPT_COUNT, hasCoverBrief } from '$lib/coverStyles';
+	import { fileToImagePayload } from '$lib/imageInput';
+	import { planForPages, clampPageCount, PAGE_PRESETS, MIN_PAGES, MAX_PAGES } from '$lib/bookPlan';
 
 	// ── Stage 1: concept form ──────────────────────────────────────────────────
 	let title       = $state('');
@@ -33,9 +35,18 @@
 	/** Optional background brief — injected into every AI call for deeper grounding */
 	let userContext = $state('');
 
+	/** Guards the create-book form against a double submit. Purely local: the
+	 *  book it would create does not exist yet, so there is no run to consult. */
+	let isCreating = $state(false);
+
 	// ── Stage 2: cover options ─────────────────────────────────────────────────
-	let regeneratingCoverIdx = $state<number | null>(null);
-	let isGeneratingCovers   = $state(false);
+	// Run state (what is generating, what failed) lives in generationRunner so it
+	// outlives this component — see `run` below. Only view state is local.
+	let previewCoverIdx      = $state<number | null>(null);
+	/** Thumbnail of the uploaded reference. Deliberately ephemeral and local:
+	 *  the durable artefact is the design language the runner extracts, and the
+	 *  source image is never persisted. */
+	let referencePreviewUrl  = $state<string | null>(null);
 
 	// ── Delete confirmation ────────────────────────────────────────────────────
 	let deleteConfirmOpen  = $state(false);
@@ -62,15 +73,11 @@
 	}
 
 	// ── Stage 3: chapter plan ──────────────────────────────────────────────────
-	let isGeneratingPlan   = $state(false);
-	let chapterPlanError   = $state<string | null>(null);
 	let editingChapterIdx  = $state<number | null>(null);
 	let editTitle   = $state('');
 	let editSummary = $state('');
 
 	// ── Stage 4: writing ───────────────────────────────────────────────────────
-	let isWriting        = $state(false);
-	let regeneratingChapterIdx = $state<number | null>(null);
 	let logsContainer: HTMLDivElement | null = $state(null);
 
 	// Auto-scroll logs
@@ -82,47 +89,31 @@
 
 	const active = $derived(globalState.activeBook);
 
-	// ── COVER STYLE DEFINITIONS ───────────────────────────────────────────────
-	const COVER_STYLES = [
-		{
-			style: 'Dark Minimalist',
-			buildPrompt: (title: string, subtitle: string, author: string, genre: string, refClause: string) =>
-				`Luxury dark minimalist professional book cover. Title: "${title}"${subtitle ? ` — ${subtitle}` : ''}. Author: ${author}. Genre: ${genre}. ` +
-				`Ultra-deep charcoal or near-black background fills the entire cover. A single powerful thematic object or dramatic silhouette — perfectly relevant to "${title}" — centered with cinematic chiaroscuro side-lighting, casting deep shadows. ` +
-				`Thin gold or silver metallic accent lines framing the composition. ` +
-				`Bold, elegant white or pale-gold serif title text "${title.toUpperCase()}" dominating the upper half of the cover. ` +
-				`Author name "${author}" in small refined serif at the very bottom. ` +
-				`No clutter. Maximum restraint and sophistication. Award-winning book cover design. Photorealistic render quality.${refClause}`
-		},
-		{
-			style: 'Warm Editorial',
-			buildPrompt: (title: string, subtitle: string, author: string, genre: string, refClause: string) =>
-				`Sophisticated warm editorial professional book cover. Title: "${title}"${subtitle ? ` — ${subtitle}` : ''}. Author: ${author}. Genre: ${genre}. ` +
-				`Rich cream, ivory, and warm amber tones throughout. Expressive painterly or fine-art illustration style background — botanical, organic shapes, or thematic symbols directly relevant to "${title}". ` +
-				`Soft natural light, warm paper texture. Elegant dark serif title text "${title}" in the upper-center of the cover. ` +
-				`Tasteful decorative border lines or ornamental elements. Subtitle "${subtitle}" in a smaller refined italic serif below the title. ` +
-				`Author name "${author}" at the bottom in italic serif. ` +
-				`Intellectual and artistic mood, reminiscent of Penguin Books, Knopf, or Farrar Straus & Giroux publishing house. Literary excellence.${refClause}`
-		},
-		{
-			style: 'Bold Graphic',
-			buildPrompt: (title: string, subtitle: string, author: string, genre: string, refClause: string) =>
-				`High-impact commercial non-fiction bestselling book cover — identical quality to Amazon Top 10 titles. Title: "${title}"${subtitle ? ` — ${subtitle}` : ''}. Author: ${author}. Genre: ${genre}. ` +
-				`Upper 55% of cover: solid deep navy blue background. Massive, extra-bold white all-caps sans-serif (Impact or Helvetica Black weight) title text "${title.toUpperCase()}" — each word on its own line, commanding maximum visual weight. ` +
-				`Thin bright gold horizontal accent lines separating the title lines. ` +
-				`Lower 40% of cover: seamless photorealistic cinematic scene directly relevant to "${genre}" and the subject of "${title}" — dramatic natural lighting, high-production-value photography quality. ` +
-				`Bold red circular callout badge in the lower-right corner with a short 3-word benefit phrase. ` +
-				`Very bottom strip: wide solid navy bar with author name "${author.toUpperCase()}" in large white bold condensed-serif text. ` +
-				`Resembles top commercial non-fiction and self-help bestsellers. Publisher-quality production.${refClause}`
-		}
-	];
+	// ── Run state ─────────────────────────────────────────────────────────────
+	/**
+	 * The active book's in-flight work, owned by the runner rather than this
+	 * component. Reading it through a $derived means navigating away and back
+	 * re-attaches to the run already in progress instead of showing an idle UI
+	 * over work that never stopped.
+	 */
+	const run = $derived(generationRunner.for(active?.id));
+	const coversBusy = $derived(generationRunner.isCoversBusy(active?.id));
+	const hasAiConcepts = $derived((active?.coverOptions ?? []).some(o => o.origin === 'ai'));
+	/** The author's own direction — written brief, uploaded reference, or both —
+	 *  fixes the design language, so Stage 2 renders exactly one cover from it:
+	 *  the template and concept tiers have nothing left to vary. */
+	const hasBrief = $derived(hasCoverBrief({
+		brief:           active?.coverReferencePrompt,
+		referenceFormat: active?.coverReferenceFormat
+	}));
 
 	// ─────────────────────────────────────────────────────────────────────────
-	// STAGE 1 → Create book + immediately kick off cover generation (→ Stage 2)
+	// STAGE 1 → Create book + hand off to the runner (→ Stage 2)
 	// ─────────────────────────────────────────────────────────────────────────
 	async function handleCreateBook(e: Event) {
 		e.preventDefault();
-		if (!title.trim() || isGeneratingCovers) return;
+		if (!title.trim() || isCreating) return;
+		isCreating = true;
 
 		const book = globalState.createBook({
 			title, subtitle, author, genre, length, pageCount,
@@ -133,165 +124,90 @@
 		});
 
 		title = ''; subtitle = ''; author = ''; userContext = '';
-		await generateCoverOptions(book);
+		isCreating = false;
+		// Not awaited: the runner owns this from here, and the form is already
+		// gone. Awaiting would only tie the run's lifetime to this component.
+		generationRunner.startCovers(book);
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
-	// STAGE 2 helpers
+	// STAGE 2 — cover handlers (thin wrappers over the runner)
 	// ─────────────────────────────────────────────────────────────────────────
-	async function generateCoverOptions(book: Book) {
-		isGeneratingCovers = true;
-		globalState.setPipelineStage(book.id, 2);
-
-		const keys = globalState.apiKeys;
-		const refClause = book.coverReferencePrompt?.trim()
-			? ` Visual reference & creative direction: ${book.coverReferencePrompt.trim()}.`
-			: '';
-
-		// Pre-allocate slots so covers always render in style order regardless of
-		// which generation finishes first.
-		const slots: (CoverOption | null)[] = new Array(COVER_STYLES.length).fill(null);
-
-		// Generate all styles concurrently — stream each cover to the UI the moment
-		// it's ready so the user sees results progressively.
-		await Promise.all(
-			COVER_STYLES.map(async (styleInfo, i) => {
-				const prompt = styleInfo.buildPrompt(
-					book.title, book.subtitle ?? '', book.author ?? 'Unknown Author', book.genre, refClause
-				);
-
-				let imageUrl = '';
-				try {
-					imageUrl = await generateImage({
-						prompt,
-						apiKey:      keys.imageKey,
-						provider:    keys.imageProvider,
-						useMockMode: keys.useMockMode,
-						isCover:     true
-					});
-				} catch { /* continue — slot stays with empty imageUrl */ }
-
-				slots[i] = { id: crypto.randomUUID(), prompt, imageUrl, style: styleInfo.style };
-
-				// Push completed covers to the UI immediately (filter out pending slots)
-				globalState.setCoverOptions(book.id, slots.filter((s): s is CoverOption => s !== null));
-			})
-		);
-
-		isGeneratingCovers = false;
+	function loadAiConcepts() {
+		if (active) generationRunner.startAiConcepts(active.id);
 	}
 
-	/** Regenerate a single cover option after user gives feedback */
-	async function regenerateSingleCover(optionIndex: number) {
-		if (!active || regeneratingCoverIdx !== null) return;
-		regeneratingCoverIdx = optionIndex;
+	function regenerateSingleCover(idx: number) {
+		if (active) generationRunner.regenerateCover(active.id, idx);
+	}
 
-		const keys   = globalState.apiKeys;
-		const style  = COVER_STYLES[optionIndex];
-		const refClause = active.coverReferencePrompt?.trim()
-			? ` Visual reference & creative direction: ${active.coverReferencePrompt.trim()}.`
-			: '';
-		const prompt = style.buildPrompt(active.title, active.subtitle ?? '', active.author ?? 'Unknown Author', active.genre, refClause);
+	function createBriefCover() {
+		if (active) generationRunner.createBriefCover(active.id);
+	}
 
+	// ── Reference cover ───────────────────────────────────────────────────────
+
+	/** Read a reference cover's design language and attach it to the book.
+	 *  Only the thumbnail is component-local — the analysis itself runs in the
+	 *  runner so leaving the page doesn't abandon it. */
+	async function handleReferenceUpload(e: Event) {
+		const input = e.target as HTMLInputElement;
+		const file  = input.files?.[0];
+		if (!file || !active) return;
+
+		const bookId = active.id;
 		try {
-			const imageUrl = await generateImage({
-				prompt,
-				apiKey:      keys.imageKey,
-				provider:    keys.imageProvider,
-				useMockMode: keys.useMockMode,
-				isCover:     true
-			});
-			globalState.replaceCoverOption(active.id, optionIndex, {
-				id: crypto.randomUUID(),
-				prompt,
-				imageUrl,
-				style: style.style
-			});
-		} catch (err) {
-			console.error(err);
+			const payload = await fileToImagePayload(file);
+			referencePreviewUrl = payload.previewUrl;
+			await generationRunner.analyzeReference(
+				bookId,
+				{ mediaType: payload.mediaType, data: payload.data },
+				file.name
+			);
+		} catch {
+			// The runner records the failure in run.referenceError; a decode
+			// failure before it is reported the same way.
+			referencePreviewUrl = null;
 		}
 
-		regeneratingCoverIdx = null;
+		// Reset the input so re-picking the same file fires a fresh change event.
+		input.value = '';
 	}
 
-	/** Regenerate ALL three covers with updated visual direction */
-	async function regenerateAllCovers() {
-		if (!active) return;
-		await generateCoverOptions(active);
+	function clearReference() {
+		if (!active || run.referenceBusy) return;
+		globalState.setCoverReferenceFormat(active.id, null, null);
+		generationRunner.clearReferenceError(active.id);
+		referencePreviewUrl = null;
+	}
+
+	// ── Full-size preview ─────────────────────────────────────────────────────
+
+	const previewOption = $derived(
+		previewCoverIdx !== null ? active?.coverOptions[previewCoverIdx] ?? null : null
+	);
+
+	function openPreview(idx: number) { previewCoverIdx = idx; }
+	function closePreview()           { previewCoverIdx = null; }
+
+	function pagePreview(step: number) {
+		if (previewCoverIdx === null || !active) return;
+		const n = active.coverOptions.length;
+		previewCoverIdx = (previewCoverIdx + step + n) % n;
 	}
 
 	function selectCoverAndProceed(index: number) {
 		if (!active) return;
+		previewCoverIdx = null;
 		globalState.selectCoverOption(active.id, index);
-		generateChapterPlan(active);
+		generationRunner.startChapterPlan(active);
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
-	// STAGE 3 helpers
+	// STAGE 3 — chapter plan
 	// ─────────────────────────────────────────────────────────────────────────
-	async function generateChapterPlan(book: Book) {
-		isGeneratingPlan = true;
-		chapterPlanError = null;
-		globalState.setPipelineStage(book.id, 3);
-		globalState.updateBookStatus(book.id, 'researching');
-
-		const keys   = globalState.apiKeys;
-		const useMock = keys.useMockMode;
-
-		try {
-			// Research
-			const researchRes = await fetch('/api/research', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					query: `Core concepts and key facts about: ${book.title}. Genre: ${book.genre}.`,
-					apiKey: keys.exaKey,
-					useMockMode: useMock
-				})
-			});
-			const researchData = await researchRes.json();
-			const searchFacts = researchData.success
-				? (researchData.results as any[]).map(f => `[${f.title}] ${f.snippet}`).join('\n\n')
-				: '';
-
-			// Merge user-provided context with retrieved facts
-			const factsSummary = [
-				book.userContext?.trim() ? `[Author Brief]\n${book.userContext.trim()}` : '',
-				searchFacts
-			].filter(Boolean).join('\n\n');
-
-			globalState.updateBookStatus(book.id, 'outlining');
-
-			// Outline
-			const outlineRes = await fetch('/api/write', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					action: 'outline',
-					apiKey: keys.anthropicKey,
-					useMockMode: useMock,
-					bookTitle: book.title,
-					genre: book.genre,
-					length: book.length,
-					pageCount: book.pageCount,
-					tone: book.tone,
-					structure: book.structure,
-					researchNotes: factsSummary
-				})
-			});
-			const outlineData = await outlineRes.json();
-
-			if (!outlineData.success) throw new Error(outlineData.error || 'Outline failed.');
-
-			const chapters: Chapter[] = outlineData.chapters;
-			globalState.updateBookChapters(book.id, chapters);
-		} catch (err: any) {
-			chapterPlanError = err.message || 'An unexpected error occurred. Please try again.';
-			globalState.updateBookStatus(book.id, 'failed');
-			globalState.addLog(book.id, { step: 'outline', status: 'error', message: err.message });
-		}
-
-		isGeneratingPlan = false;
+	function retryChapterPlan() {
+		if (active) generationRunner.startChapterPlan(active);
 	}
 
 	function startEditChapter(idx: number) {
@@ -319,7 +235,7 @@
 		if (lower.startsWith('preface')) return 'P';
 		if (lower.startsWith('introduction') || lower.startsWith('intro')) return 'I';
 		if (lower.startsWith('foreword')) return 'F';
-		
+
 		let prefaceCount = 0;
 		for (let i = 0; i < idx; i++) {
 			const titleLower = chapters[i].title.toLowerCase();
@@ -335,428 +251,17 @@
 		return String(chap.order - prefaceCount);
 	}
 
+	// ─────────────────────────────────────────────────────────────────────────
+	// STAGE 4 — writing
+	// ─────────────────────────────────────────────────────────────────────────
 	function approveChapterPlan() {
 		if (!active) return;
 		globalState.setPipelineStage(active.id, 4);
-		runWritingPipeline(active);
+		generationRunner.startWriting(active);
 	}
 
-	// ─────────────────────────────────────────────────────────────────────────
-	// STAGE 4 helpers — write all chapters
-	// ─────────────────────────────────────────────────────────────────────────
-	async function runWritingPipeline(book: Book) {
-		if (isWriting) return;
-		isWriting = true;
-		// try/finally so isWriting always clears. It used to be reset only on
-		// the success path, so any throw left it stuck true and the pipeline
-		// refused to start again (the guard above) until a full page reload.
-		try {
-			await writeAllChapters(book);
-		} finally {
-			isWriting = false;
-		}
-	}
-
-	/** Chapters that threw during this run; reported at the end. */
-	let failedChapters: number[] = [];
-
-	async function writeAllChapters(book: Book) {
-		failedChapters = [];
-		globalState.updateBookStatus(book.id, 'writing');
-
-		const keys    = globalState.apiKeys;
-		const useMock = keys.useMockMode;
-
-		// ── Step 1: Book-level research (shared context for all chapters) ─────
-		let bookLevelFacts = '';
-		try {
-			const r = await fetch('/api/research', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					query: `${book.title} ${book.genre} comprehensive overview key concepts`,
-					apiKey: keys.exaKey,
-					useMockMode: useMock
-				})
-			});
-			const rd = await r.json();
-			bookLevelFacts = rd.success
-				? (rd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
-				: '';
-		} catch { /* non-fatal */ }
-
-		const chapters = [...globalState.books.find(b => b.id === book.id)!.chapters];
-
-		// Build the list of chapter indices that still need to be written.
-		const allPending = chapters
-			.map((c, i) => i)
-			.filter(i => chapters[i].status !== 'completed');
-
-		// Start a run from a clean bible. Entries carry the chapter that wrote
-		// them, and a re-run rewrites those chapters — keeping the old ones would
-		// tell chapter 7's author that chapter 7 already said something.
-		let bible: BibleEntry[] = [];
-		globalState.updateBookBible(book.id, bible);
-
-		// The queue the workers drain. Refilled one batch at a time.
-		const pending: number[] = [];
-
-		// ── Worker pool — process up to CONCURRENCY chapters simultaneously ──────
-		// Each worker claims the next available index from the shared queue,
-		// runs the full research → write → verify → illustrate pipeline for it,
-		// then immediately picks up the next. This means the user sees the first
-		// chapter appear as soon as it's done rather than waiting for all of them,
-		// while still limiting concurrent API pressure to CONCURRENCY slots.
-		const CONCURRENCY = 2;
-
-		async function processNextChapter(): Promise<void> {
-			while (pending.length > 0) {
-				const i = pending.shift()!;
-				const chap = chapters[i];
-
-				// Per-chapter targeted research
-				let chapterFacts = '';
-				try {
-					const cr = await fetch('/api/research', {
-						method: 'POST',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({
-							query: `${chap.title} ${book.title} ${book.genre} ${chap.summary ?? ''}`.trim(),
-							apiKey: keys.exaKey,
-							useMockMode: useMock
-						})
-					});
-					const crd = await cr.json();
-					chapterFacts = crd.success
-						? (crd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
-						: '';
-					globalState.addLog(book.id, {
-						step: 'research', status: 'success',
-						message: `Research complete for Chapter ${chap.order}: "${chap.title}"`
-					});
-				} catch { /* non-fatal */ }
-
-				const factsSummary = [
-					book.userContext?.trim() ? `[Author Brief]\n${book.userContext.trim()}` : '',
-					bookLevelFacts ? `[Book-Level Research]\n${bookLevelFacts}` : '',
-					chapterFacts   ? `[Chapter-Specific Research for "${chap.title}"]\n${chapterFacts}` : ''
-				].filter(Boolean).join('\n\n');
-
-				// One chapter must never take the book down with it.
-				// writeSingleChapter throws on a failed draft; unguarded, that
-				// rejects this worker, rejects the Promise.all below, and aborts
-				// the whole run — discarding every chapter that already
-				// succeeded. Survivable at 5 chapters, fatal at 30, where ~120
-				// API calls make a transient 429 or timeout near-certain.
-				// Mark it failed, log it, keep going: the reader can regenerate
-				// the one chapter instead of losing the book.
-				try {
-					await writeSingleChapter(book.id, i, chapters, factsSummary, keys, useMock, bible);
-				} catch (err: any) {
-					failedChapters.push(chap.order);
-					const live = [...globalState.books.find(b => b.id === book.id)!.chapters];
-					live[i].status = 'failed';
-					globalState.updateBookChapters(book.id, live);
-					globalState.addLog(book.id, {
-						step: 'drafting', status: 'error',
-						message: `Chapter ${chap.order} failed: ${err?.message ?? err}. Continuing with the rest — regenerate it from the reader.`
-					});
-				}
-			}
-		}
-
-		// ── Batched fan-out with a fold ───────────────────────────────────────
-		// Write a batch in parallel, distil what it actually said into the bible,
-		// then write the next batch WITH that bible. Chapters within a batch stay
-		// blind to each other — that's the price of parallelism, and it's bounded
-		// to BATCH_SIZE chapters rather than the whole book. Batch 1 runs with an
-		// empty bible; there is nothing written yet for it to know.
-		const batches = batched(allPending, BATCH_SIZE);
-
-		for (const [batchNum, batch] of batches.entries()) {
-			pending.push(...batch);
-			// Spawn CONCURRENCY workers and let them race through this batch.
-			await Promise.all(Array.from({ length: CONCURRENCY }, processNextChapter));
-
-			// No point distilling after the final batch — nobody reads it.
-			if (batchNum === batches.length - 1) break;
-
-			globalState.addLog(book.id, {
-				step: 'review', status: 'running',
-				message: `Folding batch ${batchNum + 1}/${batches.length} into the book bible…`
-			});
-
-			// Distil each chapter this batch actually wrote. Every failure mode
-			// here is non-fatal: a chapter that failed to write has nothing to
-			// distil, and a distillation that throws just means the next batch
-			// runs with a slightly thinner bible. Neither is worth losing a book
-			// over, so nothing in this fold is allowed to reject.
-			const live = globalState.books.find(b => b.id === book.id)!.chapters;
-			const distilled = await Promise.all(
-				batch.map(async (i) => {
-					const c = live[i];
-					if (c.status !== 'completed' || !c.content?.trim()) return [];
-					try {
-						return await distillChapter(book, c, keys, useMock);
-					} catch (err: any) {
-						globalState.addLog(book.id, {
-							step: 'review', status: 'error',
-							message: `Could not distil Chapter ${c.order} into the book bible: ${err?.message ?? err}. Continuing — later chapters just won't know about it.`
-						});
-						return [];
-					}
-				})
-			);
-
-			bible = mergeBible(bible, distilled.flat());
-			globalState.updateBookBible(book.id, bible);
-			globalState.addLog(book.id, {
-				step: 'review', status: 'success',
-				message: `Book bible now holds ${bible.length} entries (~${bibleTokens(bible)} tokens) for the next batch.`
-			});
-		}
-
-		const wrote = chapters.length - failedChapters.length;
-		globalState.updateBookStatus(book.id, failedChapters.length ? 'failed' : 'completed');
-		globalState.setPipelineStage(book.id, 5);
-		globalState.addLog(book.id, failedChapters.length
-			? {
-				step: 'complete', status: 'error',
-				message: `${wrote}/${chapters.length} chapters written. Failed: ${failedChapters.join(', ')}. Regenerate those from the reader.`
-			}
-			: {
-				step: 'complete', status: 'success',
-				message: '🎉 All chapters complete. Ebook ready to read and export.'
-			});
-	}
-
-	/**
-	 * Ask the cheap model what a finished chapter committed to. Throws on
-	 * failure — every caller is expected to treat that as "no entries".
-	 */
-	async function distillChapter(
-		book: Book,
-		chap: Chapter,
-		keys: typeof globalState.apiKeys,
-		useMock: boolean
-	): Promise<BibleEntry[]> {
-		const res = await fetch('/api/write', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				action: 'distill-chapter',
-				apiKey: keys.anthropicKey,
-				useMockMode: useMock,
-				bookTitle: book.title,
-				chapterTitle: chap.title,
-				chapterOrder: chap.order,
-				chapterContent: chap.content
-			})
-		});
-		const data = await res.json();
-		if (!data.success) throw new Error(data.error || 'distillation failed');
-		return (data.entries ?? []) as BibleEntry[];
-	}
-
-	/** Write + illustrate exactly one chapter. Shared between pipeline and per-chapter regen. */
-	async function writeSingleChapter(
-		bookId: string,
-		chapIndex: number,
-		chaptersSnapshot: Chapter[],
-		factsSummary: string,
-		keys: typeof globalState.apiKeys,
-		useMock: boolean,
-		bookBible: BibleEntry[] = []
-	) {
-		const chap = chaptersSnapshot[chapIndex];
-		const book = globalState.books.find(b => b.id === bookId)!;
-
-		// Mark writing
-		const live = [...globalState.books.find(b => b.id === bookId)!.chapters];
-		live[chapIndex].status = 'writing';
-		globalState.updateBookChapters(bookId, live);
-		globalState.addLog(bookId, {
-			step: 'drafting', status: 'running',
-			message: `Writing Chapter ${chap.order}: "${chap.title}"…`
-		});
-
-		// Draft — include all book context fields so Claude can write unique, informed content
-		const draftRes = await fetch('/api/write', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				action: 'write-chapter',
-				apiKey: keys.anthropicKey,
-				useMockMode: useMock,
-				bookTitle: book.title,
-				genre: book.genre,
-				structure: book.structure,
-				// Sizes the per-chapter output budget on the server.
-				length: book.length,
-				pageCount: book.pageCount,
-				chapterTitle: chap.title,
-				chapterOrder: chap.order,
-				chapterSummary: chap.summary,
-				tone: book.tone,
-				researchNotes: factsSummary,
-				// The whole plan, so a chapter knows its place in the book.
-				// Chapters are written concurrently and never see each other's
-				// output, so without this each one is blind to the rest and
-				// re-explains the same foundations. ~40 tokens per chapter
-				// against a 200k window — it is what makes long books cohere.
-				bookOutline: chaptersSnapshot.map(c => ({
-					order:   c.order,
-					title:   c.title,
-					summary: c.summary
-				})),
-				// What the already-written chapters SAID, as opposed to what the
-				// outline planned for them. Bounded to ~2.5k tokens however long
-				// the book is — that bound is the whole reason this scales.
-				bookBible
-
-			})
-		});
-		const draftData = await draftRes.json();
-		if (!draftData.success) throw new Error(draftData.error || `Chapter ${chap.order} draft failed.`);
-
-		// Verify
-		const current = [...globalState.books.find(b => b.id === bookId)!.chapters];
-		current[chapIndex].status = 'verifying';
-		globalState.updateBookChapters(bookId, current);
-
-		const verifyRes = await fetch('/api/write', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				action: 'verify-chapter',
-				apiKey: keys.anthropicKey,
-				useMockMode: useMock,
-				bookTitle: book.title,
-				genre: book.genre,
-				tone: book.tone,
-				chapterTitle: chap.title,
-				chapterContent: draftData.content,
-				researchNotes: factsSummary
-			})
-		});
-		const verifyData = await verifyRes.json();
-		const finalContent = verifyData.success ? verifyData.verifiedContent : draftData.content;
-
-		// Illustration — use chapter summary for a more relevant prompt
-		globalState.addLog(bookId, {
-			step: 'illustrate', status: 'running',
-			message: `Generating illustration for Chapter ${chap.order}…`
-		});
-
-		let illustUrl: string | null = null;
-		try {
-			// House style — match the editorial diagram plates: warm cream field,
-			// deep navy subject, amber accents. Honour the book's ultra-realistic
-			// flag the same way the cover and the reader's edit drawer do.
-			const ultraRealistic = book.useUltraRealistic || book.coverSettings?.useUltraRealistic;
-			const styleClause = ultraRealistic
-				? 'Ultra-realistic reference photograph, documentary product photography, sharp focus, ' +
-				  'natural directional lighting, shallow depth of field, 8k, highly detailed. ' +
-				  'Neutral warm cream backdrop, deep navy and amber colour accents. No text, no labels, no watermarks.'
-				: 'High-quality editorial illustration, clean flat vector style with subtle depth. ' +
-				  'Warm cream background (#FAF5EA), deep navy linework (#0F2231), amber accents (#E07B20). ' +
-				  'Restrained sophisticated palette. No text, no labels, no watermarks.';
-
-			const illustPrompt = chap.summary
-				? `${styleClause} Subject: a clear, instructive visual for a chapter titled "${chap.title}". Topic: ${chap.summary}. From the book "${book.title}" (${book.genre}).`
-				: `${styleClause} Subject: a clear, instructive visual for a chapter titled "${chap.title}". From the book "${book.title}" (${book.genre}).`;
-			illustUrl = await generateImage({
-				prompt:      illustPrompt,
-				apiKey:      keys.imageKey,
-				provider:    keys.imageProvider,
-				useMockMode: useMock,
-				isCover:     false
-			});
-		} catch { /* non-fatal */ }
-
-		// Commit
-		const final = [...globalState.books.find(b => b.id === bookId)!.chapters];
-		final[chapIndex].content         = finalContent;
-		final[chapIndex].researchNotes   = factsSummary;
-		final[chapIndex].illustrationUrl = illustUrl;
-		final[chapIndex].status          = 'completed';
-		globalState.updateBookChapters(bookId, final);
-
-		globalState.addLog(bookId, {
-			step: 'drafting', status: 'success',
-			message: `Chapter ${chap.order} complete.`
-		});
-	}
-
-	/** Per-chapter regeneration triggered from Stage 4 UI */
-	async function handleRegenerateChapter(chapIndex: number) {
-		if (!active || isWriting || regeneratingChapterIdx !== null) return;
-		regeneratingChapterIdx = chapIndex;
-
-		const keys    = globalState.apiKeys;
-		const useMock = keys.useMockMode;
-		const chap    = active.chapters[chapIndex];
-
-		// ── Book-level background research ──────────────────────────────────
-		let bookLevelFacts = '';
-		try {
-			const r = await fetch('/api/research', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					query: `${active.title} ${active.genre} comprehensive overview key concepts`,
-					apiKey: keys.exaKey,
-					useMockMode: useMock
-				})
-			});
-			const rd = await r.json();
-			bookLevelFacts = rd.success
-				? (rd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
-				: '';
-		} catch { /* non-fatal */ }
-
-		// ── Chapter-specific targeted research ────────────────────────────
-		let chapterFacts = '';
-		try {
-			const cr = await fetch('/api/research', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					query: `${chap.title} ${active.title} ${active.genre} ${chap.summary ?? ''}`.trim(),
-					apiKey: keys.exaKey,
-					useMockMode: useMock
-				})
-			});
-			const crd = await cr.json();
-			chapterFacts = crd.success
-				? (crd.results as any[]).map((f: any) => `[${f.title}] ${f.snippet}`).join('\n\n')
-				: '';
-		} catch { /* non-fatal */ }
-
-		const factsSummary = [
-			active.userContext?.trim() ? `[Author Brief]\n${active.userContext.trim()}` : '',
-			bookLevelFacts ? `[Book-Level Research]\n${bookLevelFacts}` : '',
-			chapterFacts   ? `[Chapter-Specific Research for "${chap.title}"]\n${chapterFacts}` : ''
-		].filter(Boolean).join('\n\n');
-
-		try {
-			const snapshot = [...active.chapters];
-			// Regenerate against the book bible so the new draft honours what the
-			// rest of the book already established — minus this chapter's own
-			// entries, which describe the draft we are about to throw away.
-			const bible = (active.bible ?? []).filter(e => e.chapter !== snapshot[chapIndex].order);
-			await writeSingleChapter(active.id, chapIndex, snapshot, factsSummary, keys, useMock, bible);
-		} catch (err: any) {
-			const current = [...globalState.books.find(b => b.id === active.id)!.chapters];
-			current[chapIndex].status = 'failed';
-			globalState.updateBookChapters(active.id, current);
-			globalState.addLog(active.id, {
-				step: 'drafting', status: 'error',
-				message: `Regeneration failed for Chapter ${chapIndex + 1}: ${err.message}`
-			});
-		}
-
-		regeneratingChapterIdx = null;
+	function handleRegenerateChapter(chapIndex: number) {
+		if (active) generationRunner.regenerateChapter(active.id, chapIndex);
 	}
 </script>
 
@@ -1004,8 +509,8 @@
 
 
 					<div class="form-actions">
-						<button type="submit" class="btn btn-primary" disabled={isGeneratingCovers || !title.trim()}>
-							{#if isGeneratingCovers}
+						<button type="submit" class="btn btn-primary" disabled={isCreating || !title.trim()}>
+							{#if isCreating}
 								<span class="btn-spinner"></span> Generating Cover Options…
 							{:else}
 								<Zap size={15} /> Generate Cover Options
@@ -1022,10 +527,10 @@
 				<div class="stage-header">
 					<div class="stage-badge">Step 1 of 3</div>
 					<h2 class="font-serif">Choose Your Cover Style</h2>
-					<p>We've generated three distinct cover concepts for <strong>{active.title}</strong>. Pick the one that fits your vision, or give feedback and regenerate.</p>
+					<p>Cover concepts for <strong>{active.title}</strong>. Click any cover to preview it full size. Load more variants below, or give direction and regenerate.</p>
 				</div>
 
-				{#if isGeneratingCovers}
+				{#if run.isGeneratingCovers && active.coverOptions.length === 0}
 					<div class="generating-covers-placeholder">
 						<div class="cover-skeleton-grid">
 							{#each [1,2,3] as _}
@@ -1039,37 +544,57 @@
 					</div>
 				{:else}
 					<div class="cover-options-grid">
-						{#each active.coverOptions as opt, idx}
+						{#each active.coverOptions as opt, idx (opt.id)}
+							{@const pending = run.pendingCoverIds.includes(opt.id)}
 							<div class="cover-option-card {active.selectedCoverIndex === idx ? 'selected' : ''}">
-								<div class="cover-option-preview">
+								<button
+									class="cover-option-preview"
+									onclick={() => openPreview(idx)}
+									disabled={pending}
+									aria-label="Preview the {opt.style} cover full size"
+								>
 									{#if opt.imageUrl}
-										<img src={opt.imageUrl} alt="Cover option {idx + 1}" />
-									{:else}
+										<img src={opt.imageUrl} alt="Cover option {idx + 1} — {opt.style}" />
+										<span class="cover-zoom-hint" aria-hidden="true"><Maximize2 size={14} /> Preview</span>
+									{:else if pending}
 										<div class="cover-placeholder">
-											<BookMarked size={32} />
+											<Loader size={24} class="spin-icon" />
+										</div>
+									{:else}
+										<div class="cover-placeholder cover-placeholder--failed">
+											<BookMarked size={28} />
+											<span>Didn't render — regenerate</span>
 										</div>
 									{/if}
-									{#if regeneratingCoverIdx === idx}
+									{#if run.regeneratingCoverIdx === idx}
 										<div class="cover-regenerating-overlay">
 											<Loader size={24} class="spin-icon" />
 										</div>
 									{/if}
-								</div>
+								</button>
 								<div class="cover-option-meta">
-									<span class="cover-style-label font-serif">{opt.style}</span>
+									<div class="cover-style-line">
+										<span class="cover-style-label font-serif">{opt.style}</span>
+										{#if opt.origin === 'ai'}
+											<span class="cover-origin-badge cover-origin-badge--ai"><Sparkles size={10} /> AI</span>
+										{/if}
+									</div>
+									{#if opt.concept}
+										<p class="cover-concept-line">{opt.concept}</p>
+									{/if}
 									<div class="cover-option-actions">
 										<button
 											class="btn btn-ghost btn-xs"
 											onclick={() => regenerateSingleCover(idx)}
-											disabled={regeneratingCoverIdx !== null || isGeneratingCovers}
-											title="Regenerate this style"
+											disabled={pending || run.regeneratingCoverIdx !== null}
+											title="Regenerate this cover"
 										>
 											<RotateCcw size={13} />
 										</button>
 										<button
 											class="btn btn-primary btn-xs"
 											onclick={() => selectCoverAndProceed(idx)}
-											disabled={regeneratingCoverIdx !== null || isGeneratingCovers}
+											disabled={!opt.imageUrl}
 										>
 											Select <ChevronRight size={13} />
 										</button>
@@ -1078,6 +603,33 @@
 							</div>
 						{/each}
 					</div>
+
+					<!-- AI concepts: a paid batch the author opts into -->
+					{#if !hasAiConcepts}
+						<div class="cover-more">
+							<div class="cover-more__copy">
+								<span class="cover-more__title font-serif">Want original concepts?</span>
+								<span class="cover-more__hint">Claude reads your brief and art-directs {AI_CONCEPT_COUNT} covers of its own — no templates involved.</span>
+							</div>
+							<div class="cover-more__actions">
+								<button
+									class="btn btn-secondary btn-sm"
+									onclick={loadAiConcepts}
+									disabled={run.loadingBatch === 'ai'}
+								>
+									{#if run.loadingBatch === 'ai'}
+										<span class="btn-spinner"></span> Devising concepts…
+									{:else}
+										<Sparkles size={14} /> {AI_CONCEPT_COUNT} AI concepts from your brief
+									{/if}
+								</button>
+							</div>
+						</div>
+					{/if}
+
+					{#if run.coverError}
+						<p class="cover-error" role="alert">{run.coverError}</p>
+					{/if}
 
 					<!-- Optional cover visual reference / direction in Stage 2 -->
 					<div class="context-section" style="margin-top: 1.5rem;">
@@ -1096,20 +648,84 @@
 							oninput={(e) => globalState.updateCoverReferencePrompt(active.id, (e.target as HTMLTextAreaElement).value)}
 							placeholder="e.g., Bold white serif title dominating the upper two-thirds on a deep navy background. A photorealistic scene relevant to the topic fills the bottom half. A red circular badge callout in the lower right. Author name in a contrasting bar at the very bottom. High-impact, non-fiction bestseller style similar to mainstream how-to books."
 							rows="4"
-							disabled={isGeneratingCovers}
+							disabled={coversBusy}
 						></textarea>
 
-						<div class="form-actions" style="margin-top: 1rem; display: flex; justify-content: flex-end; width: 100%;">
+						<!-- ── Reference cover ─────────────────────────────────── -->
+						<div class="ref-cover">
+							<div class="ref-cover__header">
+								<span class="ref-cover__title font-serif">Reference Cover</span>
+								<span class="context-optional">optional</span>
+							</div>
+							<p class="ref-cover__desc">
+								Upload any cover whose <em>format</em> you want to borrow — it can be from a completely different niche. Claude reads its colour scheme, typography, imagery and graphic treatment, then adds a single cover for your book in that design language. The reference's subject matter is never copied.
+							</p>
+
+							{#if active.coverReferenceFormat}
+								<div class="ref-cover__loaded">
+									{#if referencePreviewUrl}
+										<img class="ref-cover__thumb" src={referencePreviewUrl} alt="Uploaded reference cover" />
+									{:else}
+										<div class="ref-cover__thumb ref-cover__thumb--empty"><BookMarked size={18} /></div>
+									{/if}
+									<div class="ref-cover__loaded-body">
+										<span class="ref-cover__loaded-title">
+											<CheckCircle size={13} /> Design language applied
+										</span>
+										<span class="ref-cover__loaded-name">{active.coverReferenceName || 'Reference cover'}</span>
+										<details class="ref-cover__spec">
+											<summary>View what Claude read from it</summary>
+											<pre>{active.coverReferenceFormat}</pre>
+										</details>
+									</div>
+									<button
+										class="btn btn-ghost btn-xs"
+										onclick={clearReference}
+										disabled={coversBusy}
+										title="Remove reference cover"
+									>
+										<X size={13} />
+									</button>
+								</div>
+								<p class="ref-cover__note">Create a cover below to add one in this design language.</p>
+							{:else}
+								<label class="ref-cover__drop {run.referenceBusy ? 'is-busy' : ''}">
+									<input
+										type="file"
+										accept="image/png,image/jpeg,image/webp"
+										onchange={handleReferenceUpload}
+										disabled={coversBusy}
+									/>
+									{#if run.referenceBusy}
+										<Loader size={16} class="spin-icon" />
+										<span>Reading the reference…</span>
+									{:else}
+										<Upload size={16} />
+										<span><strong>Upload a reference cover</strong> — JPG, PNG or WebP</span>
+									{/if}
+								</label>
+							{/if}
+
+							{#if run.referenceError}
+								<p class="cover-error" role="alert">{run.referenceError}</p>
+							{/if}
+						</div>
+
+						<div class="form-actions" style="margin-top: 1rem; display: flex; justify-content: flex-end; align-items: center; gap: 0.75rem; width: 100%;">
+							{#if !hasBrief}
+								<span class="cover-brief-hint">Describe your direction or upload a reference to build a cover from.</span>
+							{/if}
 							<button
 								class="btn btn-primary"
-								onclick={regenerateAllCovers}
-								disabled={isGeneratingCovers}
+								onclick={createBriefCover}
+								disabled={coversBusy || !hasBrief}
+								title={hasBrief ? 'Add a cover built from your brief' : 'Add direction or a reference cover first'}
 								style="background-color: #8b7355; border-color: #8b7355;"
 							>
-								{#if isGeneratingCovers}
-									<span class="btn-spinner"></span> Generating Cover Options…
+								{#if run.loadingBatch === 'brief'}
+									<span class="btn-spinner"></span> Creating cover…
 								{:else}
-									<Zap size={15} /> Generate Cover Options
+									<Zap size={15} /> Create Cover
 								{/if}
 							</button>
 						</div>
@@ -1128,13 +744,13 @@
 					<p>AI has structured the outline for <strong>{active.title}</strong>. Edit any chapter title or summary, then approve to begin writing.</p>
 				</div>
 
-				{#if chapterPlanError || (active.status === 'failed' && active.chapters.length === 0 && !isGeneratingPlan)}
+				{#if run.planError || (active.status === 'failed' && active.chapters.length === 0 && !run.isGeneratingPlan)}
 					<ChapterPlanError
-						error={chapterPlanError ?? 'Chapter plan generation failed. Please try again.'}
-						isRetrying={isGeneratingPlan}
-						onRetry={() => generateChapterPlan(active)}
+						error={run.planError ?? 'Chapter plan generation failed. Please try again.'}
+						isRetrying={run.isGeneratingPlan}
+						onRetry={retryChapterPlan}
 					/>
-				{:else if isGeneratingPlan || active.chapters.length === 0}
+				{:else if run.isGeneratingPlan || active.chapters.length === 0}
 					<div class="plan-loading">
 						<div class="plan-skeleton">
 							{#each [1,2,3,4,5] as _}
@@ -1331,10 +947,10 @@
 										<button
 											class="btn btn-ghost btn-xs"
 											onclick={() => handleRegenerateChapter(idx)}
-											disabled={isWriting || regeneratingChapterIdx !== null}
+											disabled={run.isWriting || run.regeneratingChapterIdx !== null}
 											title="Regenerate this chapter"
 										>
-											{#if regeneratingChapterIdx === idx}
+											{#if run.regeneratingChapterIdx === idx}
 												<Loader size={13} class="spin-icon" />
 											{:else}
 												<RotateCcw size={13} /> Redo
@@ -1362,7 +978,7 @@
 									<span class="msg">{log.message}</span>
 								</div>
 							{/each}
-							{#if isWriting || regeneratingChapterIdx !== null}
+							{#if run.isWriting || run.regeneratingChapterIdx !== null}
 								<div class="log-row running pulse">
 									<span class="ts">[{new Date().toLocaleTimeString()}]</span>
 									<span class="step">SYSTEM</span>
@@ -1426,10 +1042,10 @@
 									<button
 										class="btn btn-ghost btn-xs"
 										onclick={() => handleRegenerateChapter(idx)}
-										disabled={regeneratingChapterIdx !== null}
+										disabled={run.regeneratingChapterIdx !== null}
 										title="Regenerate chapter"
 									>
-										{#if regeneratingChapterIdx === idx}
+										{#if run.regeneratingChapterIdx === idx}
 											<Loader size={12} class="spin-icon" />
 										{:else}
 											<RotateCcw size={12} /> Redo
@@ -1455,6 +1071,19 @@
 	intent="danger"
 	onConfirm={confirmDeleteBook}
 	onCancel={cancelDeleteBook}
+/>
+
+<CoverPreviewDialog
+	open={previewCoverIdx !== null && previewOption !== null}
+	option={previewOption}
+	index={previewCoverIdx ?? 0}
+	total={active?.coverOptions.length ?? 0}
+	busy={coversBusy}
+	onSelect={() => previewCoverIdx !== null && selectCoverAndProceed(previewCoverIdx)}
+	onRegenerate={() => previewCoverIdx !== null && regenerateSingleCover(previewCoverIdx)}
+	onPrev={() => pagePreview(-1)}
+	onNext={() => pagePreview(1)}
+	onClose={closePreview}
 />
 
 <style>
@@ -1840,6 +1469,12 @@
 	}
 	@media (max-width: 700px) { .cover-options-grid { grid-template-columns: 1fr; } }
 
+	/* Says why Create Cover is disabled — a dead button with no reason reads as
+	   a bug rather than a precondition. */
+	.cover-brief-hint {
+		font-size: 0.78rem; color: var(--text-muted); text-align: right;
+	}
+
 	.cover-option-card {
 		border: 2px solid var(--border-color); border-radius: var(--radius-md);
 		overflow: hidden; transition: var(--transition); background: var(--bg-card);
@@ -1847,17 +1482,43 @@
 	.cover-option-card:hover { border-color: var(--border-focus); box-shadow: var(--shadow-md); }
 	.cover-option-card.selected { border-color: var(--accent); }
 
+	/* The tile carries the cover's own 2:3 trim size, so the artwork fills it
+	   edge to edge with nothing cropped and no letterbox field behind it. */
 	.cover-option-preview {
-		position: relative; height: 280px; overflow: hidden;
+		position: relative; aspect-ratio: 2 / 3; overflow: hidden;
 		background-color: var(--bg-inset);
 		display: flex; align-items: center; justify-content: center;
+		width: 100%; padding: 0; border: none;
+		font: inherit; color: inherit; cursor: zoom-in;
 	}
-	.cover-option-preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+	.cover-option-preview:disabled { cursor: default; }
+	.cover-option-preview img {
+		width: 100%; height: 100%;
+		object-fit: cover; display: block;
+	}
+	.cover-option-preview:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+	/* Preview affordance — the cursor alone doesn't advertise that these open */
+	.cover-zoom-hint {
+		position: absolute; bottom: 0.5rem; right: 0.5rem;
+		display: inline-flex; align-items: center; gap: 0.25rem;
+		font-size: 0.68rem; font-weight: 600;
+		padding: 0.22rem 0.45rem; border-radius: 4px;
+		background: rgba(0,0,0,0.55); color: #fff;
+		opacity: 0; transition: opacity 0.15s;
+		pointer-events: none;
+	}
+	.cover-option-preview:hover .cover-zoom-hint,
+	.cover-option-preview:focus-visible .cover-zoom-hint { opacity: 1; }
 
 	.cover-placeholder {
 		color: var(--text-muted); display: flex; align-items: center;
 		justify-content: center; width: 100%; height: 100%;
 	}
+	.cover-placeholder--failed {
+		flex-direction: column; gap: 0.45rem; text-align: center; padding: 0 1rem;
+	}
+	.cover-placeholder--failed span { font-size: 0.72rem; }
 
 	.cover-regenerating-overlay {
 		position: absolute; inset: 0;
@@ -1867,11 +1528,108 @@
 
 	.cover-option-meta {
 		padding: 0.85rem 1rem;
-		display: flex; justify-content: space-between; align-items: center;
+		display: flex; flex-direction: column; gap: 0.4rem;
 		border-top: 1px solid var(--border-color);
 	}
+	.cover-style-line { display: flex; align-items: center; gap: 0.4rem; }
 	.cover-style-label { font-size: 0.88rem; font-weight: 600; }
-	.cover-option-actions { display: flex; gap: 0.5rem; }
+
+	.cover-origin-badge {
+		display: inline-flex; align-items: center; gap: 0.2rem;
+		font-size: 0.6rem; font-weight: 700; letter-spacing: 0.05em;
+		text-transform: uppercase;
+		padding: 0.12rem 0.3rem; border-radius: 3px;
+		background: #F3F0EB; color: var(--text-muted);
+	}
+	.cover-origin-badge--ai { background: #F0EAFB; color: #6D4AAE; }
+
+	/* Two lines, so a long rationale can't push the Select button out of
+	   alignment with the neighbouring cards in the row. */
+	.cover-concept-line {
+		margin: 0; font-size: 0.74rem; line-height: 1.5; color: var(--text-muted);
+		display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2;
+		-webkit-box-orient: vertical; overflow: hidden;
+		min-height: 2.2em;
+	}
+
+	.cover-option-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: auto; }
+
+	/* ── More variants ─────────────────────────────────────────────────── */
+	.cover-more {
+		margin-top: 1.25rem; padding: 0.9rem 1.1rem;
+		border: 1px dashed var(--border-color); border-radius: var(--radius-md);
+		background: var(--bg-inset);
+		display: flex; align-items: center; justify-content: space-between;
+		gap: 1rem; flex-wrap: wrap;
+	}
+	.cover-more__copy { display: flex; flex-direction: column; gap: 0.1rem; }
+	.cover-more__title { font-size: 0.88rem; font-weight: 600; }
+	.cover-more__hint  { font-size: 0.75rem; color: var(--text-muted); }
+	.cover-more__actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+
+	.cover-error {
+		margin: 0.75rem 0 0; font-size: 0.78rem; color: #B91C1C;
+		background: #FEF2F2; border: 1px solid #FECACA;
+		border-radius: var(--radius-md); padding: 0.5rem 0.7rem;
+	}
+
+	/* ── Reference cover ───────────────────────────────────────────────── */
+	.ref-cover {
+		margin-top: 1.1rem; padding-top: 1rem;
+		border-top: 1px solid var(--border-color);
+		display: flex; flex-direction: column; gap: 0.4rem;
+	}
+	.ref-cover__header { display: flex; align-items: center; gap: 0.5rem; }
+	.ref-cover__title  { font-size: 0.86rem; font-weight: 600; }
+	.ref-cover__desc   { margin: 0 0 0.35rem; font-size: 0.78rem; line-height: 1.6; color: var(--text-muted); }
+	.ref-cover__note   { margin: 0; font-size: 0.73rem; color: var(--text-muted); }
+
+	.ref-cover__drop {
+		display: flex; align-items: center; justify-content: center; gap: 0.5rem;
+		padding: 1rem; border: 1px dashed var(--border-color);
+		border-radius: var(--radius-md); background: var(--bg-card);
+		font-size: 0.8rem; color: var(--text-muted);
+		cursor: pointer; transition: border-color 0.15s, background 0.15s;
+	}
+	.ref-cover__drop:hover { border-color: var(--accent); background: var(--bg-inset); }
+	.ref-cover__drop.is-busy { cursor: progress; }
+	.ref-cover__drop input { display: none; }
+	.ref-cover__drop strong { color: var(--text-color); font-weight: 600; }
+
+	.ref-cover__loaded {
+		display: flex; align-items: flex-start; gap: 0.75rem;
+		padding: 0.75rem; border: 1px solid var(--border-color);
+		border-radius: var(--radius-md); background: var(--bg-card);
+	}
+	.ref-cover__thumb {
+		width: 44px; height: 62px; object-fit: cover; flex-shrink: 0;
+		border-radius: 3px; border: 1px solid var(--border-color);
+	}
+	.ref-cover__thumb--empty {
+		display: flex; align-items: center; justify-content: center;
+		background: var(--bg-inset); color: var(--text-muted);
+	}
+	.ref-cover__loaded-body { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; flex: 1; }
+	.ref-cover__loaded-title {
+		display: inline-flex; align-items: center; gap: 0.3rem;
+		font-size: 0.8rem; font-weight: 600; color: #15803D;
+	}
+	.ref-cover__loaded-name {
+		font-size: 0.73rem; color: var(--text-muted);
+		overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	}
+	.ref-cover__spec { margin-top: 0.3rem; }
+	.ref-cover__spec summary {
+		font-size: 0.73rem; color: var(--accent); cursor: pointer; user-select: none;
+	}
+	.ref-cover__spec pre {
+		margin: 0.4rem 0 0; padding: 0.6rem 0.7rem;
+		background: var(--bg-inset); border: 1px solid var(--border-color);
+		border-radius: 4px;
+		font-size: 0.7rem; line-height: 1.6; color: var(--text-muted);
+		white-space: pre-wrap; word-break: break-word;
+		max-height: 160px; overflow-y: auto;
+	}
 
 	/* Generating skeletons */
 	.generating-covers-placeholder { display: flex; flex-direction: column; align-items: center; gap: 2rem; }

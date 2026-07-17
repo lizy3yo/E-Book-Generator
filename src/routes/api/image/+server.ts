@@ -85,8 +85,19 @@ export const POST: RequestHandler = async ({ request }) => {
 			const record = statusData?.data;
 
 			if (!record) return json({ done: false });
-			if (record.state === 'failed') {
-				return json({ done: true, error: record.failMsg || 'Kie.ai generation failed.' });
+
+			// Kie reports a failed job as state "fail". Matching only "failed" here
+			// meant every failure looked like "still generating", so the client
+			// polled a dead job for its full 90s budget and then reported a
+			// timeout — hiding both the real reason and the fact that a plain
+			// retry would have worked. failCode is passed through so the caller
+			// can tell a transient provider fault from a permanent rejection.
+			if (record.state === 'fail' || record.state === 'failed') {
+				return json({
+					done:  true,
+					error: record.failMsg || `Kie.ai generation failed (${record.failCode ?? 'unknown'}).`,
+					code:  record.failCode ?? null
+				});
 			}
 			if (record.state === 'success' && record.resultJson) {
 				const parsed = JSON.parse(record.resultJson) as { resultUrls?: string[] };
