@@ -4,6 +4,7 @@
 	import type { Book } from '$lib/types';
 	import type { EditTarget } from '$lib/reader/types';
 	import { generateImage } from '$lib/generateImage';
+	import { createIllustration, labelIllustration } from '$lib/illustration';
 	import { spliceVisualBlock, splicePage, htmlToPlainText } from '$lib/reader/utils';
 	import {
 		Clipboard, ClipboardCheck, FileCode, FileDown,
@@ -247,56 +248,87 @@
 				editTarget = { ...editTarget, chapterContent: updatedContent, pageText: htmlToPlainText(data.pageContent) };
 
 			} else if (editTarget.scope === 'illustration') {
-				const isUltra = useRealisticIllustration || activeBook.useUltraRealistic || activeBook.coverSettings?.useUltraRealistic;
-				const freshPrompt = [
-					isUltra
-						? `A hyperrealistic, award-winning photograph, highly detailed photorealistic render, 8k resolution, cinematic lighting, professional composition`
-						: `A high-quality editorial illustration`,
-					`for a chapter titled "${editTarget.chapterTitle}"`,
-					editTarget.chapterSummary ? `about: ${editTarget.chapterSummary}` : '',
-					`from the book "${activeBook.title}" (${activeBook.genre}).`
-				].filter(Boolean).join(' ');
+				// Same art direction the writing pipeline uses, so a regenerated
+				// illustration matches the ones generation produced instead of drifting
+				// into its own look — and so it is briefed from what the chapter says
+				// rather than from its title alone.
+				const made = await createIllustration(
+					activeBook,
+					{
+						chapterTitle:   editTarget.chapterTitle,
+						chapterOrder:   editTarget.chapterOrder,
+						chapterSummary: editTarget.chapterSummary,
+						chapterContent: editTarget.chapterContent,
+						researchNotes:  editTarget.researchNotes
+					},
+					globalState.apiKeys,
+					globalState.apiKeys.useMockMode,
+					useRealisticIllustration
+				);
 
-				const newIllustUrl = await generateImage({
-					prompt:      freshPrompt,
-					apiKey:      globalState.apiKeys.imageKey,
-					provider:    globalState.apiKeys.imageProvider,
-					useMockMode: globalState.apiKeys.useMockMode,
-					isCover:     false
-				});
-				globalState.updateChapterIllustration(activeBook.id, editTarget.chapterId, newIllustUrl);
-				editTarget = { ...editTarget, illustrationUrl: newIllustUrl, illustrationPrompt: freshPrompt };
+				// The labels go with the image. They are coordinates into this specific
+				// picture, so the previous set must be replaced, never carried over.
+				globalState.updateChapterIllustration(
+					activeBook.id, editTarget.chapterId, made.url, made.labels
+				);
+				editTarget = { ...editTarget, illustrationUrl: made.url, illustrationPrompt: made.prompt };
 
 			} else if (editTarget.scope === 'diagram') {
 				const kind = editTarget.diagramKind ?? 'fence';
 				const isUltra = useRealisticIllustration || activeBook.useUltraRealistic || activeBook.coverSettings?.useUltraRealistic;
 				if (isUltra) {
-					const freshPrompt = [
-						'Hyperrealistic photographic render, 8k resolution, cinematic lighting,',
-						'award-winning professional photography quality, highly detailed.',
-						`Visual representation of: ${editTarget.diagramRaw || editTarget.chapterSummary || editTarget.chapterTitle}`,
-						`From the book "${activeBook.title}" (${activeBook.genre}).`
-					].join(' ');
-					const imgUrl = await generateImage({
-						prompt:      freshPrompt,
-						apiKey:      globalState.apiKeys.imageKey,
-						provider:    globalState.apiKeys.imageProvider,
-						useMockMode: globalState.apiKeys.useMockMode,
-						isCover:     false
-					});
-					const imgMarkdown = `![${editTarget.chapterTitle}](${imgUrl})`;
+					// Turning a diagram into a photograph loses the diagram's exact
+					// geometry, so the replacement has to earn its place: it is briefed
+					// from the chapter and the research, told what point the diagram was
+					// making, and told to stage that point physically rather than redraw
+					// it. The old prompt handed the raw diagram source straight to the
+					// image model, which tried to render its labels — and could not spell
+					// them.
+					const made = await createIllustration(
+						activeBook,
+						{
+							chapterTitle:   editTarget.chapterTitle,
+							chapterOrder:   editTarget.chapterOrder,
+							chapterSummary: editTarget.chapterSummary,
+							chapterContent: editTarget.chapterContent,
+							researchNotes:  editTarget.researchNotes,
+							diagramIntent:  editTarget.diagramRaw
+						},
+						globalState.apiKeys,
+						globalState.apiKeys.useMockMode,
+						useRealisticIllustration
+					);
+
+					// Keep the diagram's own title — the author wrote it, and it names the
+					// point the plate is still making.
+					const plateTitle = (
+						editTarget.diagramRaw?.match(/^\s*title:\s*(.+)$/im)?.[1] ?? editTarget.chapterTitle
+					).trim();
+
+					// A plate fence rather than a bare ![](), because a markdown image has
+					// nowhere to carry the callouts. The fence keeps them as data that the
+					// renderer sets in real type — which is the only way the labels are
+					// spelled correctly.
+					const plateBlock = [
+						'```plate',
+						`title: ${plateTitle}`,
+						`image: ${made.url}`,
+						made.labels.length ? `callouts: ${JSON.stringify(made.labels)}` : '',
+						'```'
+					].filter(Boolean).join('\n');
+
 					const updatedContent = spliceVisualBlock(
 						editTarget.chapterContent, kind,
 						editTarget.diagramRaw ?? '',
 						editTarget.diagramIndex ?? 0,
-						imgMarkdown, true
+						plateBlock, true
 					);
 					globalState.updateChapterContent(activeBook.id, editTarget.chapterId, updatedContent, 'completed');
 					editTarget = {
 						...editTarget,
 						chapterContent: updatedContent,
-						illustrationUrl: imgUrl,
-						illustrationPrompt: freshPrompt,
+						illustrationUrl: made.url,
+						illustrationPrompt: made.prompt,
 						scope: 'illustration'
 					};
 				} else {
@@ -521,39 +553,72 @@
 					useMockMode: globalState.apiKeys.useMockMode,
 					isCover:     false
 				});
-				globalState.updateChapterIllustration(activeBook.id, editTarget.chapterId, newIllustUrl);
+
+				// Re-label against the NEW picture. The old labels are coordinates into
+				// the image this one just replaced, so keeping them would leave every
+				// callout pointing at a part that is no longer in the frame.
+				const newLabels = await labelIllustration(
+					activeBook,
+					{
+						chapterTitle:   editTarget.chapterTitle,
+						chapterOrder:   editTarget.chapterOrder,
+						chapterContent: editTarget.chapterContent,
+						researchNotes:  editTarget.researchNotes
+					},
+					newIllustUrl,
+					'',
+					globalState.apiKeys,
+					globalState.apiKeys.useMockMode
+				);
+				globalState.updateChapterIllustration(
+					activeBook.id, editTarget.chapterId, newIllustUrl, newLabels
+				);
 				editTarget = { ...editTarget, illustrationUrl: newIllustUrl, illustrationPrompt: promptData.prompt };
 
 			} else if (editTarget.scope === 'diagram') {
 				const kind = editTarget.diagramKind ?? 'fence';
 				if (useRealisticIllustration) {
-					const diagramContext = editTarget.diagramRaw || editTarget.chapterSummary || editTarget.chapterTitle;
-					const imagePrompt = [
-						'Hyperrealistic photographic render, 8k resolution, cinematic lighting,',
-						'award-winning professional photography quality, highly detailed.',
-						instruction.trim() || `Visual representation of: ${diagramContext}`,
-						`Context: Chapter "${editTarget.chapterTitle}" from "${activeBook.title}" (${activeBook.genre}).`
-					].join(' ');
-					const imgUrl = await generateImage({
-						prompt:      imagePrompt,
-						apiKey:      globalState.apiKeys.imageKey,
-						provider:    globalState.apiKeys.imageProvider,
-						useMockMode: globalState.apiKeys.useMockMode,
-						isCover:     false
-					});
-					const imgMarkdown = `![${editTarget.chapterTitle}](${imgUrl})`;
+					// Same as the regenerate path, with the author's instruction folded in
+					// as extra art direction rather than replacing it.
+					const made = await createIllustration(
+						activeBook,
+						{
+							chapterTitle:   editTarget.chapterTitle,
+							chapterOrder:   editTarget.chapterOrder,
+							chapterSummary: editTarget.chapterSummary,
+							chapterContent: editTarget.chapterContent,
+							researchNotes:  editTarget.researchNotes,
+							diagramIntent:  editTarget.diagramRaw,
+							authorNote:     instruction.trim() || undefined
+						},
+						globalState.apiKeys,
+						globalState.apiKeys.useMockMode,
+						useRealisticIllustration
+					);
+
+					const plateTitle = (
+						editTarget.diagramRaw?.match(/^\s*title:\s*(.+)$/im)?.[1] ?? editTarget.chapterTitle
+					).trim();
+					const plateBlock = [
+						'```plate',
+						`title: ${plateTitle}`,
+						`image: ${made.url}`,
+						made.labels.length ? `callouts: ${JSON.stringify(made.labels)}` : '',
+						'```'
+					].filter(Boolean).join('\n');
+
 					const updatedContent = spliceVisualBlock(
 						editTarget.chapterContent, kind,
 						editTarget.diagramRaw ?? '',
 						editTarget.diagramIndex ?? 0,
-						imgMarkdown, true
+						plateBlock, true
 					);
 					globalState.updateChapterContent(activeBook.id, editTarget.chapterId, updatedContent, 'completed');
 					editTarget = {
 						...editTarget,
 						chapterContent: updatedContent,
-						illustrationUrl: imgUrl,
-						illustrationPrompt: imagePrompt,
+						illustrationUrl: made.url,
+						illustrationPrompt: made.prompt,
 						scope: 'illustration'
 					};
 				} else {

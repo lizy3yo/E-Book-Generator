@@ -68,6 +68,22 @@ export interface BibleEntry {
 	chapter: number;
 }
 
+/**
+ * One callout on a chapter illustration.
+ *
+ * The image itself carries no text — image models cannot spell, and a
+ * hallucinated label is indistinguishable from a real one to the reader. So the
+ * wording lives here, as data, and is set in real type by the renderer. `x`/`y`
+ * are percentages of the IMAGE (not its container), naming the point the leader
+ * line touches; `side` is which way the box sits so it misses the subject.
+ */
+export interface IllustrationLabel {
+	text: string;
+	x: number;
+	y: number;
+	side: 'left' | 'right';
+}
+
 export interface Chapter {
 	id: string;
 	title: string;
@@ -76,6 +92,9 @@ export interface Chapter {
 	content: string;
 	researchNotes: string;
 	illustrationUrl: string | null;
+	/** Absent on chapters written before labelling existed, and on any
+	 *  illustration the vision pass could not label confidently. */
+	illustrationLabels?: IllustrationLabel[];
 	status: 'pending' | 'writing' | 'verifying' | 'completed' | 'failed';
 }
 

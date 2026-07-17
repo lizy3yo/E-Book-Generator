@@ -1,6 +1,20 @@
 import { parseMarkdown } from '$lib/diagrams';
 import type { Book } from '$lib/types';
 
+/**
+ * Escape text destined for the export's HTML.
+ *
+ * Chapter titles and illustration labels are model-authored, so an unescaped
+ * `&` or `<` would break the markup of a document nobody inspects before it is
+ * rasterised into a PDF.
+ */
+const htmlEsc = (s: string) =>
+	String(s ?? '')
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;');
+
 export async function getAsDataUrl(url: string): Promise<string> {
 	if (!url) return '';
 	if (url.startsWith('data:')) {
@@ -391,8 +405,26 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 				// Deliberately NOT framed as a plate: the chapter opener sits under
 				// the chapter header, which already names the chapter. Plate chrome
 				// is for images inside the chapter content.
+				//
+				// Callouts ride inside `.illust-frame`, which shrink-wraps the image
+				// so their percentages resolve against the picture rather than the
+				// full-width centred `.illustration` block. They are built only when
+				// `mappedIllust` is non-empty: if the image was dropped, its labels
+				// must go with it — a floating callout points at nothing.
+				const calloutHtml = (c.illustrationLabels ?? [])
+					.map(l =>
+						`<div class="illust-callout illust-callout--${l.side === 'left' ? 'left' : 'right'}" ` +
+						`style="left:${l.x}%;top:${l.y}%;">` +
+						`<span class="illust-callout__dot"></span>` +
+						`<span class="illust-callout__line"></span>` +
+						`<span class="illust-callout__text">${htmlEsc(l.text)}</span>` +
+						`</div>`
+					)
+					.join('');
 				const illustHtml = mappedIllust
-					? `<div class="illustration"><img src="${mappedIllust}" alt="${c.title}" /></div>`
+					? `<div class="illustration"><div class="illust-frame">` +
+					  `<img src="${mappedIllust}" alt="${htmlEsc(c.title)}" />${calloutHtml}` +
+					  `</div></div>`
 					: '';
 
 				const tmp = document.createElement('div');
@@ -618,6 +650,38 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 	.chapter-rule   { border: none; border-top: ${activeBook.interiorDesign?.['--r-rule-border'] ?? `1.5pt solid ${accent}`}; width: ${activeBook.interiorDesign?.['--r-rule-width'] ?? ruleW}; margin-left: ${ruleML}; margin-right: ${ruleMR}; }
 	.illustration { margin: 16pt 0; text-align: center; }
 	.illustration img { max-width: 100%; max-height: 240pt; border-radius: 3pt; }
+	/* Shrink-wraps the image so callout percentages resolve against the picture,
+	   not against the full-width centred .illustration block. line-height:0 stops
+	   the inline-block from inheriting a text baseline gap under the image. */
+	.illust-frame { position: relative; display: inline-block; line-height: 0; }
+	/* Callouts: the image itself carries no text — an image model cannot spell,
+	   so every label is real type set over the picture. html2canvas rasterises
+	   these with the page, so they print exactly as they render. */
+	.illust-callout {
+		position: absolute;
+		display: flex;
+		align-items: center;
+		line-height: 1;
+		transform: translateY(-50%);
+	}
+	.illust-callout--right { flex-direction: row; }
+	.illust-callout--left  { flex-direction: row-reverse; transform: translate(-100%, -50%); }
+	.illust-callout__dot {
+		width: 5pt; height: 5pt; border-radius: 50%;
+		background: #E07B20; border: 1pt solid #fff; flex-shrink: 0;
+	}
+	.illust-callout__line { width: 18pt; height: 1pt; background: #E07B20; flex-shrink: 0; }
+	.illust-callout__text {
+		font-family: Helvetica, Arial, sans-serif;
+		font-size: 6.5pt;
+		font-weight: 700;
+		color: #0F2231;
+		background: rgba(255,255,255,0.96);
+		border: 1pt solid #0F2231;
+		border-radius: 2pt;
+		padding: 1.5pt 3pt;
+		white-space: nowrap;
+	}
 	/* AI-generated realistic images rendered via markdown ![alt](url) */
 	figure {
 		margin: 16pt 0;

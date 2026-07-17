@@ -46,7 +46,7 @@ const FULLPAGE_IMAGE_CLASSES =
  * Keys whose values are free prose or URLs. Every other unrecognised key is
  * treated as a comma-separated list, which would corrupt these.
  */
-const PROSE_KEYS = new Set(['image', 'url', 'takeaway', 'takeawaytitle', 'root', 'caption']);
+const PROSE_KEYS = new Set(['image', 'url', 'takeaway', 'takeawaytitle', 'root', 'caption', 'callouts']);
 
 interface DiagramData {
 	type: string;
@@ -674,6 +674,59 @@ const PLATE_EDIT_ICON =
 	'<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pen-line"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>';
 
 /**
+ * The image of a plate, plus its callout labels.
+ *
+ * The picture carries no text — an image model cannot spell, so anything it
+ * letters arrives as convincing gibberish. The labels therefore live in the
+ * fence as data and are set here in real type, which is the only way they are
+ * correct. `callouts` is a JSON array: [{text,x,y,side}], where x/y are
+ * percentages of the IMAGE.
+ *
+ * `.illust-frame` shrink-wraps the image on purpose. The figure is a centred
+ * flex box and the image inside is bounded by max-width/max-height, so it is
+ * usually NARROWER than the figure — positioning a callout at "50%" of the
+ * figure would not put it at 50% of the picture. Percentages only mean what the
+ * labels intend when their containing block is the rendered image box itself.
+ */
+function renderPlateImage(image: string, title: string, calloutsRaw: unknown): string {
+	const img = `<img src="${image}" alt="${svgEsc(title)}" loading="lazy" />`;
+
+	let callouts: any[] = [];
+	if (typeof calloutsRaw === 'string' && calloutsRaw.trim()) {
+		try {
+			const parsed = JSON.parse(calloutsRaw);
+			if (Array.isArray(parsed)) callouts = parsed;
+		} catch {
+			// A malformed callout list is a plate with no labels, never a broken
+			// plate: the picture is the thing worth keeping.
+			console.error('Failed to parse plate callouts:', calloutsRaw);
+		}
+	}
+
+	const valid = callouts.filter(
+		c => c && typeof c.text === 'string' && c.text.trim() &&
+		     Number.isFinite(Number(c.x)) && Number.isFinite(Number(c.y)) &&
+		     Number(c.x) >= 0 && Number(c.x) <= 100 &&
+		     Number(c.y) >= 0 && Number(c.y) <= 100
+	);
+
+	if (!valid.length) return img;
+
+	const marks = valid
+		.map(c =>
+			`<span class="illust-callout illust-callout--${c.side === 'left' ? 'left' : 'right'}" ` +
+			`style="left:${Number(c.x)}%;top:${Number(c.y)}%;">` +
+			`<span class="illust-callout__dot"></span>` +
+			`<span class="illust-callout__line"></span>` +
+			`<span class="illust-callout__text">${svgEsc(String(c.text))}</span>` +
+			`</span>`
+		)
+		.join('');
+
+	return `<span class="illust-frame">${img}${marks}</span>`;
+}
+
+/**
  * Full-page image plate — the house figure format.
  *
  * Renders like a plate in a printed manual: a navy header bar carrying the
@@ -724,7 +777,7 @@ function renderPlate(
 		`<div class="${FULLPAGE_IMAGE_CLASSES} diagram-box--plate">` +
 		`<div class="diagram-box__actions">${editBtn}</div>` +
 		`${header}` +
-		`<figure><img src="${image}" alt="${title}" loading="lazy" /></figure>` +
+		`<figure>${renderPlateImage(image, title, data.callouts)}</figure>` +
 		`${takeawayHtml}` +
 		`${renderPlateFooter(bookMeta)}` +
 		`</div>`;

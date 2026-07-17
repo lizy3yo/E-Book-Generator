@@ -828,7 +828,24 @@
 										     chapter header, which already names the chapter. Plate
 										     chrome is for images inside the chapter content. -->
 										<div class="chapter-illust">
+										<!-- The frame exists to hug the image. `.chapter-illust` is a
+										     full-width centred block, but the image inside is capped by
+										     max-height and is usually narrower than it — so a label
+										     positioned at "50%" of the container would not be at 50% of
+										     the picture. Percentages only mean what the labels intend
+										     when their containing block IS the rendered image box. -->
+										<div class="illust-frame">
 											<img src={chap.illustrationUrl} alt="Illustration – {chap.title}" />
+											{#each chap.illustrationLabels ?? [] as label}
+												<div
+													class="illust-callout illust-callout--{label.side}"
+													style="left: {label.x}%; top: {label.y}%;"
+												>
+													<span class="illust-callout__dot"></span>
+													<span class="illust-callout__line"></span>
+													<span class="illust-callout__text">{label.text}</span>
+												</div>
+											{/each}
 											<button
 												class="edit-trigger edit-trigger--illust"
 												title="Edit this illustration"
@@ -849,6 +866,7 @@
 											>
 											<ImageIcon size={13} /> Edit Illustration
 										</button>
+										</div>
 										</div>
 									{/if}
 
@@ -1525,11 +1543,65 @@
 		text-align: center;
 	}
 
+	/* Shrink-wraps the image so callout percentages resolve against the picture
+	   itself. inline-block keeps it centred by the parent's text-align. */
+	.illust-frame {
+		position: relative;
+		display: inline-block;
+		line-height: 0;
+	}
+
 	.chapter-illust img {
 		max-width: 100%;
 		max-height: 380px;
 		border-radius: 6px;
 		box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+	}
+
+	/* ── Illustration callouts ──────────────────────────────────────────
+	   The image carries no text; these are the labels, set in real type.
+	   Anchored at the feature's point, with the box offset to one side. */
+	.illust-callout {
+		position: absolute;
+		display: flex;
+		align-items: center;
+		line-height: 1;
+		/* The anchor point is the dot, so the row centres on the coordinate. */
+		transform: translateY(-50%);
+	}
+
+	.illust-callout--right { flex-direction: row; }
+	.illust-callout--left  { flex-direction: row-reverse; transform: translate(-100%, -50%); }
+
+	.illust-callout__dot {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		background: #E07B20;
+		border: 1.5px solid #fff;
+		flex-shrink: 0;
+		box-shadow: 0 0 0 1px rgba(15,34,49,0.35);
+	}
+
+	.illust-callout__line {
+		width: 26px;
+		height: 1.5px;
+		background: #E07B20;
+		flex-shrink: 0;
+	}
+
+	.illust-callout__text {
+		font-family: var(--font-sans);
+		font-size: 0.66rem;
+		font-weight: 600;
+		letter-spacing: 0.01em;
+		color: #0F2231;
+		background: rgba(255,255,255,0.96);
+		border: 1.5px solid #0F2231;
+		border-radius: 4px;
+		padding: 0.22rem 0.45rem;
+		white-space: nowrap;
+		box-shadow: 0 1px 4px rgba(15,34,49,0.18);
 	}
 
 	.chapter-body {
@@ -2074,6 +2146,63 @@
 
 	.chapter-body :global(.diagram-box--image figure) {
 		margin: 0;
+	}
+
+	/* ── Plate callouts ─────────────────────────────────────────────────
+	   Same treatment as the chapter-opener illustration's callouts, but these
+	   ride inside HTML injected by the diagram renderer, so they have to be
+	   reached with :global. The frame shrink-wraps the image so the
+	   percentages resolve against the picture, not the figure. */
+	.chapter-body :global(.illust-frame) {
+		position: relative;
+		display: inline-block;
+		line-height: 0;
+		max-width: 100%;
+	}
+
+	.chapter-body :global(.illust-callout) {
+		position: absolute;
+		display: flex;
+		align-items: center;
+		line-height: 1;
+		transform: translateY(-50%);
+	}
+
+	.chapter-body :global(.illust-callout--right) { flex-direction: row; }
+	.chapter-body :global(.illust-callout--left)  {
+		flex-direction: row-reverse;
+		transform: translate(-100%, -50%);
+	}
+
+	.chapter-body :global(.illust-callout__dot) {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		background: #E07B20;
+		border: 1.5px solid #fff;
+		flex-shrink: 0;
+		box-shadow: 0 0 0 1px rgba(15,34,49,0.35);
+	}
+
+	.chapter-body :global(.illust-callout__line) {
+		width: 26px;
+		height: 1.5px;
+		background: #E07B20;
+		flex-shrink: 0;
+	}
+
+	.chapter-body :global(.illust-callout__text) {
+		font-family: var(--font-sans);
+		font-size: 0.66rem;
+		font-weight: 600;
+		letter-spacing: 0.01em;
+		color: #0F2231;
+		background: rgba(255,255,255,0.96);
+		border: 1.5px solid #0F2231;
+		border-radius: 4px;
+		padding: 0.22rem 0.45rem;
+		white-space: nowrap;
+		box-shadow: 0 1px 4px rgba(15,34,49,0.18);
 	}
 
 	/* Full-page plate: navy header bar (from .diagram-box__header) sits above

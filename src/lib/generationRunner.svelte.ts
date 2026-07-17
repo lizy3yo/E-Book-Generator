@@ -28,8 +28,9 @@
  */
 
 import { globalState } from './state.svelte';
-import type { Book, Chapter, CoverOption, CoverOrigin, BibleEntry } from './types';
+import type { Book, Chapter, CoverOption, CoverOrigin, BibleEntry, IllustrationLabel } from './types';
 import { generateImage } from './generateImage';
+import { createIllustration } from './illustration';
 import { COVER_TEMPLATES, AI_CONCEPT_COUNT, buildCoverDirection, buildBriefCoverPrompt, hasCoverBrief, type CoverTemplate } from './coverStyles';
 import { batched, BATCH_SIZE } from './bookPlan';
 import { mergeBible, bibleTokens } from './bookBible';
@@ -770,44 +771,44 @@ class GenerationRunner {
 		const verifyData = await verifyRes.json();
 		const finalContent = verifyData.success ? verifyData.verifiedContent : draftData.content;
 
-		// Illustration — use chapter summary for a more relevant prompt
+		// Illustration — art-directed from the finished chapter and its research
 		globalState.addLog(bookId, {
 			step: 'illustrate', status: 'running',
 			message: `Generating illustration for Chapter ${chap.order}…`
 		});
 
 		let illustUrl: string | null = null;
+		let illustLabels: IllustrationLabel[] = [];
 		try {
-			// House style — match the editorial diagram plates: warm cream field,
-			// deep navy subject, amber accents. Honour the book's ultra-realistic
-			// flag the same way the cover and the reader's edit drawer do.
-			const ultraRealistic = book.useUltraRealistic || book.coverSettings?.useUltraRealistic;
-			const styleClause = ultraRealistic
-				? 'Ultra-realistic reference photograph, documentary product photography, sharp focus, ' +
-				  'natural directional lighting, shallow depth of field, 8k, highly detailed. ' +
-				  'Neutral warm cream backdrop, deep navy and amber colour accents. No text, no labels, no watermarks.'
-				: 'High-quality editorial illustration, clean flat vector style with subtle depth. ' +
-				  'Warm cream background (#FAF5EA), deep navy linework (#0F2231), amber accents (#E07B20). ' +
-				  'Restrained sophisticated palette. No text, no labels, no watermarks.';
-
-			const illustPrompt = chap.summary
-				? `${styleClause} Subject: a clear, instructive visual for a chapter titled "${chap.title}". Topic: ${chap.summary}. From the book "${book.title}" (${book.genre}).`
-				: `${styleClause} Subject: a clear, instructive visual for a chapter titled "${chap.title}". From the book "${book.title}" (${book.genre}).`;
-			illustUrl = await generateImage({
-				prompt:      illustPrompt,
-				apiKey:      keys.imageKey,
-				provider:    keys.imageProvider,
-				useMockMode: useMock,
-				isCover:     false
-			});
+			// Brief it from what the chapter actually SAYS and what the research
+			// actually FOUND — both already in hand here — then draw it, then label
+			// the picture that came back. The plate is the only part of the page an
+			// image model draws unsupervised, so the brief it gets is the whole
+			// difference between a plate that teaches this chapter and stock art
+			// that could sit in any book.
+			const made = await createIllustration(
+				book,
+				{
+					chapterTitle:   chap.title,
+					chapterOrder:   chap.order,
+					chapterSummary: chap.summary,
+					chapterContent: finalContent,
+					researchNotes:  factsSummary
+				},
+				keys,
+				useMock
+			);
+			illustUrl    = made.url;
+			illustLabels = made.labels;
 		} catch { /* non-fatal */ }
 
 		// Commit
 		const final = [...globalState.books.find(b => b.id === bookId)!.chapters];
-		final[chapIndex].content         = finalContent;
-		final[chapIndex].researchNotes   = factsSummary;
-		final[chapIndex].illustrationUrl = illustUrl;
-		final[chapIndex].status          = 'completed';
+		final[chapIndex].content            = finalContent;
+		final[chapIndex].researchNotes      = factsSummary;
+		final[chapIndex].illustrationUrl    = illustUrl;
+		final[chapIndex].illustrationLabels = illustLabels;
+		final[chapIndex].status             = 'completed';
 		globalState.updateBookChapters(bookId, final);
 
 		globalState.addLog(bookId, {

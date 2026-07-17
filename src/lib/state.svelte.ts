@@ -1,4 +1,4 @@
-import type { Book, ApiKeys, StepLog, Chapter, CoverSettings, CoverOption, PipelineStage, BibleEntry } from './types';
+import type { Book, ApiKeys, StepLog, Chapter, CoverSettings, CoverOption, PipelineStage, BibleEntry, IllustrationLabel } from './types';
 import { supabase } from './supabase';
 
 class GlobalState {
@@ -341,7 +341,21 @@ class GlobalState {
 		this.persistBook(updatedBook);
 	}
 
-	updateChapterIllustration(bookId: string, chapterId: string, illustrationUrl: string) {
+	/**
+	 * Replace a chapter's illustration.
+	 *
+	 * `illustrationLabels` is REQUIRED, not optional, and always overwritten —
+	 * labels are coordinates into one specific picture. Carrying the old ones
+	 * over to a new image leaves every callout pointing at a part that is no
+	 * longer there, which is the one failure mode this whole feature exists to
+	 * prevent. A caller with no labels passes [] and says so.
+	 */
+	updateChapterIllustration(
+		bookId: string,
+		chapterId: string,
+		illustrationUrl: string,
+		illustrationLabels: IllustrationLabel[]
+	) {
 		const bookIndex = this.books.findIndex(b => b.id === bookId);
 		if (bookIndex === -1) return;
 
@@ -349,7 +363,7 @@ class GlobalState {
 		if (chapIndex === -1) return;
 
 		const updatedChapters = this.books[bookIndex].chapters.map((c, i) =>
-			i === chapIndex ? { ...c, illustrationUrl } : c
+			i === chapIndex ? { ...c, illustrationUrl, illustrationLabels } : c
 		);
 		const updatedBook: Book = {
 			...this.books[bookIndex],

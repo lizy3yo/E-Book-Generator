@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { planForBook } from '$lib/bookPlan';
 import { renderBibleBlock } from '$lib/bookBible';
+import { NO_TEXT_CLAUSE } from '$lib/illustration';
 import {
 	CLAUDE_WRITING_MODEL,
 	CLAUDE_OPUS_MODEL,
@@ -29,6 +30,13 @@ export const POST: RequestHandler = async ({ request }) => {
 			bookBible,
 			pageCount,
 			chapterContent,
+			// ── Illustration art direction ─────────────────────────────────
+			ultraRealistic,
+			diagramIntent,
+			authorNote,
+			// ── Illustration labelling ─────────────────────────────────────
+			imageUrl,
+			illustrationSubject,
 			// ── Cover actions ──────────────────────────────────────────────
 			bookSubtitle,
 			bookAuthor,
@@ -99,6 +107,22 @@ export const POST: RequestHandler = async ({ request }) => {
 						],
 						source: 'mock'
 					});
+				}
+
+				if (action === 'art-direct-illustration') {
+					return json({
+						success: true,
+						subject: `Mock subject for "${chapterTitle}".`,
+						prompt: `Mock art direction — a single instructive visual for "${chapterTitle}" from "${bookTitle}" (${genre}).`,
+						source: 'mock'
+					});
+				}
+
+				if (action === 'place-illustration-labels') {
+					// Mock mode has no vision. Inventing coordinates for an image
+					// nobody looked at would put labels on the wrong parts, which is
+					// the exact failure this whole feature exists to prevent.
+					return json({ success: true, labels: [], source: 'mock' });
 				}
 
 				if (action === 'cover-concepts') {
@@ -549,6 +573,161 @@ Absolute rules:
 Respond with a plain-text spec under those six headings. No preamble, no commentary, no markdown fences.`;
 
 			userPrompt = `Extract the transferable design language from this cover. Remember: format only — no subject matter, no wording, no niche.`;
+
+		} else if (action === 'art-direct-illustration') {
+			// The image model never sees the book. Whatever this prompt fails to
+			// specify, it invents — and an invented interior plate is what makes a
+			// book look machine-made. So the prompt is art-directed from what the
+			// chapter actually SAYS and what the research actually FOUND, not from
+			// the chapter title, which is the only thing the old template had.
+			const styleDirection = ultraRealistic
+				? `MEDIUM: a documentary reference PHOTOGRAPH, of the standard of a photograph commissioned for a printed manual or a serious trade non-fiction title.
+- State a real camera position and a real lens character (e.g. "50mm, waist-level, slight three-quarter angle"), and a real depth of field.
+- Light it from ONE identifiable direction with ONE quality (hard window light, diffused overcast, single softbox), and say where the shadow falls.
+- Real materials with real wear: honest surface texture, fingerprints, grain, patina, slight misalignment. Perfection reads as fake.
+- Neutral warm cream setting; deep navy and amber may appear as incidental colour in the objects themselves.`
+				: `MEDIUM: an editorial vector illustration, of the standard of a diagram plate in a well-made printed reference book.
+- Warm cream field (#FAF5EA), deep navy linework and solid forms (#0F2231), amber (#E07B20) reserved as the ACCENT — used on at most one element, to point at what matters.
+- Flat shapes with subtle depth; consistent stroke weight; geometry that is constructed, not sketched.
+- Restrained palette — those three colours plus white. No gradients into unrelated hues.`;
+
+			systemPrompt = `You are an art director at a trade non-fiction publisher, commissioning the single interior plate for one chapter of a book. You write the brief that an image model executes. The image model knows nothing about this book, cannot ask questions, and will invent anything you leave unstated.
+
+═══ 1. THE PLATE MUST COME FROM THIS CHAPTER'S SUBSTANCE ═══
+
+You are given the finished chapter text and the research behind it. Read them. Find ONE specific thing that chapter actually explains — a mechanism, an object, a process, a structure, a comparison, a moment — and build the plate around that one thing.
+
+Record it in "subject", naming the precise passage or finding you drew on.
+
+A plate that illustrates the chapter's CATEGORY rather than its CONTENT is a failure. "A businessman at a laptop" for a chapter on pricing strategy is decoration; it teaches nothing and could sit in any book. If you cannot point to the thing in the chapter that produced the image, you have not art-directed this chapter — you have decorated its genre.
+
+Depict only what the chapter and research support. Do not invent a mechanism, a device, an anatomy, or a process that the source material does not describe. An accurate plain plate beats an impressive wrong one — a reader who knows the subject will catch the error, and it discredits the book.
+
+═══ 2. ABSOLUTELY NO TEXT IN THE IMAGE ═══
+
+The image must contain NO writing of any kind: no title, no subtitle, no caption, no labels, no annotations, no legends, no axis text, no numbers, no measurements, no logos, no watermarks, no signature, no UI text, no lettering on any object, sign, screen, spine, packaging or button.
+
+This is not a stylistic preference — it is the hard constraint. Image models cannot spell; every word they attempt arrives as convincing-looking gibberish and instantly marks the book as machine-made. Any label this chapter genuinely needs is rendered elsewhere in real, typeset text, so the plate must leave that job alone.
+
+Therefore: never build the plate around a device that NEEDS text to work. No labelled diagrams, no flowcharts, no org charts, no annotated schematics, no bar/line/pie charts, no graphs with axes, no tables, no timelines with dates, no signage, no book covers, no screens showing interfaces, no keyboards.
+
+Carry meaning through form instead — through arrangement, scale, sequence, contrast, colour, position, and physical relationship. If your idea collapses without a caption, it is the wrong idea; find one that reads on sight.
+
+═══ 3. IT MUST NOT LOOK AI-GENERATED ═══
+
+Name and avoid the tells:
+- No glow. No lens flare, no bloom, no light emanating from nothing, no rim-lit haze, no "energy".
+- No glowing blue circuitry, no floating holograms, no translucent HUD panels, no particle swarms, no neural-network filaments, no data streams — the default machine idiom for "concept".
+- No mirror-perfect symmetry and no centred-subject-on-empty-background. Compose deliberately and off-centre; let weight sit where the meaning is.
+- No plastic sheen, no waxy surfaces, no impossible cleanliness, no chrome-and-glass everything.
+- No hands, faces or crowds unless the chapter genuinely requires a person; if it does, keep them incidental, partial, or turned away. Hands are the most reliable tell of all.
+- No collage of floating icons. No generic upward arrows. No lightbulbs for ideas, no gears for process, no chess pieces for strategy, no jigsaw pieces for fit, no handshakes for agreement, no hourglasses for time, no sprouting seedlings for growth. These are the clichés the model reaches for first; earn the image instead.
+- No stock-photo staging: no posed meetings, no pointing at whiteboards.
+
+Aim for something a human professional would have been commissioned to make: one clear idea, honestly rendered, with the restraint and the small irregularities of real work.
+
+═══ 4. THE BRIEF MUST BE CONCRETE ═══
+
+${styleDirection}
+
+Specify, explicitly:
+- The single focal subject: what it IS, its material, its scale, its state, and how it is framed and cropped.
+- The composition within a SQUARE (1:1) frame, as zones — where the subject sits, where the weight falls, what occupies the negative space.
+- The full palette, with approximate hex values, and which colour is the accent.
+- The lighting: direction, quality, and where the shadow falls.
+- The background: what it actually is. Never "a plain background".
+- The finish and render quality.
+
+BANNED, because they instruct an image model to do nothing: "evocative", "striking", "compelling", "conceptual", "modern", "dynamic", "eye-catching", "professional", "high-quality", "detailed", "beautiful", "artistic". If you would write one, replace it with the concrete thing it stands for.
+
+Write the brief as dense descriptive prose in ONE paragraph, 80–140 words. Not a bullet list.
+
+Return ONLY valid JSON, no markdown fences, no commentary:
+{"subject":"the one thing from the chapter this plate depicts, and where in the chapter it came from","prompt":"the one-paragraph brief"}`;
+
+			userPrompt = `Book: "${bookTitle}"${genre ? ` (${genre})` : ''}
+Chapter ${chapterOrder}: "${chapterTitle}"
+${chapterSummary ? `Planned summary: ${chapterSummary}` : ''}
+
+═══ THE RESEARCH BEHIND THIS CHAPTER ═══
+The plate must be accurate to these findings wherever they touch the subject you choose.
+${researchNotes?.trim() || 'None retrieved. Work strictly from the chapter text below; invent no specifics it does not state.'}
+
+═══ THE FINISHED CHAPTER TEXT ═══
+This is what the chapter actually says. Your subject must come from HERE.
+${(chapterContent || '').slice(0, 12_000) || 'Not available. Work from the summary above, and choose a subject conservative enough to be safe without it.'}
+${diagramIntent?.trim() ? `
+═══ WHAT THIS PLATE IS REPLACING ═══
+This plate stands in for a diagram the author placed at this exact point, whose source is below. Read it for the POINT it was making — that point is your subject.
+
+Do not reproduce it as a diagram. It is being replaced precisely because a photograph is wanted here instead, and because a drawn-by-model diagram would carry invented labels and unreliable geometry. Take the idea and stage it as a real, physical scene.
+
+If the diagram's meaning lives entirely in numbers or in an abstract structure — a chart's values, a flowchart's branches, a matrix's quadrants — say so in "subject" and choose the closest honest physical subject the chapter supports instead. Never invent quantities, and never imply a magnitude the chapter does not state.
+
+${diagramIntent.trim().slice(0, 2_000)}
+` : ''}
+${authorNote?.trim() ? `
+═══ THE AUTHOR'S OWN INSTRUCTION FOR THIS PLATE ═══
+This is the author speaking directly about this plate. It outranks your own judgement about the subject and the treatment — honour it.
+
+The single exception is text. If they ask for a label, a caption or a title in the picture, apply everything else they asked for and leave the text out: an image model cannot spell, and this plate's labels are set separately in real type where they will be correct.
+
+${authorNote.trim().slice(0, 1_000)}
+` : ''}
+Art-direct the single interior plate for this chapter. Remember: no text of any kind anywhere in the image, and no device that would need text to work.`;
+
+		} else if (action === 'place-illustration-labels') {
+			// The division of labour here is the whole point. The image model draws
+			// the plate but cannot spell, so the picture carries no text. Claude can
+			// see WHERE things are but must not decide WHAT the chapter teaches. So
+			// vision supplies coordinates only; the wording comes from the chapter,
+			// and the type is set in real HTML by the plate renderer — which is the
+			// only participant that can actually spell.
+			systemPrompt = `You are labelling a photographic plate for a printed reference manual. You are given the finished chapter, the research behind it, and the plate itself. You return callout labels: what to point at, and exactly where it is in the frame.
+
+═══ 1. THE WORDING COMES FROM THE CHAPTER — NOT FROM THE PICTURE ═══
+
+Your labels must name what the CHAPTER teaches, using the chapter's own terminology. You are not captioning a photograph; you are pointing at the parts that carry the lesson.
+
+A label is worth including only if the chapter explains why that part matters. "Bucket" is a description of the picture. "Bucket containment" is the chapter's point. If the chapter never mentions a thing, do not label it, however prominent it is in the frame.
+
+Use the chapter's exact vocabulary. If the chapter calls it a "P-trap slip nut", the label says "P-trap slip nut" — not "pipe joint". Never invent a term the chapter and research do not use, and never label a part with a name you are not certain is correct. A confidently wrong label teaches the reader something false and discredits the book; a missing label costs nothing.
+
+═══ 2. THE POSITION COMES FROM THE PICTURE ═══
+
+Look at the actual image. For each label, give the coordinates of the thing itself — the exact point a leader line should touch.
+
+- "x" and "y" are PERCENTAGES of the image, 0–100. x=0 is the left edge, x=100 the right. y=0 is the TOP edge, y=100 the bottom.
+- Point at the FEATURE, not at empty space near it. If you name the slip nut, the coordinate lands ON the slip nut.
+- If you cannot actually see the thing you want to label, or cannot locate it precisely, OMIT that label. Do not approximate, and do not place a label for something you merely expect to be there because the chapter mentions it. A label pointing at the wrong part is worse than no label.
+
+Set "side" to the direction the label box should sit relative to its point — "left" or "right" — choosing whichever has empty space, so the box never covers the subject.
+
+Set "confidence" to "high" only when you can see the feature clearly and are certain of its identity. Anything less is "low", and low-confidence labels are discarded.
+
+═══ 3. RESTRAINT ═══
+
+At most 5 labels. Fewer is better. A plate with 3 labels that each carry a teaching point beats one with 8 that inventory the photograph.
+
+Do not label the obvious ("wall", "floor", "bucket") unless the chapter gives it a role. Do not overlap: keep every point at least 12 percentage units from every other point, so the boxes do not collide.
+
+Return ONLY valid JSON, no markdown fences, no commentary:
+{"labels":[{"text":"the chapter's own term, 1–4 words","x":0-100,"y":0-100,"side":"left|right","confidence":"high|low","basis":"where in the chapter this term comes from"}]}
+
+If nothing can be labelled accurately, return {"labels":[]}. That is a valid, correct answer.`;
+
+			userPrompt = `Book: "${bookTitle}"${genre ? ` (${genre})` : ''}
+Chapter ${chapterOrder}: "${chapterTitle}"
+${illustrationSubject ? `\nWhat this plate was commissioned to show:\n${illustrationSubject}` : ''}
+
+═══ THE RESEARCH BEHIND THIS CHAPTER ═══
+${researchNotes?.trim() || 'None retrieved.'}
+
+═══ THE FINISHED CHAPTER TEXT ═══
+Your label wording must come from here.
+${(chapterContent || '').slice(0, 12_000) || 'Not available — label only what you are certain of, or return an empty list.'}
+
+The plate is the attached image. Label it: the chapter decides what is worth pointing at, the image decides where it is.`;
 		}
 
 		// Cover concepts run on their own call path: they are the only action that
@@ -578,6 +757,16 @@ Respond with a plain-text spec under those six headings. No preamble, no comment
 		// outline — it must never be held to the 10-minute chapter timeout.
 		const isCoverAction = action === 'analyze-cover-reference';
 
+		// Art direction is another small, non-streamed JSON call: it reads a
+		// chapter and writes back a single paragraph, so it belongs with the
+		// outline rather than under the 10-minute chapter timeout.
+		const isArtDirection = action === 'art-direct-illustration';
+
+		// Labelling is a vision call — small output, but it must fetch and read an
+		// image, so it gets the same 60s ceiling as the other vision action rather
+		// than the 8s that would abort a legitimate read.
+		const isLabelling = action === 'place-illustration-labels';
+
 		// Size the output budget from the actual work, not a fixed guess. A
 		// verify pass echoes the whole chapter back after the report, so its
 		// budget has to scale with the draft it is given or long chapters get
@@ -586,6 +775,11 @@ Respond with a plain-text spec under those six headings. No preamble, no comment
 			action === 'write-chapter'  ? budgetForWrite(plan.wordsPerChapter) :
 			action === 'verify-chapter' ? budgetForVerify(chapterContent) :
 			action === 'analyze-cover-reference' ? 1_500 :
+			/* art direction — a subject line plus a 140-word brief. Reads a long
+			   chapter, writes very little. */
+			action === 'art-direct-illustration' ? 1_200 :
+			/* labelling — at most 5 short labels with coordinates. */
+			action === 'place-illustration-labels' ? 1_500 :
 			/* distill — at most 8 short entries; the cap is deliberate, an
 			   overlong distillation is a bug, not a feature. */
 			action === 'distill-chapter' ? 1_500 :
@@ -596,16 +790,27 @@ Respond with a plain-text spec under those six headings. No preamble, no comment
 		const controller = new AbortController();
 		// Streamed requests only need to survive gaps between chunks, so the
 		// ceiling can be generous without risking a silent HTTP timeout.
-		const timeoutMs = action === 'outline' || action === 'distill-chapter' || isCoverAction ? 60_000 : 600_000;
+		const timeoutMs = action === 'outline' || action === 'distill-chapter' || isCoverAction || isArtDirection || isLabelling ? 60_000 : 600_000;
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
 
 		// Anthropic requires streaming once max_tokens is large enough that a
 		// single buffered response could exceed the request timeout. The small
 		// JSON actions are nowhere near it.
-		const useStream = action !== 'outline' && action !== 'distill-chapter' && !isCoverAction;
+		const useStream = action !== 'outline' && action !== 'distill-chapter' && !isCoverAction && !isArtDirection && !isLabelling;
 
 		// Reference-cover analysis is the only vision call in the app: the image
 		// rides as a content block ahead of the instruction text.
+		// Fetch the plate ourselves rather than handing Anthropic the URL.
+		//
+		// The URL source type looks simpler, but it makes labelling depend on the
+		// image host being willing to serve Anthropic's fetcher — and hosts that
+		// require a User-Agent reject it, which fails the whole call with an
+		// opaque "unable to download the file". Fetching here means labelling
+		// works for any image the app itself can reach, which is the same bar the
+		// reader and the PDF export already have to clear. It also matches the
+		// reference-cover vision call, which is base64 for the same reason.
+		const labelImage = isLabelling ? await fetchImageAsBase64(imageUrl) : null;
+
 		const userContent = action === 'analyze-cover-reference' && referenceImage?.data
 			? [
 					{
@@ -615,6 +820,17 @@ Respond with a plain-text spec under those six headings. No preamble, no comment
 							media_type: referenceImage.mediaType || 'image/jpeg',
 							data: referenceImage.data
 						}
+					},
+					{ type: 'text', text: userPrompt }
+				]
+			: isLabelling
+			? [
+					// The image leads the turn: Claude attends to instructions that
+					// follow an image more reliably than ones that precede it — the
+					// same ordering the cover assistant's vision call uses.
+					{
+						type: 'image',
+						source: { type: 'base64', media_type: labelImage!.mediaType, data: labelImage!.data }
 					},
 					{ type: 'text', text: userPrompt }
 				]
@@ -742,6 +958,71 @@ Respond with a plain-text spec under those six headings. No preamble, no comment
 			const format = responseText.trim();
 			if (!format) throw new Error('Claude returned an empty reference analysis. Please try again.');
 			return json({ success: true, format, source: 'live' });
+		} else if (action === 'art-direct-illustration') {
+			// The no-text ban is appended in code rather than left to the model to
+			// remember. It is the one rule whose failure is visible on every page —
+			// gibberish lettering is the tell that the book was machine-made — and a
+			// brief that simply forgets to mention text still licenses the image
+			// model to add it. Last, so it is the final thing the image model reads.
+			try {
+				const start = responseText.indexOf('{');
+				const end   = responseText.lastIndexOf('}');
+				if (start === -1 || end <= start) throw new Error('no JSON object in response');
+
+				const parsed = JSON.parse(responseText.substring(start, end + 1));
+				const brief  = String(parsed.prompt ?? '').trim();
+				if (!brief) throw new Error('empty prompt');
+
+				return json({
+					success: true,
+					subject: String(parsed.subject ?? '').trim(),
+					prompt:  `${brief} ${NO_TEXT_CLAUSE}`,
+					source:  'live'
+				});
+			} catch (parseError) {
+				console.error('Failed to parse art-direction JSON:', responseText);
+				throw new Error('Claude did not return a valid illustration brief.');
+			}
+		} else if (action === 'place-illustration-labels') {
+			// Every filter here drops labels rather than repairing them. A label is
+			// a printed claim about what a part of the picture IS — a wrong one
+			// teaches the reader something false and they have no way to catch it.
+			// A missing one costs nothing but a label. So anything not clearly
+			// right is discarded, and an empty list is a perfectly good answer.
+			try {
+				const start = responseText.indexOf('{');
+				const end   = responseText.lastIndexOf('}');
+				if (start === -1 || end <= start) throw new Error('no JSON object in response');
+
+				const parsed = JSON.parse(responseText.substring(start, end + 1));
+				const raw    = Array.isArray(parsed.labels) ? parsed.labels : [];
+
+				const labels = raw
+					.filter((l: any) => l && typeof l.text === 'string' && l.text.trim())
+					// The model was told to self-report; honour it. It is the only
+					// signal for "I could not actually see this".
+					.filter((l: any) => l.confidence === 'high')
+					// Coordinates are percentages. Anything outside the frame is a
+					// misread, not something to clamp onto the nearest edge — that
+					// would pin a leader line to a spot nobody identified.
+					.filter((l: any) => {
+						const x = Number(l.x), y = Number(l.y);
+						return Number.isFinite(x) && Number.isFinite(y) &&
+						       x >= 0 && x <= 100 && y >= 0 && y <= 100;
+					})
+					.slice(0, 5)
+					.map((l: any) => ({
+						text: String(l.text).trim().slice(0, 40),
+						x:    Number(l.x),
+						y:    Number(l.y),
+						side: sideFor(Number(l.x), l.side)
+					}));
+
+				return json({ success: true, labels, source: 'live' });
+			} catch (parseError) {
+				console.error('Failed to parse illustration labels:', responseText);
+				throw new Error('Claude did not return valid illustration labels.');
+			}
 		} else if (action === 'write-chapter') {
 			return json({
 				success: true,
@@ -786,6 +1067,62 @@ Respond with a plain-text spec under those six headings. No preamble, no comment
 const MODEL_OUTPUT_CAP = 64_000;
 
 /** Rough token estimate for English markdown prose (~3.5 chars per token). */
+/** The image types the Messages API accepts. SVG is not among them — which is
+ *  why mock mode's inline SVG placeholder can never be labelled. */
+const VISION_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+
+/**
+ * Which side of its anchor a callout box sits on.
+ *
+ * Near either edge the box must point INWARD or it overflows the plate and gets
+ * clipped — a label half off the page is worse than one sitting over the
+ * picture. Claude picks a side by looking for empty space, but it is judging a
+ * box whose rendered width it cannot know, so its preference is only honoured
+ * in the middle band where either direction fits.
+ */
+function sideFor(x: number, preferred: unknown): 'left' | 'right' {
+	if (x > 58) return 'left';   // near the right edge — extend back into frame
+	if (x < 42) return 'right';  // near the left edge  — extend back into frame
+	return preferred === 'left' ? 'left' : 'right';
+}
+
+/**
+ * Fetch a remote image and return it base64-encoded, ready to ride as a vision
+ * content block.
+ *
+ * Mirrors /api/proxy: same User-Agent (some CDNs reject requests without one —
+ * this is exactly what breaks handing Anthropic a bare URL), same image-only
+ * content-type check.
+ *
+ * Throws rather than returning null: every caller treats a labelling failure as
+ * "no labels", so the message only ever reaches a log, and a precise one is
+ * worth more there than a silent empty list.
+ */
+async function fetchImageAsBase64(url: string): Promise<{ data: string; mediaType: string }> {
+	if (!/^https?:\/\//i.test(url ?? '')) {
+		throw new Error('Illustration labelling needs an http(s) image URL.');
+	}
+
+	const res = await fetch(url, {
+		headers: { 'User-Agent': 'EbookAutomator/1.0 (illustration-labeller)' }
+	});
+	if (!res.ok) throw new Error(`Could not fetch the illustration (${res.status}).`);
+
+	const mediaType = (res.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+	if (!VISION_MEDIA_TYPES.includes(mediaType)) {
+		throw new Error(`Illustration is not a supported image type (${mediaType || 'unknown'}).`);
+	}
+
+	const buf = await res.arrayBuffer();
+	// The API rejects images past ~5MB. Catching it here names the actual
+	// problem instead of surfacing a size error from Anthropic.
+	if (buf.byteLength > 4_500_000) {
+		throw new Error('Illustration is too large to label.');
+	}
+
+	return { data: Buffer.from(buf).toString('base64'), mediaType };
+}
+
 function estimateTokens(text: string): number {
 	return Math.ceil((text?.length ?? 0) / 3.5);
 }
