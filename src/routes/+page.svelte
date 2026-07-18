@@ -10,7 +10,7 @@
 	import ChapterPlanError from '$lib/components/ChapterPlanError.svelte';
 	import CoverPreviewDialog from '$lib/components/CoverPreviewDialog.svelte';
 	import BookCostDialog from '$lib/components/BookCostDialog.svelte';
-	import { claudeCallCost, estimatedImageCount, ESTIMATED_COST_PER_IMAGE, ESTIMATED_COST_PER_SEARCH } from '$lib/pricing';
+	import { claudeCallCost, estimatedImageCount, imageUnitCost, ESTIMATED_COST_PER_SEARCH } from '$lib/pricing';
 	import { generationRunner } from '$lib/generationRunner.svelte';
 	import { AI_CONCEPT_COUNT, hasCoverBrief } from '$lib/coverStyles';
 	import { fileToImagePayload } from '$lib/imageInput';
@@ -32,6 +32,10 @@
 	let structure   = $state('');
 	let useUltraRealistic   = $state(false);
 	let researchDepth       = $state<'basic' | 'deep'>('basic');
+	// How heavily illustrated the book is. 'rich' is the default so a new book
+	// leans visual out of the box; diagrams scale for free, extra image plates
+	// (the paid part) are added by the runner for 'rich' and 'maximum'.
+	let visualDensity       = $state<'standard' | 'rich' | 'maximum'>('rich');
 	// Every book ships through the full fact-mesh cross-validation pass.
 	const selfCorrectionLevel: 'standard' | 'rigorous' = 'rigorous';
 	/** Optional background brief — injected into every AI call for deeper grounding */
@@ -103,9 +107,10 @@
 			)
 			: 0;
 		// Images are counted from the book's actual contents (see estimatedImageCount),
-		// so the estimate holds up for books generated before usage tracking existed.
+		// so the estimate holds up for books generated before usage tracking existed,
+		// and priced at the currently-selected image provider's rate.
 		return claudeTotal
-			+ estimatedImageCount(active) * ESTIMATED_COST_PER_IMAGE
+			+ estimatedImageCount(active) * imageUnitCost(globalState.apiKeys.imageProvider)
 			+ (usage?.searches ?? 0) * ESTIMATED_COST_PER_SEARCH;
 	});
 
@@ -139,7 +144,7 @@
 			title, subtitle, author, genre, length, pageCount,
 			tone: tone.trim() || DEFAULT_TONE,
 			structure: structure.trim() || DEFAULT_STRUCTURE,
-			useUltraRealistic, researchDepth, selfCorrectionLevel,
+			useUltraRealistic, researchDepth, selfCorrectionLevel, visualDensity,
 			userContext, coverReferencePrompt: ''
 		});
 
@@ -492,6 +497,17 @@
 										<option value="basic">Standard — Key facts & citations</option>
 										<option value="deep">Deep — Comprehensive source extraction</option>
 									</select>
+								</div>
+								<div class="form-group">
+									<label for="visual-density">Visual Density</label>
+									<select id="visual-density" bind:value={visualDensity}>
+										<option value="standard">Standard — Diagram-rich, one image per chapter</option>
+										<option value="rich">Rich — More diagrams, plus the best few photos where they fit</option>
+										<option value="maximum">Maximum — Richly illustrated; a plate in every section that genuinely calls for one</option>
+									</select>
+									<span class="field-hint">
+										Diagrams and charts are free; extra photographic plates use more API credits.
+									</span>
 								</div>
 							</div>
 							<div class="advanced-row">
@@ -1093,6 +1109,7 @@
 	open={showCostDialog}
 	usage={active?.usage}
 	imageCount={active ? estimatedImageCount(active) : 0}
+	imageProvider={globalState.apiKeys.imageProvider}
 	onClose={() => showCostDialog = false}
 />
 
@@ -1433,6 +1450,14 @@
 
 	.checkbox-label-desc {
 		font-size: 0.78rem;
+		color: var(--text-muted, #6E6860);
+		line-height: 1.5;
+	}
+
+	.field-hint {
+		display: block;
+		margin-top: 0.4rem;
+		font-size: 0.75rem;
 		color: var(--text-muted, #6E6860);
 		line-height: 1.5;
 	}

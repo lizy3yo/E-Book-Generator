@@ -30,10 +30,62 @@
 import { globalState } from './state.svelte';
 import type { Book, Chapter, CoverOption, CoverOrigin, BibleEntry, IllustrationLabel, BookFormat } from './types';
 import { generateImage } from './generateImage';
-import { createIllustration } from './illustration';
+import { createIllustration, planChapterPlates } from './illustration';
 import { COVER_TEMPLATES, AI_CONCEPT_COUNT, buildCoverDirection, buildBriefCoverPrompt, hasCoverBrief, type CoverTemplate } from './coverStyles';
 import { batched, BATCH_SIZE } from './bookPlan';
 import { mergeBible, bibleTokens } from './bookBible';
+
+/**
+ * Turn a generated image and its callout labels into a ```plate block.
+ *
+ * The plate renderer ($lib/diagrams) sets the labels in real type over the
+ * image and gives it a whole page — the same house figure format an authored
+ * plate gets. No title line: like the chapter opener, these read as clean
+ * full-page photographs rather than titled diagram plates.
+ */
+function buildPlateBlock(url: string, labels: IllustrationLabel[]): string {
+	const lines = ['```plate', `image: ${url}`];
+	if (labels.length) lines.push(`callouts: ${JSON.stringify(labels)}`);
+	lines.push('```');
+	return lines.join('\n');
+}
+
+/**
+ * Place each plate directly under the specific section it illustrates.
+ *
+ * Used by the 'maximum' tier, where a planning pass has already tied every plate
+ * to a named section — so unlike splicePlatesIntoContent (which just spreads
+ * plates evenly), this drops each one at the top of the exact section it belongs
+ * to, keeping picture and subject together. A plate whose section can no longer
+ * be matched (the heading was edited or reworded) falls through to the end
+ * rather than being lost.
+ */
+function splicePlatesAtSections(content: string, items: { section: string; block: string }[]): string {
+	if (!items.length) return content;
+
+	const lines = content.split('\n');
+	const norm = (s: string) => s.replace(/^#+\s*/, '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+	const inserts: { at: number; block: string }[] = [];
+	const leftover: string[] = [];
+	for (const { section, block } of items) {
+		const target = norm(section);
+		let at = -1;
+		for (let i = 0; i < lines.length; i++) {
+			if (lines[i].startsWith('## ') && norm(lines[i]) === target) { at = i + 1; break; }
+		}
+		if (at === -1) leftover.push(block);
+		else inserts.push({ at, block });
+	}
+
+	// Splice from the bottom up so earlier line indices stay valid.
+	inserts.sort((a, b) => b.at - a.at);
+	for (const { at, block } of inserts) lines.splice(at, 0, '', block, '');
+
+	let out = lines.join('\n');
+	if (leftover.length) out += '\n\n' + leftover.join('\n\n');
+	return out;
+}
 
 /** Everything the UI needs to know about a book's in-flight work. */
 export interface BookRunState {
@@ -782,6 +834,9 @@ class GenerationRunner {
 				chapterOrder: chap.order,
 				chapterSummary: chap.summary,
 				tone: book.tone,
+				// Drives how hard the writing prompt reaches for diagrams and
+				// structured visuals. The paid image plates scale separately, below.
+				visualDensity: book.visualDensity,
 				researchNotes: factsSummary,
 				// The whole plan, so a chapter knows its place in the book.
 				// Chapters are written concurrently and never see each other's
@@ -837,7 +892,7 @@ class GenerationRunner {
 		});
 		const verifyData = await verifyRes.json();
 		if (verifyData.usage) globalState.addBookUsage(bookId, { claude: verifyData.usage });
-		const finalContent = verifyData.success ? verifyData.verifiedContent : draftData.content;
+		let finalContent = verifyData.success ? verifyData.verifiedContent : draftData.content;
 
 		// Illustration — art-directed from the finished chapter and its research
 		globalState.addLog(bookId, {
@@ -847,6 +902,9 @@ class GenerationRunner {
 
 		let illustUrl: string | null = null;
 		let illustLabels: IllustrationLabel[] = [];
+		// The opener's subject, handed to the plate planner below so it does not
+		// recommend the same picture the opener already covers.
+		let openerSubject = '';
 		try {
 			// Brief it from what the chapter actually SAYS and what the research
 			// actually FOUND — both already in hand here — then draw it, then label
@@ -868,9 +926,82 @@ class GenerationRunner {
 			);
 			illustUrl    = made.url;
 			illustLabels = made.labels;
+			if (made.subject) openerSubject = made.subject;
 			made.claudeUsage.forEach(u => globalState.addBookUsage(bookId, { claude: u }));
 			if (made.imageBilled) globalState.addBookUsage(bookId, { images: 1 });
 		} catch { /* non-fatal */ }
+
+		// ── Extra plates for the richer visual-density tiers ──────────────────
+		// 'standard' books stop at the one opener above. 'rich' and 'maximum' both
+		// add more, and both do it the SAME smart way: a planning pass reads the
+		// finished chapter and decides which sections genuinely earn a full-page
+		// photographic plate — skipping the ones a photo would only pad — and what
+		// each should depict. Neither tier ever forces a plate onto a section that
+		// does not warrant one.
+		//
+		// The tiers differ ONLY in how many of those qualified spots they fill:
+		//   • 'rich'    — the strongest few (the plan is ranked strongest-first).
+		//   • 'maximum' — every section that qualifies.
+		//
+		// Each plate is spliced into the exact section it illustrates as a ```plate
+		// block, which the reader renders just like the opener, labels and all.
+		// Everything is best-effort: a failed plate is one fewer figure, never a
+		// failed chapter, and it all runs only once the opener produced a real
+		// image (illustUrl) — otherwise there is nothing to build a richer chapter
+		// on.
+		const density = book.visualDensity ?? 'standard';
+		const RICH_PLATE_CAP = 2;
+
+		if (illustUrl && (density === 'rich' || density === 'maximum')) {
+			try {
+				const plan = await planChapterPlates(
+					book,
+					{
+						chapterTitle:   chap.title,
+						chapterOrder:   chap.order,
+						chapterSummary: chap.summary,
+						chapterContent: finalContent,
+						researchNotes:  factsSummary
+					},
+					// The opener's subject, so the plan does not propose it again.
+					openerSubject,
+					keys,
+					useMock
+				);
+				if (plan.usage) globalState.addBookUsage(bookId, { claude: plan.usage });
+
+				// 'rich' fills only the strongest spots; 'maximum' fills them all.
+				const chosen = density === 'rich' ? plan.plates.slice(0, RICH_PLATE_CAP) : plan.plates;
+
+				const items: { section: string; block: string }[] = [];
+				for (const spec of chosen) {
+					const subject = spec?.subject?.trim();
+					const section = spec?.section?.trim();
+					if (!subject || !section) continue;
+					try {
+						const extra = await createIllustration(
+							book,
+							{
+								chapterTitle:   chap.title,
+								chapterOrder:   chap.order,
+								chapterSummary: chap.summary,
+								chapterContent: finalContent,
+								researchNotes:  factsSummary,
+								// The plan chose this subject; mandate it so the
+								// art-director depicts exactly that, not its own pick.
+								authorNote:     `Depict this specific subject from the chapter, and nothing else: ${subject}.`
+							},
+							keys,
+							useMock
+						);
+						extra.claudeUsage.forEach(u => globalState.addBookUsage(bookId, { claude: u }));
+						if (extra.imageBilled) globalState.addBookUsage(bookId, { images: 1 });
+						if (extra.url) items.push({ section, block: buildPlateBlock(extra.url, extra.labels) });
+					} catch { /* non-fatal — one fewer plate */ }
+				}
+				finalContent = splicePlatesAtSections(finalContent, items);
+			} catch { /* planning failed — the chapter keeps its opener */ }
+		}
 
 		// Commit
 		const final = [...globalState.books.find(b => b.id === bookId)!.chapters];

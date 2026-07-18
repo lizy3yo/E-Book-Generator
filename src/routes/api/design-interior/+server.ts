@@ -115,6 +115,8 @@ MANDATORY PRESETS RULES:
 - If layout preset is "Vintage Academic": running header and footer has academic Georgia font, dotted rules (1.5pt dotted), and centered numbers.
 - If layout preset is "Aesthetic Literary": running header and footer has lowercase style, no lines, italic titles and page numbers.
 - If layout preset is "Technical Mono": running header/footer has Courier/monospace fonts, dashed lines (1px dashed), and bold spacing.
+- If layout preset is "Field Manual": you must set "--r-header-opacity" to "0" (completely hidden), "--r-header-border" to "none", and "--r-footer-border" to "none". The running header should be hidden, and the running footer should be a simple page number centered with opacity "0.7". The body font ("--r-body-font") MUST be a serif font stack, the chapter title font ("--r-title-font") MUST be a sans-serif font stack, and the chapter label eyebrow ("--r-label-display") MUST be "none" (hidden). Alignment MUST be left-aligned ("--r-header-align": "flex-start").
+- If layout preset is "Field Manual — Cover Aligned": same as "Field Manual", but alignment follows the cover's alignment, and the chapter label eyebrow ("--r-label-display") is "block" (visible).
 - If layout preset is "Hidden / None": you must set "--r-header-opacity" to "0", "--r-footer-opacity" to "0", "--r-header-border" to "none", and "--r-footer-border" to "none" so they are completely hidden from the page.
 
 If custom styling instructions are provided, you MUST prioritize and incorporate them. For example, if the user asks to "make header rules gold", choose a gold color (e.g. "#C9A84C") for header/footer rules. If the user asks for "dashed rule lines", set border style to dashed. Ensure the styling remains highly professional, elegant, readable, and consistent with publishing industry standards.
@@ -166,6 +168,7 @@ Return a JSON object containing two keys:
   - "--r-label-bg": background color for label badge (e.g. cover's accent color if Bold Graphic, otherwise 'transparent')
   - "--r-label-padding": CSS padding for label badge
   - "--r-label-border-radius": border-radius for label badge
+  - "--r-label-display": eyebrow display style ('none' | 'block')
   - "--r-rule-border": CSS border-top for the horizontal rule dividing chapter title (e.g. '1.5px solid #8E7453')
   - "--r-rule-width": rule width (e.g. '60px', '100%')
   - "--r-dropcap-font": Font stack for drop cap

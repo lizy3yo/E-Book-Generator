@@ -11,6 +11,40 @@ import {
 	ANTHROPIC_API_KEY
 } from '$env/static/private';
 
+/**
+ * The visual-density target appended to the write-chapter system prompt.
+ *
+ * This governs the FREE half of visual density — diagrams and structured
+ * visuals the model emits as text. The paid half (extra image plates) is added
+ * separately by the generation runner, so nothing here asks the model for
+ * photographs; it would have no URL to render anyway.
+ *
+ * Every tier raises the floor above the old "use a visual where appropriate"
+ * default: even 'standard' now asks for a visual in every major section. A
+ * missing value resolves to 'standard' so books predating this control keep the
+ * baseline rather than silently dropping to no target at all.
+ */
+function visualDensityDirective(density: 'standard' | 'rich' | 'maximum' | undefined): string {
+	const heading = 'VISUAL DENSITY TARGET — how often to reach for a visual instead of prose:';
+	if (density === 'maximum') {
+		return `${heading}
+This is a densely illustrated reference book. Visual aids are the point, not the garnish.
+- Every major section carries at least TWO structured visuals — a mix of tables, stat blocks, charts, callout boxes and \`\`\`diagram blocks. Never let a section run as unbroken prose.
+- Reach for a \`\`\`diagram whenever the content describes a process, a comparison, a structure, a hierarchy, a set of relationships, a distribution, or a sequence of steps. When in doubt, draw it.
+- Vary the element types across the chapter so the page never looks repetitive.`;
+	}
+	if (density === 'rich') {
+		return `${heading}
+This is a visually rich book — lean hard on visual aids.
+- Every major section carries at least one structured visual (table, stat block, chart, callout box, or \`\`\`diagram), and prefer two where the material supports it.
+- Reach for a \`\`\`diagram whenever the content describes a process, a comparison, a structure, a hierarchy, or a set of relationships — do not settle for prose when a diagram would teach it faster.`;
+	}
+	return `${heading}
+Give the chapter a strong visual rhythm.
+- Every major section should carry at least one structured visual — a table, stat block, chart, callout box, or \`\`\`diagram — rather than running as unbroken prose.
+- Whenever the content describes a process, comparison, structure, or set of relationships, render it as a \`\`\`diagram instead of describing it in a paragraph.`;
+}
+
 export const POST: RequestHandler = async ({ request }) => {
 	try {
 		const {
@@ -33,6 +67,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			chapterUnitStart,
 			chapterUnitEnd,
 			pageCount,
+			visualDensity,
 			chapterContent,
 			// ── Illustration art direction ─────────────────────────────────
 			ultraRealistic,
@@ -439,7 +474,9 @@ CRITICAL RULE: Actively choose the RIGHT element for each content type. Do not d
    # - For SWOT: strengths: A, B / weaknesses: C / opportunities: D / threats: E
    # - For Flowcharts/Timelines/Gantts/UML: steps: Step 1 -> Step 2 -> Step 3
    # - For Mindmaps/Hierarchies/Org Charts: root: Main Topic / list nodes starting with '-'
-   \`\`\``;
+   \`\`\`
+
+${visualDensityDirective(visualDensity)}`;
 
 			// The full plan, so this chapter knows what the rest of the book
 			// covers. Chapters are written concurrently and never see each
@@ -809,6 +846,49 @@ ${authorNote.trim().slice(0, 1_000)}
 ` : ''}
 Art-direct the single interior plate for this chapter. Remember: no text of any kind anywhere in the image, and no device that would need text to work.`;
 
+		} else if (action === 'plan-chapter-plates') {
+			// The fitness gate for the "maximum" visual-density tier. Rather than
+			// force a fixed number of photographs onto a chapter, this reads the
+			// finished chapter and decides WHERE a full-page photographic plate
+			// genuinely earns its place — and, just as importantly, where one would
+			// only be filler. The runner then commissions exactly the plates this
+			// returns, so the count follows the content instead of a quota.
+			systemPrompt = `You are the art director for a richly illustrated edition of a reference book. You are given one finished chapter, already broken into "## " sections. Your job is to decide which sections genuinely warrant a full-page photographic plate, and what each one should depict.
+
+Be generous — recommend a plate for every section that genuinely qualifies — but every plate must teach. Density is the goal; decoration is not. A lighter edition of this book may use only your top few recommendations, so order them by strength: the section where a plate teaches the reader the most goes first.
+
+A section EARNS a plate only when its content has a real, physical, depictable subject: an object, a material, a tool, a technique performed by hands, a place, a physical process, a finished result, a specimen. A photograph of that thing shows the reader something words alone cannot.
+
+A section does NOT earn a plate when its meaning lives in words, numbers, or structure rather than in something you could photograph — a definition, an argument, a list of principles, a set of figures, a procedure with no physical object, a comparison. Forcing a photo onto such a section produces stock filler that teaches nothing and cheapens the whole book. Skipping it is the correct, professional choice, not a failure.
+
+Never propose a subject that would need text, labels, a chart, a graph, a diagram, or a screen to make sense — image models cannot spell, and anything of that kind is set elsewhere in real type. Choose only subjects that carry their meaning as a physical scene.
+
+For each section you DO recommend, return:
+- "section": the exact text of that section's "## " heading, copied verbatim (without the "## ").
+- "subject": the one concrete, physical thing from THAT section to depict — specific enough to picture, drawn from what the section actually says.
+
+Rules:
+- At most one plate per section.
+- Judge each section on its own merits. A short, abstract chapter may warrant only one or two plates; a hands-on, object-rich chapter may warrant many. Let the content decide the number.
+- Order the array strongest recommendation first, so a lighter edition can take just the top ones.
+- If no section supports a real plate, return an empty array. That is a valid, honest answer.
+
+Respond ONLY with a valid JSON array — no markdown fences, no commentary.
+Each element: {"section":"string (verbatim heading text)","subject":"string"}`;
+
+			userPrompt = `Book: "${bookTitle}"${genre ? ` (${genre})` : ''}
+Chapter ${chapterOrder}: "${chapterTitle}"
+${authorNote?.trim() ? `\nThe chapter's opening plate already depicts: ${authorNote.trim()}\nDo not propose another plate of that same subject.\n` : ''}
+═══ THE RESEARCH BEHIND THIS CHAPTER ═══
+Each plate's subject must be accurate to these findings wherever they touch it.
+${researchNotes?.trim() || 'None retrieved. Work strictly from the chapter text below; propose no subject it does not state.'}
+
+═══ THE FINISHED CHAPTER TEXT ═══
+Read it section by section. Recommend a plate only where a real physical subject genuinely earns one.
+${(chapterContent || '').slice(0, 14_000) || 'Not available.'}
+
+Return ONLY the JSON array.`;
+
 		} else if (action === 'decide-format') {
 			// Read the author's own concept and work out whether this book is made
 			// of one thing repeated — and if so, what that thing is called and what
@@ -1042,6 +1122,11 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 		// abort a legitimate read.
 		const isCoverDesign = action === 'read-cover-design';
 
+		// Planning a chapter's plates reads the finished chapter and writes back a
+		// short JSON array — a small, non-streamed call like the outline, so it
+		// belongs under the 60s ceiling rather than the 10-minute chapter timeout.
+		const isPlatePlan = action === 'plan-chapter-plates';
+
 		// Size the output budget from the actual work, not a fixed guess. A
 		// verify pass echoes the whole chapter back after the report, so its
 		// budget has to scale with the draft it is given or long chapters get
@@ -1060,6 +1145,8 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 			action === 'read-cover-design' ? 600 :
 			/* labelling — at most 5 short labels with coordinates. */
 			action === 'place-illustration-labels' ? 1_500 :
+			/* plate plan — one short {section, subject} per illustrated section. */
+			isPlatePlan ? 1_500 :
 			/* distill — at most 8 short entries; the cap is deliberate, an
 			   overlong distillation is a bug, not a feature. */
 			action === 'distill-chapter' ? 1_500 :
@@ -1070,13 +1157,13 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 		const controller = new AbortController();
 		// Streamed requests only need to survive gaps between chunks, so the
 		// ceiling can be generous without risking a silent HTTP timeout.
-		const timeoutMs = action === 'outline' || action === 'distill-chapter' || isCoverAction || isArtDirection || isLabelling || isFormatDecision || isCoverDesign ? 60_000 : 600_000;
+		const timeoutMs = action === 'outline' || action === 'distill-chapter' || isCoverAction || isArtDirection || isLabelling || isFormatDecision || isCoverDesign || isPlatePlan ? 60_000 : 600_000;
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
 
 		// Anthropic requires streaming once max_tokens is large enough that a
 		// single buffered response could exceed the request timeout. The small
 		// JSON actions are nowhere near it.
-		const useStream = action !== 'outline' && action !== 'distill-chapter' && !isCoverAction && !isArtDirection && !isLabelling && !isFormatDecision && !isCoverDesign;
+		const useStream = action !== 'outline' && action !== 'distill-chapter' && !isCoverAction && !isArtDirection && !isLabelling && !isFormatDecision && !isCoverDesign && !isPlatePlan;
 
 		// Reference-cover analysis is the only vision call in the app: the image
 		// rides as a content block ahead of the instruction text.
@@ -1305,6 +1392,29 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 			} catch (parseError) {
 				console.error('Failed to parse art-direction JSON:', responseText);
 				throw new Error('Claude did not return a valid illustration brief.');
+			}
+		} else if (action === 'plan-chapter-plates') {
+			// A failed plan is a non-event: the caller treats any failure as "no
+			// extra plates" and the chapter keeps its opener. So parse defensively
+			// and never let this be the thing that breaks a chapter.
+			try {
+				const start = responseText.indexOf('[');
+				const end   = responseText.lastIndexOf(']');
+				if (start === -1 || end <= start) throw new Error('no JSON array in response');
+
+				const raw = JSON.parse(responseText.substring(start, end + 1));
+				const plates = (Array.isArray(raw) ? raw : [])
+					.filter((p: any) => p && typeof p.section === 'string' && p.section.trim() &&
+						typeof p.subject === 'string' && p.subject.trim())
+					.map((p: any) => ({
+						section: String(p.section).replace(/^#+\s*/, '').trim(),
+						subject: String(p.subject).trim()
+					}));
+
+				return json({ success: true, plates, usage, source: 'live' });
+			} catch (parseError) {
+				console.error('Failed to parse plate plan JSON:', responseText);
+				return json({ success: true, plates: [], usage, source: 'live' });
 			}
 		} else if (action === 'decide-format') {
 			// Everything that fails validation becomes 'free' rather than an error.

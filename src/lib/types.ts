@@ -196,6 +196,23 @@ export interface Book {
 	researchDepth: 'basic' | 'deep';
 	selfCorrectionLevel: 'standard' | 'rigorous';
 
+	/**
+	 * How heavily illustrated the book is. Two independent things scale with it,
+	 * in two different places:
+	 *   • Diagrams and structured visuals (charts, stat blocks, callouts) — these
+	 *     are text the writing model emits, so they cost nothing extra and the
+	 *     writing prompt just aims higher for richer tiers.
+	 *   • Image plates — the paid part (each is one image generation plus two
+	 *     Claude vision calls). The generation runner adds extra art-directed
+	 *     plates per chapter for the richer tiers; see writeSingleChapter.
+	 *
+	 * 'standard' is one image plate per chapter (the original behaviour); 'rich'
+	 * and 'maximum' add more. Absent on books created before this existed — treat
+	 * a missing value as 'standard' so those books keep their original image
+	 * count when a chapter is regenerated.
+	 */
+	visualDensity?: 'standard' | 'rich' | 'maximum';
+
 	/** Guided pipeline stage — drives the main UI wizard */
 	pipelineStage: PipelineStage;
 

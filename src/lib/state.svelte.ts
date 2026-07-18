@@ -190,6 +190,7 @@ class GlobalState {
 		useUltraRealistic: boolean;
 		researchDepth: 'basic' | 'deep';
 		selfCorrectionLevel: 'standard' | 'rigorous';
+		visualDensity: 'standard' | 'rich' | 'maximum';
 		userContext: string;
 		coverReferencePrompt: string;
 	}): Book {
@@ -206,6 +207,7 @@ class GlobalState {
 			useUltraRealistic: params.useUltraRealistic,
 			researchDepth: params.researchDepth,
 			selfCorrectionLevel: params.selfCorrectionLevel,
+			visualDensity: params.visualDensity,
 			userContext: params.userContext,
 			coverReferencePrompt: params.coverReferencePrompt,
 			pipelineStage: 1,
