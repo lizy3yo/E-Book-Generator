@@ -1133,6 +1133,14 @@
 		overflow: hidden;
 	}
 
+	/* Theme-aware custom scrollbar styling for reader workspace */
+	.reader-layout ::-webkit-scrollbar-thumb {
+		background: var(--r-border);
+	}
+	.reader-layout ::-webkit-scrollbar-thumb:hover {
+		background: var(--r-muted);
+	}
+
 	/* Themes */
 	.theme-cream {
 		--r-sidebar: #F4EFE5; --r-viewport: #FAF7F2;
@@ -1167,7 +1175,7 @@
 		border-right: 1px solid var(--r-border);
 		display: flex;
 		flex-direction: column;
-		overflow-y: auto;
+		overflow: hidden;
 		transition: background-color 0.25s;
 		position: sticky;
 		top: 0;
@@ -1200,6 +1208,7 @@
 		padding: 0.5rem;
 		gap: 0.1rem;
 		flex: 1;
+		overflow-y: auto;
 	}
 
 	.toc-item {
