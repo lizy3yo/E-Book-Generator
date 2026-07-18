@@ -501,9 +501,9 @@
 								<div class="form-group">
 									<label for="visual-density">Visual Density</label>
 									<select id="visual-density" bind:value={visualDensity}>
-										<option value="standard">Standard — Diagram-rich, one image per chapter</option>
-										<option value="rich">Rich — More diagrams, plus the best few photos where they fit</option>
-										<option value="maximum">Maximum — Richly illustrated; a plate in every section that genuinely calls for one</option>
+										<option value="standard">Standard — 1 photo per chapter</option>
+										<option value="rich">Rich — Up to 3 photos per chapter</option>
+										<option value="maximum">Maximum — Adapts to the content</option>
 									</select>
 									<span class="field-hint">
 										Diagrams and charts are free; extra photographic plates use more API credits.
