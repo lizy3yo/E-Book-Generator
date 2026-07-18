@@ -435,6 +435,23 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 							return b64 ? tag.replace(url, b64) : '';
 						}
 					);
+
+					// Same swap for the image carried inside a ```plate / ```diagram
+					// fence — the form the generator uses for extra visual-density
+					// plates. The URL lives on an `image:`/`url:` line, so neither
+					// pattern above sees it; left alone it renders to a live
+					// cross-origin <img> that stalls html2canvas. When the image could
+					// not be inlined, drop the whole fence rather than emit a plate
+					// with a missing image.
+					contentForPdf = contentForPdf.replace(
+						/```(?:plate|diagram)\r?\n[\s\S]*?```/g,
+						(block) => {
+							const urlMatch = block.match(/^[ \t]*(?:image|url):[ \t]*(https?:\/\/[^\s)]+)/im);
+							if (!urlMatch) return block; // no remote image (e.g. a data-only diagram)
+							const b64 = dataUrls[urlMatch[1]];
+							return b64 ? block.replace(urlMatch[1], b64) : '';
+						}
+					);
 				}
 				const fullMd   = parseMarkdown(contentForPdf, c.id, {
 					title:  activeBook.title,

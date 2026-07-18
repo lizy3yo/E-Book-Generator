@@ -32,6 +32,10 @@
 	let structure   = $state('');
 	let useUltraRealistic   = $state(false);
 	let researchDepth       = $state<'basic' | 'deep'>('basic');
+	// How heavily illustrated the book is. 'rich' is the default so a new book
+	// leans visual out of the box; diagrams scale for free, extra image plates
+	// (the paid part) are added by the runner for 'rich' and 'maximum'.
+	let visualDensity       = $state<'standard' | 'rich' | 'maximum'>('rich');
 	// Every book ships through the full fact-mesh cross-validation pass.
 	const selfCorrectionLevel: 'standard' | 'rigorous' = 'rigorous';
 	/** Optional background brief — injected into every AI call for deeper grounding */
@@ -140,7 +144,7 @@
 			title, subtitle, author, genre, length, pageCount,
 			tone: tone.trim() || DEFAULT_TONE,
 			structure: structure.trim() || DEFAULT_STRUCTURE,
-			useUltraRealistic, researchDepth, selfCorrectionLevel,
+			useUltraRealistic, researchDepth, selfCorrectionLevel, visualDensity,
 			userContext, coverReferencePrompt: ''
 		});
 
@@ -493,6 +497,17 @@
 										<option value="basic">Standard — Key facts & citations</option>
 										<option value="deep">Deep — Comprehensive source extraction</option>
 									</select>
+								</div>
+								<div class="form-group">
+									<label for="visual-density">Visual Density</label>
+									<select id="visual-density" bind:value={visualDensity}>
+										<option value="standard">Standard — Diagram-rich, one image per chapter</option>
+										<option value="rich">Rich — More diagrams, plus the best few photos where they fit</option>
+										<option value="maximum">Maximum — Richly illustrated; a plate in every section that genuinely calls for one</option>
+									</select>
+									<span class="field-hint">
+										Diagrams and charts are free; extra photographic plates use more API credits.
+									</span>
 								</div>
 							</div>
 							<div class="advanced-row">
@@ -1435,6 +1450,14 @@
 
 	.checkbox-label-desc {
 		font-size: 0.78rem;
+		color: var(--text-muted, #6E6860);
+		line-height: 1.5;
+	}
+
+	.field-hint {
+		display: block;
+		margin-top: 0.4rem;
+		font-size: 0.75rem;
 		color: var(--text-muted, #6E6860);
 		line-height: 1.5;
 	}

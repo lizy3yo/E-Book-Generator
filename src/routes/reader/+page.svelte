@@ -231,6 +231,30 @@
 		});
 	}
 
+	/**
+	 * Every remote image URL referenced by a chapter's content, in all three
+	 * forms it can take: a markdown image, a raw <img> tag (spliced by the edit
+	 * drawer), and the `image:`/`url:` line of a ```plate / ```diagram fence
+	 * (how the generator adds extra visual-density plates). Anything missed here
+	 * survives export as a live cross-origin URL — which the HTML export cannot
+	 * inline and which stalls the PDF export under html2canvas's CORS fetch.
+	 */
+	function contentImageUrls(content: string): string[] {
+		const patterns = [
+			/!\[[^\]]*\]\((https?:\/\/[^)]+)\)/g,
+			/<img\b[^>]*\bsrc="(https?:\/\/[^"]+)"/gi,
+			/^[ \t]*(?:image|url):[ \t]*(https?:\/\/[^\s)]+)/gim
+		];
+		const urls: string[] = [];
+		for (const re of patterns) {
+			let m: RegExpExecArray | null;
+			while ((m = re.exec(content)) !== null) {
+				if (!urls.includes(m[1])) urls.push(m[1]);
+			}
+		}
+		return urls;
+	}
+
 	// ── Export HTML ──────────────────────────────────────────────────────────
 	async function handleCompileHtml() {
 		if (!activeBook) return;
@@ -240,6 +264,11 @@
 		if (cs.bgImageUrl) imageUrls.push(cs.bgImageUrl);
 		activeBook.chapters.forEach((c) => {
 			if (c.illustrationUrl) imageUrls.push(c.illustrationUrl);
+			if (c.content) {
+				for (const url of contentImageUrls(c.content)) {
+					if (!imageUrls.includes(url)) imageUrls.push(url);
+				}
+			}
 		});
 		const dataUrls: Record<string, string> = {};
 		await Promise.all(imageUrls.map(async (url) => {
@@ -273,20 +302,12 @@
 			activeBook.chapters.forEach((c) => {
 				if (c.illustrationUrl) imageUrls.push(c.illustrationUrl);
 				if (c.content) {
-					// Two forms live in chapter content and BOTH must be resolved:
-					// markdown images, and raw <img> tags — the edit drawer splices
-					// rendered HTML, not markdown. Anything missed here reaches
-					// html2canvas as a live cross-origin URL, which it requests with
-					// CORS (useCORS: true) and which then fails or stalls the export.
-					const patterns = [
-						/!\[[^\]]*\]\((https?:\/\/[^)]+)\)/g,
-						/<img\b[^>]*\bsrc="(https?:\/\/[^"]+)"/gi
-					];
-					for (const re of patterns) {
-						let m: RegExpExecArray | null;
-						while ((m = re.exec(c.content)) !== null) {
-							if (!imageUrls.includes(m[1])) imageUrls.push(m[1]);
-						}
+					// Resolve every remote image the content references — markdown,
+					// raw <img>, and ```plate fences — so none reaches html2canvas as
+					// a live cross-origin URL, which it requests with CORS
+					// (useCORS: true) and which then fails or stalls the export.
+					for (const url of contentImageUrls(c.content)) {
+						if (!imageUrls.includes(url)) imageUrls.push(url);
 					}
 				}
 			});
