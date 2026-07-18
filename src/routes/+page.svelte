@@ -12,8 +12,6 @@
 	import BookCostDialog from '$lib/components/BookCostDialog.svelte';
 	import { claudeCallCost, estimatedImageCount, imageUnitCost, ESTIMATED_COST_PER_SEARCH } from '$lib/pricing';
 	import { generationRunner } from '$lib/generationRunner.svelte';
-	// TEMP debug hook — remove after redoing chapters 3 and 4.
-	if (typeof window !== 'undefined') { (window as any).__runner = generationRunner; (window as any).__state = globalState; }
 	import { AI_CONCEPT_COUNT, hasCoverBrief } from '$lib/coverStyles';
 	import { fileToImagePayload } from '$lib/imageInput';
 	import { planForPages, clampPageCount, PAGE_PRESETS, MIN_PAGES, MAX_PAGES } from '$lib/bookPlan';
@@ -125,6 +123,18 @@
 	 */
 	const run = $derived(generationRunner.for(active?.id));
 	const coversBusy = $derived(generationRunner.isCoversBusy(active?.id));
+
+	/**
+	 * Whether chapters are actively being written or a single one regenerated.
+	 * The Step-3 "Writing Your Ebook" workspace (with the live pipeline log) is
+	 * for exactly this — active work. A finished, idle book should rest on the
+	 * completed view instead of sitting on a page that says it is still writing.
+	 */
+	const isGenerating = $derived(run.isWriting || run.regeneratingChapterIdx !== null);
+	/** Every chapter drafted and verified — the book is genuinely done. */
+	const allChaptersComplete = $derived(
+		!!active && active.chapters.length > 0 && active.chapters.every(c => c.status === 'completed')
+	);
 	const hasAiConcepts = $derived((active?.coverOptions ?? []).some(o => o.origin === 'ai'));
 	/** The author's own direction — written brief, uploaded reference, or both —
 	 *  fixes the design language, so Stage 2 renders exactly one cover from it:
@@ -955,7 +965,7 @@
 		<!-- ══════════════════════════════════════════════════════════════
 		     STAGE 4 — Writing in progress + per-chapter regen
 		     ══════════════════════════════════════════════════════════════ -->
-		{:else if active.pipelineStage === 4}
+		{:else if (active.pipelineStage === 4 || active.pipelineStage === 5) && (isGenerating || !allChaptersComplete)}
 			<div class="stage-workspace">
 				<div class="stage-header">
 					<div class="stage-badge">Step 3 of 3</div>
@@ -1029,9 +1039,12 @@
 			</div>
 
 		<!-- ══════════════════════════════════════════════════════════════
-		     STAGE 5 — Complete
+		     COMPLETE — a finished, idle book (stage 4 or 5, all chapters done,
+		     nothing generating). Shown instead of the writing workspace so the
+		     book rests on its completed state rather than a page that still says
+		     it is being written. A redo flips back to the workspace above.
 		     ══════════════════════════════════════════════════════════════ -->
-		{:else if active.pipelineStage === 5}
+		{:else if active.pipelineStage === 4 || active.pipelineStage === 5}
 			<div class="stage-workspace complete-stage">
 				<div class="complete-card card">
 					<!-- Book cover thumbnail — uses the generated cover image if available,

@@ -18,6 +18,10 @@ const CIRCUIT_RESET_MS    = 5 * 60 * 1000;
 let   claudeCircuitOpenUntil = 0;
 const CLAUDE_HARD_FAIL_CODES = new Set([400, 401, 403]);
 
+/** Cover chat + vision analysis; a few chained model calls can run 20–40s,
+ *  past Vercel's default. Ignored in local dev. */
+export const config = { maxDuration: 60 };
+
 export const POST: RequestHandler = async ({ request }) => {
 	try {
 		const { instruction, apiKey, useMockMode, currentSettings, bookTitle, genre, variants, referenceImage } =

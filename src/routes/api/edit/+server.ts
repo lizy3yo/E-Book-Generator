@@ -33,6 +33,10 @@ VISUAL ELEMENTS & LAYOUT DIRECTIVES — Use the RIGHT element for each content t
    \`\`\`
 `;
 
+/** Rewriting a chapter passage or regenerating a visual is a full Claude call
+ *  that can run 30–90s, past Vercel's default. Ignored in local dev. */
+export const config = { maxDuration: 120 };
+
 export const POST: RequestHandler = async ({ request }) => {
 	try {
 		const {

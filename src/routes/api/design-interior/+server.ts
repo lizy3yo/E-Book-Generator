@@ -51,6 +51,10 @@ async function getImageSource(imageUrl: string, origin: string): Promise<{ media
 	}
 }
 
+/** A cover-vision call that reads an image and returns the interior design
+ *  tokens — can run 10–30s, past Vercel's default. Ignored in local dev. */
+export const config = { maxDuration: 60 };
+
 export const POST: RequestHandler = async ({ request, url }) => {
 	// Define variables outside try/catch so they are accessible to programmatic fallback in catch block
 	let coverSettings: any = null;

@@ -45,6 +45,15 @@ Give the chapter a strong visual rhythm.
 - Whenever the content describes a process, comparison, structure, or set of relationships, render it as a \`\`\`diagram instead of describing it in a paragraph.`;
 }
 
+/**
+ * Vercel function ceiling for this route. Its longest actions — writing and
+ * verifying a chapter — stream a full chapter from Claude and routinely run
+ * 60–120s, well past Vercel's ~10–15s Node default, which would otherwise kill
+ * them mid-generation. 300s is the Pro plan's maximum and leaves ample head-room
+ * (the app's own AbortController still guards each call). Ignored in local dev.
+ */
+export const config = { maxDuration: 300 };
+
 export const POST: RequestHandler = async ({ request }) => {
 	try {
 		const {

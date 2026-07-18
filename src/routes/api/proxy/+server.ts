@@ -10,6 +10,11 @@ import type { RequestHandler } from './$types';
  * Only image content-types are forwarded; all other responses are rejected
  * to prevent this endpoint from being used as a general-purpose proxy.
  */
+/** Fetches a remote image (for PDF/HTML export) through the server to dodge
+ *  CORS; a slow CDN can take up to its own 15s ceiling, so give it head-room
+ *  over Vercel's default. Ignored in local dev. */
+export const config = { maxDuration: 30 };
+
 export const GET: RequestHandler = async ({ url }) => {
 	const target = url.searchParams.get('url');
 

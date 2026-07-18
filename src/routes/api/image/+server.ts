@@ -22,6 +22,13 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
  * The client is responsible for polling every few seconds until done === true.
  * This keeps the HTTP connection short and avoids server-side blocking.
  */
+/**
+ * Kie.ai submits-and-polls (each request is short), but the 69labs provider is
+ * synchronous — one create request blocks ~40–60s while the image renders. 120s
+ * covers that worst case with margin; Kie stays far under it. Ignored locally.
+ */
+export const config = { maxDuration: 120 };
+
 export const POST: RequestHandler = async ({ request }) => {
 	try {
 		const { action = 'create', prompt, apiKey, provider, useMockMode, isCover, taskId } =

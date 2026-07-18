@@ -45,6 +45,10 @@ function generateProgrammaticMock(query: string) {
 	];
 }
 
+/** Exa search is fast (~2–5s), but give it head-room over Vercel's default so a
+ *  slow search near its own 12s abort ceiling is never cut off first. */
+export const config = { maxDuration: 60 };
+
 export const POST: RequestHandler = async ({ request }) => {
 	try {
 		const { query, apiKey, useMockMode } = await request.json();
