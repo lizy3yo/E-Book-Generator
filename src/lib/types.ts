@@ -145,6 +145,18 @@ export interface Chapter {
 	 *  illustration the vision pass could not label confidently. */
 	illustrationLabels?: IllustrationLabel[];
 	/**
+	 * Sections the plate planner judged illustration-worthy — the record behind
+	 * the reader's manual "add illustration" button. A section listed here that
+	 * does NOT already carry a plate (its `### heading` is still present) shows
+	 * the button; clicking it generates that plate on demand.
+	 *
+	 * Stored for every visual-density tier, including 'standard': the tier
+	 * decides how many plates are auto-generated, but the suggestions are what let
+	 * a reader add one by hand to any section Claude approved. Absent on chapters
+	 * generated before this existed — no suggestions, so no buttons.
+	 */
+	plateSuggestions?: { section: string; subject: string }[];
+	/**
 	 * The span of the book's repeating units this chapter owns, inclusive —
 	 * e.g. 7..12. Set by the outline when `Book.format.mode === 'form'`.
 	 *

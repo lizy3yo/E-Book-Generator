@@ -48,7 +48,7 @@ import { mergeBible, bibleTokens } from './bookBible';
  * with no title (e.g. the rare leftover that matched no section) renders as a
  * clean untitled full-page photograph.
  */
-function buildPlateBlock(url: string, labels: IllustrationLabel[], title = ''): string {
+export function buildPlateBlock(url: string, labels: IllustrationLabel[], title = ''): string {
 	const lines = ['```plate'];
 	if (title.trim()) lines.push(`title: ${title.trim()}`);
 	lines.push(`image: ${url}`);
@@ -76,7 +76,7 @@ function buildPlateBlock(url: string, labels: IllustrationLabel[], title = ''): 
  */
 const HEADING_RE = /^#{2,4}\s/;
 
-function splicePlatesAtSections(content: string, items: { section: string; block: string }[]): string {
+export function splicePlatesAtSections(content: string, items: { section: string; block: string }[]): string {
 	if (!items.length) return content;
 
 	const lines = content.split('\n');
@@ -970,8 +970,13 @@ class GenerationRunner {
 		const density = book.visualDensity ?? 'standard';
 		const RICH_PLATE_CAP = 2;
 		let extraPlatesAdded = 0;
+		// The planner's approved sections, stored on the chapter so the reader can
+		// offer a manual "add illustration" button on any approved section that the
+		// tier did not auto-fill. Runs for EVERY tier — 'standard' auto-generates
+		// none but still records where a plate could go.
+		let plateSuggestions: { section: string; subject: string }[] = [];
 
-		if (illustUrl && (density === 'rich' || density === 'maximum')) {
+		if (illustUrl) {
 			try {
 				const plan = await planChapterPlates(
 					book,
@@ -988,37 +993,49 @@ class GenerationRunner {
 					useMock
 				);
 				if (plan.usage) globalState.addBookUsage(bookId, { claude: plan.usage });
+				plateSuggestions = plan.plates;
 
-				// 'rich' fills only the strongest spots; 'maximum' fills them all.
-				const chosen = density === 'rich' ? plan.plates.slice(0, RICH_PLATE_CAP) : plan.plates;
+				// 'standard' records the suggestions but auto-generates none; 'rich'
+				// fills the strongest few; 'maximum' fills every approved section.
+				const chosen = density === 'standard' ? []
+					: density === 'rich' ? plan.plates.slice(0, RICH_PLATE_CAP)
+					: plan.plates;
 
 				const items: { section: string; block: string }[] = [];
 				for (const spec of chosen) {
 					const subject = spec?.subject?.trim();
 					const section = spec?.section?.trim();
 					if (!subject || !section) continue;
-					try {
-						const extra = await createIllustration(
-							book,
-							{
-								chapterTitle:   chap.title,
-								chapterOrder:   chap.order,
-								chapterSummary: chap.summary,
-								chapterContent: finalContent,
-								researchNotes:  factsSummary,
-								// The plan chose this subject; mandate it so the
-								// art-director depicts exactly that, not its own pick.
-								authorNote:     `Depict this specific subject from the chapter, and nothing else: ${subject}.`
-							},
-							keys,
-							useMock
-						);
-						extra.claudeUsage.forEach(u => globalState.addBookUsage(bookId, { claude: u }));
-						if (extra.imageBilled) globalState.addBookUsage(bookId, { images: 1 });
-						// Title the plate with its section heading — it becomes the
-						// plate's header bar, replacing the standalone heading.
-						if (extra.url) items.push({ section, block: buildPlateBlock(extra.url, extra.labels, section) });
-					} catch { /* non-fatal — one fewer plate */ }
+
+					const brief = {
+						chapterTitle:   chap.title,
+						chapterOrder:   chap.order,
+						chapterSummary: chap.summary,
+						chapterContent: finalContent,
+						researchNotes:  factsSummary,
+						// The plan chose this subject; mandate it so the art-director
+						// depicts exactly that, not its own pick.
+						authorNote:     `Depict this specific subject from the chapter, and nothing else: ${subject}.`
+					};
+
+					// A plate is one image plus two Claude calls, and a transient
+					// failure in any of them would drop this section's photo entirely.
+					// The plan already judged this section worth illustrating, so try
+					// twice before giving up rather than skipping it on a one-off hiccup.
+					let placed = false;
+					for (let attempt = 1; attempt <= 2 && !placed; attempt++) {
+						try {
+							const extra = await createIllustration(book, brief, keys, useMock);
+							extra.claudeUsage.forEach(u => globalState.addBookUsage(bookId, { claude: u }));
+							if (extra.imageBilled) globalState.addBookUsage(bookId, { images: 1 });
+							// Title the plate with its section heading — it becomes the
+							// plate's header bar, replacing the standalone heading.
+							if (extra.url) {
+								items.push({ section, block: buildPlateBlock(extra.url, extra.labels, section) });
+								placed = true;
+							}
+						} catch { /* retry once, then leave this one section unillustrated */ }
+					}
 				}
 				finalContent = splicePlatesAtSections(finalContent, items);
 				extraPlatesAdded = items.length;
@@ -1041,6 +1058,7 @@ class GenerationRunner {
 		final[chapIndex].researchNotes      = factsSummary;
 		final[chapIndex].illustrationUrl    = illustUrl;
 		final[chapIndex].illustrationLabels = illustLabels;
+			final[chapIndex].plateSuggestions   = plateSuggestions;
 		final[chapIndex].status             = 'completed';
 		globalState.updateBookChapters(bookId, final);
 

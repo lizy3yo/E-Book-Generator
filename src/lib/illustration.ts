@@ -226,10 +226,10 @@ export async function planChapterPlates(
 	useMock: boolean
 ): Promise<{ plates: PlannedPlate[]; usage: CallUsage | null }> {
 	// Mock mode has no Claude judgement to spend, so approximate the plan from
-	// the chapter's own section headings — enough to lay out and preview a
-	// maximum-density chapter without a real call.
+	// the chapter's own section headings (any depth — form books head units with
+	// '###') — enough to lay out and preview a maximum-density chapter for free.
 	if (useMock) {
-		const headings = (brief.chapterContent ?? '').match(/^## .+/gm) ?? [];
+		const headings = (brief.chapterContent ?? '').match(/^#{2,4} .+/gm) ?? [];
 		const plates = headings.slice(1).map((h) => {
 			const section = h.replace(/^#+\s*/, '').trim();
 			return { section, subject: `Mock plate for “${section}”` };
@@ -237,32 +237,50 @@ export async function planChapterPlates(
 		return { plates, usage: null };
 	}
 
-	try {
-		const res = await fetch('/api/write', {
-			method:  'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				action:         'plan-chapter-plates',
-				apiKey:         keys.anthropicKey,
-				useMockMode:    useMock,
-				bookTitle:      book.title,
-				genre:          book.genre,
-				chapterTitle:   brief.chapterTitle,
-				chapterOrder:   brief.chapterOrder,
-				chapterContent: brief.chapterContent,
-				researchNotes:  brief.researchNotes,
-				// Carried in the authorNote slot the server reads for this action.
-				authorNote:     alreadyDepicted
-			})
-		});
-		const data = await res.json();
-		return {
-			plates: data.success && Array.isArray(data.plates) ? (data.plates as PlannedPlate[]) : [],
-			usage: data.usage ?? null
-		};
-	} catch {
-		return { plates: [], usage: null };
+	const body = JSON.stringify({
+		action:         'plan-chapter-plates',
+		apiKey:         keys.anthropicKey,
+		useMockMode:    useMock,
+		bookTitle:      book.title,
+		genre:          book.genre,
+		chapterTitle:   brief.chapterTitle,
+		chapterOrder:   brief.chapterOrder,
+		chapterContent: brief.chapterContent,
+		researchNotes:  brief.researchNotes,
+		// Carried in the authorNote slot the server reads for this action.
+		authorNote:     alreadyDepicted
+	});
+
+	// The plan is a single call that decides EVERY plate in the chapter, so one
+	// transient failure — an overloaded model, a timeout, a 5xx — would silently
+	// cost the whole chapter its plates, with no sign beyond "0 added". That is
+	// exactly what left a regenerated chapter with none. So retry a real failure a
+	// few times; a GENUINE empty plan (success + []) is a valid answer and returns
+	// at once without retrying.
+	const MAX_ATTEMPTS = 3;
+	for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+		try {
+			const res = await fetch('/api/write', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body
+			});
+			if (res.ok) {
+				const data = await res.json();
+				if (data.success && Array.isArray(data.plates)) {
+					return { plates: data.plates as PlannedPlate[], usage: data.usage ?? null };
+				}
+			}
+			// A non-OK response or success:false is a failure worth retrying.
+		} catch {
+			// Network error — retry.
+		}
+		// Brief backoff before retrying, so a momentarily overloaded model has a
+		// chance to recover rather than being hit again instantly.
+		if (attempt < MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, 800 * attempt));
 	}
+
+	return { plates: [], usage: null };
 }
 
 /**

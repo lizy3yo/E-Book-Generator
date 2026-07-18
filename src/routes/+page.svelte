@@ -12,6 +12,8 @@
 	import BookCostDialog from '$lib/components/BookCostDialog.svelte';
 	import { claudeCallCost, estimatedImageCount, imageUnitCost, ESTIMATED_COST_PER_SEARCH } from '$lib/pricing';
 	import { generationRunner } from '$lib/generationRunner.svelte';
+	// TEMP debug hook — remove after redoing chapters 3 and 4.
+	if (typeof window !== 'undefined') { (window as any).__runner = generationRunner; (window as any).__state = globalState; }
 	import { AI_CONCEPT_COUNT, hasCoverBrief } from '$lib/coverStyles';
 	import { fileToImagePayload } from '$lib/imageInput';
 	import { planForPages, clampPageCount, PAGE_PRESETS, MIN_PAGES, MAX_PAGES } from '$lib/bookPlan';

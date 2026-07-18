@@ -128,7 +128,10 @@ export function paginateChapters(
 			continue;
 		}
 		const rawBlocks = stripDuplicateChapterHeading(
-			splitHtmlIntoBlocks(parseMarkdown(chapter.content, chapter.id, bookMeta)),
+			// Per-chapter plate suggestions ride in alongside the shared book meta,
+			// so the add-illustration button lands only on this chapter's approved
+			// sections.
+			splitHtmlIntoBlocks(parseMarkdown(chapter.content, chapter.id, { ...bookMeta, plateSuggestions: chapter.plateSuggestions })),
 			chapter.title
 		);
 		// Minus the 24px block margin the loop below adds to every non-fullpage

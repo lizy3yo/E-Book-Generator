@@ -1127,6 +1127,16 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 		// belongs under the 60s ceiling rather than the 10-minute chapter timeout.
 		const isPlatePlan = action === 'plan-chapter-plates';
 
+		// The plate plan emits one small {section, subject} object per section, so
+		// its true size is set by how many sections the chapter has — not a fixed
+		// guess. Budget from that count (generously, ~200 tokens/section over a
+		// base) and cap it, so the plan can never truncate a large chapter yet
+		// never over-allocates for a small one. A 40-section chapter would still
+		// fit comfortably; a normal 6–12 section chapter uses a fraction of it.
+		const platePlanSections = isPlatePlan
+			? ((chapterContent as string | undefined)?.match(/^#{2,4}\s/gm)?.length ?? 0)
+			: 0;
+
 		// Size the output budget from the actual work, not a fixed guess. A
 		// verify pass echoes the whole chapter back after the report, so its
 		// budget has to scale with the draft it is given or long chapters get
@@ -1145,8 +1155,10 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 			action === 'read-cover-design' ? 600 :
 			/* labelling — at most 5 short labels with coordinates. */
 			action === 'place-illustration-labels' ? 1_500 :
-			/* plate plan — one short {section, subject} per illustrated section. */
-			isPlatePlan ? 1_500 :
+			/* plate plan — scales with the chapter's own section count (see
+			   platePlanSections above) so it fits any chapter and truncation is
+			   also salvaged gracefully below rather than throwing. */
+			isPlatePlan ? Math.min(8_000, 1_200 + platePlanSections * 200) :
 			/* distill — at most 8 short entries; the cap is deliberate, an
 			   overlong distillation is a bug, not a feature. */
 			action === 'distill-chapter' ? 1_500 :
@@ -1252,7 +1264,12 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 		// every response below so the client can accumulate a running book cost.
 		const usage = { model: requestModel, inputTokens: claudeUsage.inputTokens, outputTokens: claudeUsage.outputTokens };
 
-		if (stopReason === 'max_tokens') {
+		// A cut-off draft or verify pass is unusable and must fail loudly. The
+		// plate plan is the exception: its output is a list of independent
+		// objects, so a truncated response still carries every COMPLETE plate
+		// before the cut. Those are salvaged in its parser below rather than
+		// throwing away the whole (already-paid-for) call.
+		if (stopReason === 'max_tokens' && !isPlatePlan) {
 			throw new Error(
 				`Claude ran out of output room on "${chapterTitle || bookTitle}" (budget was ${maxTokens} tokens) and the result was cut off. Please retry — if this repeats, the chapter is too long to process in one pass and should be split.`
 			);
@@ -1394,23 +1411,32 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 				throw new Error('Claude did not return a valid illustration brief.');
 			}
 		} else if (action === 'plan-chapter-plates') {
-			// A failed plan is a non-event: the caller treats any failure as "no
-			// extra plates" and the chapter keeps its opener. So parse defensively
-			// and never let this be the thing that breaks a chapter.
+			// Salvage every COMPLETE plate object rather than parsing the array as a
+			// whole. Two things make this the robust choice: a response truncated
+			// mid-array (max_tokens) still carries every finished plate before the
+			// cut, and stray prose around the JSON no longer defeats the parse. The
+			// plate objects are flat, so a brace-to-brace match finds each one; a
+			// partial trailing object has no closing brace and is simply skipped.
+			// A failed plan is a non-event anyway — the chapter keeps its opener —
+			// so this never throws.
 			try {
-				const start = responseText.indexOf('[');
-				const end   = responseText.lastIndexOf(']');
-				if (start === -1 || end <= start) throw new Error('no JSON array in response');
-
-				const raw = JSON.parse(responseText.substring(start, end + 1));
-				const plates = (Array.isArray(raw) ? raw : [])
-					.filter((p: any) => p && typeof p.section === 'string' && p.section.trim() &&
-						typeof p.subject === 'string' && p.subject.trim())
-					.map((p: any) => ({
-						section: String(p.section).replace(/^#+\s*/, '').trim(),
-						subject: String(p.subject).trim()
-					}));
-
+				const plates: { section: string; subject: string }[] = [];
+				const seen = new Set<string>();
+				const objRe = /\{[^{}]*\}/g;
+				let m: RegExpExecArray | null;
+				while ((m = objRe.exec(responseText)) !== null) {
+					let p: any;
+					try { p = JSON.parse(m[0]); } catch { continue; }
+					if (!p || typeof p.section !== 'string' || !p.section.trim() ||
+						typeof p.subject !== 'string' || !p.subject.trim()) continue;
+					const section = String(p.section).replace(/^#+\s*/, '').trim();
+					// One plate per section — drop duplicates a retry or a rambling
+					// response may have produced.
+					const key = section.toLowerCase();
+					if (seen.has(key)) continue;
+					seen.add(key);
+					plates.push({ section, subject: String(p.subject).trim() });
+				}
 				return json({ success: true, plates, usage, source: 'live' });
 			} catch (parseError) {
 				console.error('Failed to parse plate plan JSON:', responseText);

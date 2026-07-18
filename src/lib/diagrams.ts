@@ -37,6 +37,13 @@ export interface BookMeta {
 	amberColor?: string;
 	/** Pale, cover-derived tint for a node/card's fill. Falls back to DIAGRAM_CARD (white). */
 	cardColor?: string;
+	/**
+	 * Sections the plate planner approved for an illustration. When present, a
+	 * section heading whose text matches one of these gets a manual "add
+	 * illustration" button injected after it — the reader's on-demand override.
+	 * The export path passes none, so exported pages carry no such buttons.
+	 */
+	plateSuggestions?: { section: string; subject: string }[];
 }
 
 /**
@@ -685,6 +692,25 @@ function normaliseStoredImagePlate(html: string, chapterId: string, bookMeta: Bo
 const PLATE_EDIT_ICON =
 	'<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pen-line"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>';
 
+/** Small "image + plus" mark for the manual add-illustration button. */
+const ADD_ILLUST_ICON =
+	'<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10"></path><path d="m3 16 5-5c.9-.9 2.1-.9 3 0l4 4"></path><circle cx="9" cy="9" r="1.5"></circle><path d="M19 16v6"></path><path d="M16 19h6"></path></svg>';
+
+/**
+ * Normalise a heading (or a planner section string) for matching: drop any
+ * leading '#'s, decode the one entity headings realistically carry (&amp;),
+ * collapse whitespace, and lowercase. Both sides run through this so a heading
+ * rendered from markdown matches the raw section the planner returned.
+ */
+function normaliseHeading(s: string): string {
+	return String(s)
+		.replace(/^#+\s*/, '')
+		.replace(/&amp;/g, '&')
+		.replace(/\s+/g, ' ')
+		.trim()
+		.toLowerCase();
+}
+
 /**
  * The image of a plate, plus its callout labels.
  *
@@ -937,10 +963,31 @@ export function parseMarkdown(md: string, chapterId: string = '', bookMeta: Book
 		.replace(/>/g, '&gt;');
 
 	// ── Step 3: standard markdown → HTML conversion ─────────────────────
-	// Headings (descending so #### is matched before ###)
+	// A section heading the planner approved for a plate — but that has not been
+	// illustrated (it is still a heading, not a plate) — carries a manual "add
+	// illustration" button. Matched by normalised heading text; the raw section
+	// and its planned subject ride in data-attributes for the reader's handler.
+	const suggestMap = new Map<string, { section: string; subject: string }>();
+	for (const s of bookMeta.plateSuggestions ?? []) {
+		if (s?.section?.trim() && s?.subject?.trim()) {
+			suggestMap.set(normaliseHeading(s.section), { section: s.section, subject: s.subject });
+		}
+	}
+	const suggestionButton = (headingText: string): string => {
+		if (!suggestMap.size) return '';
+		const hit = suggestMap.get(normaliseHeading(headingText));
+		if (!hit) return '';
+		return `<div class="add-illust-row"><button class="add-illust-trigger" data-chapter-id="${chapterId}" ` +
+			`data-section="${encodeURIComponent(hit.section)}" data-subject="${encodeURIComponent(hit.subject)}" ` +
+			`title="Add an illustration to this section" aria-label="Add an illustration to this section">` +
+			`${ADD_ILLUST_ICON} Add illustration</button></div>`;
+	};
+
+	// Headings (descending so #### is matched before ###). Section heads (##/###)
+	// may carry the add-illustration button; #/#### never do.
 	html = html.replace(/^#### (.*?)$/gm, '<h4>$1</h4>');
-	html = html.replace(/^### (.*?)$/gm, '<h3>$1</h3>');
-	html = html.replace(/^## (.*?)$/gm, '<h2>$1</h2>');
+	html = html.replace(/^### (.*?)$/gm, (_m, t) => `<h3>${t}</h3>${suggestionButton(t)}`);
+	html = html.replace(/^## (.*?)$/gm, (_m, t) => `<h2>${t}</h2>${suggestionButton(t)}`);
 	html = html.replace(/^# (.*?)$/gm, '<h1>$1</h1>');
 	html = html.replace(/^\> (.*?)$/gm, '<blockquote>$1</blockquote>');
 	html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');

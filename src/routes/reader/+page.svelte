@@ -5,6 +5,8 @@
 	import { INTERIOR_PRESETS } from '$lib/interiorDesigns';
 	import { samplePalette, tintWithWhite } from '$lib/coverPalette';
 	import { deconflictLabels } from '$lib/illustrationLayout';
+	import { createIllustration } from '$lib/illustration';
+	import { buildPlateBlock, splicePlatesAtSections } from '$lib/generationRunner.svelte';
 	import {
 		BookMarked, FileDown,
 		Image as ImageIcon, PenLine, BookOpen,
@@ -93,8 +95,75 @@
 		return getChapterLabel(chap, idx, activeBook?.chapters ?? []);
 	}
 
+	/**
+	 * Add an illustration to a planner-approved section on demand.
+	 *
+	 * The button carries the raw section heading and the subject the planner chose
+	 * for it. This generates that plate exactly as the auto-pipeline would — one
+	 * image, art-directed to the mandated subject, titled with the heading — then
+	 * splices it in place of the heading and repaginates. Reuses the runner's own
+	 * buildPlateBlock / splicePlatesAtSections so a hand-added plate is byte-for-
+	 * byte the same shape as an auto-generated one.
+	 */
+	async function handleAddIllustration(btn: HTMLElement) {
+		if (btn.classList.contains('is-loading')) return; // guard a double click
+		const chapId  = btn.dataset.chapterId ?? '';
+		const section = decodeURIComponent(btn.dataset.section ?? '');
+		const subject = decodeURIComponent(btn.dataset.subject ?? '');
+		const book = activeBook;
+		const chap = book?.chapters.find((c) => c.id === chapId);
+		if (!book || !chap || !section || !subject) return;
+
+		const original = btn.innerHTML;
+		btn.classList.add('is-loading');
+		btn.innerHTML = 'Generating illustration…';
+
+		try {
+			const keys = globalState.apiKeys;
+			const made = await createIllustration(
+				book,
+				{
+					chapterTitle:   chap.title,
+					chapterOrder:   chap.order,
+					chapterSummary: chap.summary,
+					chapterContent: chap.content,
+					researchNotes:  chap.researchNotes,
+					authorNote:     `Depict this specific subject from the chapter, and nothing else: ${subject}.`
+				},
+				keys,
+				keys.useMockMode
+			);
+			made.claudeUsage.forEach((u) => globalState.addBookUsage(book.id, { claude: u }));
+			if (made.imageBilled) globalState.addBookUsage(book.id, { images: 1 });
+			if (!made.url) throw new Error('image generation returned no url');
+
+			const block = buildPlateBlock(made.url, made.labels, section);
+			const newContent = splicePlatesAtSections(chap.content, [{ section, block }]);
+			const chapters = book.chapters.map((c) => (c.id === chapId ? { ...c, content: newContent } : c));
+			globalState.updateBookChapters(book.id, chapters);
+			// Repagination re-renders the chapter; the heading is now a plate, so its
+			// button is gone. No need to restore the button state.
+			paginateAllChapters();
+		} catch (err) {
+			console.error('Add illustration failed:', err);
+			btn.classList.remove('is-loading');
+			btn.classList.add('is-error');
+			btn.innerHTML = 'Could not generate — click to retry';
+			setTimeout(() => {
+				btn.classList.remove('is-error');
+				btn.innerHTML = original;
+			}, 3000);
+		}
+	}
+
 	/** Click-delegation handler for the reader scroll container */
 	function handleReaderClick(e: MouseEvent) {
+		const addBtn = (e.target as HTMLElement).closest('.add-illust-trigger') as HTMLElement | null;
+		if (addBtn) {
+			e.stopPropagation();
+			handleAddIllustration(addBtn);
+			return;
+		}
 		const btn = (e.target as HTMLElement).closest('.edit-trigger--diagram') as HTMLElement | null;
 		if (!btn) return;
 		e.stopPropagation();
@@ -2517,8 +2586,50 @@
 	}
 
 	/* Hide diagram edit triggers during print / PDF export */
+	/* ── Manual "add illustration" affordance ──────────────────────────────
+	   Shown under a section heading the planner approved but that has no plate
+	   yet. Quiet by default; it is an offer, not a demand. */
+	.chapter-body :global(.add-illust-row) {
+		margin: -0.5rem 0 1.25rem;
+		text-align: var(--chapter-alignment, left);
+	}
+	.chapter-body :global(.add-illust-trigger) {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		font-family: var(--font-sans);
+		font-size: 0.72rem;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+		color: var(--r-accent, var(--chapter-accent-color, #8E7453));
+		background: transparent;
+		border: 1px dashed color-mix(in srgb, var(--r-accent, #8E7453) 55%, transparent);
+		border-radius: 6px;
+		padding: 0.3rem 0.7rem;
+		cursor: pointer;
+		opacity: 0.75;
+		transition: opacity 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+	}
+	.chapter-body :global(.add-illust-trigger:hover) {
+		opacity: 1;
+		background: color-mix(in srgb, var(--r-accent, #8E7453) 8%, transparent);
+		border-color: var(--r-accent, #8E7453);
+	}
+	.chapter-body :global(.add-illust-trigger.is-loading) {
+		opacity: 0.85;
+		cursor: progress;
+		border-style: solid;
+		animation: add-illust-pulse 1.1s ease-in-out infinite;
+	}
+	.chapter-body :global(.add-illust-trigger.is-error) {
+		color: #b4482f;
+		border-color: #b4482f;
+	}
+	@keyframes add-illust-pulse { 0%,100% { opacity: 0.55; } 50% { opacity: 1; } }
+
 	@media print {
 		.chapter-body :global(.diagram-box__actions) { display: none !important; }
 		.chapter-body :global(.edit-trigger--diagram) { display: none !important; }
+		.chapter-body :global(.add-illust-row) { display: none !important; }
 	}
 </style>
