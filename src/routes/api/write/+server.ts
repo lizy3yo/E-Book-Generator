@@ -853,7 +853,7 @@ Art-direct the single interior plate for this chapter. Remember: no text of any 
 			// genuinely earns its place — and, just as importantly, where one would
 			// only be filler. The runner then commissions exactly the plates this
 			// returns, so the count follows the content instead of a quota.
-			systemPrompt = `You are the art director for a richly illustrated edition of a reference book. You are given one finished chapter, already broken into "## " sections. Your job is to decide which sections genuinely warrant a full-page photographic plate, and what each one should depict.
+			systemPrompt = `You are the art director for a richly illustrated edition of a reference book. You are given one finished chapter, already broken into sections by markdown headings ("##" or "###"). Your job is to decide which sections genuinely warrant a full-page photographic plate, and what each one should depict.
 
 Be generous — recommend a plate for every section that genuinely qualifies — but every plate must teach. Density is the goal; decoration is not. A lighter edition of this book may use only your top few recommendations, so order them by strength: the section where a plate teaches the reader the most goes first.
 
@@ -864,7 +864,7 @@ A section does NOT earn a plate when its meaning lives in words, numbers, or str
 Never propose a subject that would need text, labels, a chart, a graph, a diagram, or a screen to make sense — image models cannot spell, and anything of that kind is set elsewhere in real type. Choose only subjects that carry their meaning as a physical scene.
 
 For each section you DO recommend, return:
-- "section": the exact text of that section's "## " heading, copied verbatim (without the "## ").
+- "section": the exact text of that section's heading, copied verbatim (without the leading "##" or "###").
 - "subject": the one concrete, physical thing from THAT section to depict — specific enough to picture, drawn from what the section actually says.
 
 Rules:

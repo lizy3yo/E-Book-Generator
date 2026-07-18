@@ -40,47 +40,65 @@ import { mergeBible, bibleTokens } from './bookBible';
  *
  * The plate renderer ($lib/diagrams) sets the labels in real type over the
  * image and gives it a whole page — the same house figure format an authored
- * plate gets. No title line: like the chapter opener, these read as clean
- * full-page photographs rather than titled diagram plates.
+ * plate gets.
+ *
+ * When the plate opens a section, it carries that section's heading as its
+ * `title:` so the heading renders in the plate's own header bar, on the same
+ * page as the image, instead of being stranded on the page before it. A plate
+ * with no title (e.g. the rare leftover that matched no section) renders as a
+ * clean untitled full-page photograph.
  */
-function buildPlateBlock(url: string, labels: IllustrationLabel[]): string {
-	const lines = ['```plate', `image: ${url}`];
+function buildPlateBlock(url: string, labels: IllustrationLabel[], title = ''): string {
+	const lines = ['```plate'];
+	if (title.trim()) lines.push(`title: ${title.trim()}`);
+	lines.push(`image: ${url}`);
 	if (labels.length) lines.push(`callouts: ${JSON.stringify(labels)}`);
 	lines.push('```');
 	return lines.join('\n');
 }
 
 /**
- * Place each plate directly under the specific section it illustrates.
+ * Open each illustrated section with its plate, titled by the section heading.
  *
- * Used by the 'maximum' tier, where a planning pass has already tied every plate
- * to a named section — so unlike splicePlatesIntoContent (which just spreads
- * plates evenly), this drops each one at the top of the exact section it belongs
- * to, keeping picture and subject together. A plate whose section can no longer
- * be matched (the heading was edited or reworded) falls through to the end
- * rather than being lost.
+ * Used by the richer tiers, where a planning pass has already tied every plate
+ * to a named section. Each plate REPLACES that section's heading line: the plate
+ * carries the heading text as its own title bar (see buildPlateBlock), so the
+ * heading and the image render together on the plate's page. Inserting the plate
+ * *after* the heading instead stranded the heading alone on the previous page —
+ * a full-page plate cannot share a page with the heading above it — leaving a
+ * near-blank page before every figure.
+ *
+ * Sections are matched at any heading depth (`##`, `###`, `####`): a free-form
+ * chapter uses `##` section heads, but a form-format book (one built from a
+ * repeating unit) heads each unit with `###`. A plate whose section can no
+ * longer be matched (the heading was edited or reworded) falls through to the
+ * end rather than being lost, and keeps its own title so it still reads whole.
  */
+const HEADING_RE = /^#{2,4}\s/;
+
 function splicePlatesAtSections(content: string, items: { section: string; block: string }[]): string {
 	if (!items.length) return content;
 
 	const lines = content.split('\n');
 	const norm = (s: string) => s.replace(/^#+\s*/, '').replace(/\s+/g, ' ').trim().toLowerCase();
 
-	const inserts: { at: number; block: string }[] = [];
+	const replacements: { at: number; block: string }[] = [];
 	const leftover: string[] = [];
 	for (const { section, block } of items) {
 		const target = norm(section);
 		let at = -1;
 		for (let i = 0; i < lines.length; i++) {
-			if (lines[i].startsWith('## ') && norm(lines[i]) === target) { at = i + 1; break; }
+			if (HEADING_RE.test(lines[i]) && norm(lines[i]) === target) { at = i; break; }
 		}
 		if (at === -1) leftover.push(block);
-		else inserts.push({ at, block });
+		else replacements.push({ at, block });
 	}
 
-	// Splice from the bottom up so earlier line indices stay valid.
-	inserts.sort((a, b) => b.at - a.at);
-	for (const { at, block } of inserts) lines.splice(at, 0, '', block, '');
+	// Replace from the bottom up so earlier line indices stay valid. Each swaps
+	// the one heading line for the titled plate (wrapped in blank lines so the
+	// markdown parser treats it as its own block).
+	replacements.sort((a, b) => b.at - a.at);
+	for (const { at, block } of replacements) lines.splice(at, 1, '', block, '');
 
 	let out = lines.join('\n');
 	if (leftover.length) out += '\n\n' + leftover.join('\n\n');
@@ -951,6 +969,7 @@ class GenerationRunner {
 		// on.
 		const density = book.visualDensity ?? 'standard';
 		const RICH_PLATE_CAP = 2;
+		let extraPlatesAdded = 0;
 
 		if (illustUrl && (density === 'rich' || density === 'maximum')) {
 			try {
@@ -996,11 +1015,24 @@ class GenerationRunner {
 						);
 						extra.claudeUsage.forEach(u => globalState.addBookUsage(bookId, { claude: u }));
 						if (extra.imageBilled) globalState.addBookUsage(bookId, { images: 1 });
-						if (extra.url) items.push({ section, block: buildPlateBlock(extra.url, extra.labels) });
+						// Title the plate with its section heading — it becomes the
+						// plate's header bar, replacing the standalone heading.
+						if (extra.url) items.push({ section, block: buildPlateBlock(extra.url, extra.labels, section) });
 					} catch { /* non-fatal — one fewer plate */ }
 				}
 				finalContent = splicePlatesAtSections(finalContent, items);
+				extraPlatesAdded = items.length;
 			} catch { /* planning failed — the chapter keeps its opener */ }
+		}
+
+		// Surface what the density tier actually did, so "why only one image?" is
+		// answerable from the run log instead of a guess. Only the richer tiers
+		// add plates, so only they report — 'standard' has nothing to say here.
+		if (density !== 'standard') {
+			globalState.addLog(bookId, {
+				step: 'illustrate', status: 'success',
+				message: `Chapter ${chap.order}: visual density "${density}" added ${extraPlatesAdded} extra plate${extraPlatesAdded === 1 ? '' : 's'} (plus the opener).`
+			});
 		}
 
 		// Commit

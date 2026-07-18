@@ -4,6 +4,7 @@
 	import type { Chapter } from '$lib/types';
 	import { INTERIOR_PRESETS } from '$lib/interiorDesigns';
 	import { samplePalette, tintWithWhite } from '$lib/coverPalette';
+	import { deconflictLabels } from '$lib/illustrationLayout';
 	import {
 		BookMarked, FileDown,
 		Image as ImageIcon, PenLine, BookOpen,
@@ -532,23 +533,6 @@
 		return '❦';
 	});
 
-	let ruleWidth = $derived(
-		coverSettings?.alignment === 'center' ? '60px' :
-		coverSettings?.alignment === 'right' ? '120px' : '100%'
-	);
-	let ruleMarginLeft = $derived(
-		coverSettings?.alignment === 'center' ? 'auto' :
-		coverSettings?.alignment === 'right' ? 'auto' : '0'
-	);
-	let ruleMarginRight = $derived(
-		coverSettings?.alignment === 'center' ? 'auto' :
-		coverSettings?.alignment === 'right' ? '0' : 'auto'
-	);
-	let headerFlexAlign = $derived(
-		coverSettings?.alignment === 'center' ? 'center' :
-		coverSettings?.alignment === 'right' ? 'flex-end' : 'flex-start'
-	);
-
 	let designStyles = $derived.by(() => {
 		const base = [
 			`--design-key: ${designKey}`,
@@ -557,12 +541,28 @@
 			`--chapter-accent-color: ${designAccentColor}`,
 			`--chapter-title-color: ${designTitleColor}`,
 			`--chapter-subtitle-color: ${designSubtitleColor}`,
-			`--chapter-alignment: ${coverSettings?.alignment || 'left'}`,
-			`--chapter-rule-width: ${ruleWidth}`,
-			`--chapter-rule-margin-left: ${ruleMarginLeft}`,
-			`--chapter-rule-margin-right: ${ruleMarginRight}`,
-			`--header-flex-align: ${headerFlexAlign}`,
-			`--r-diagram-bg: ${designDiagramFieldColor}`
+			// LEFT by default, and independent of the cover. A centred cover is a
+			// cover-layout choice; letting it drive the interior produced a centred
+			// chapter title even under a left-aligned page style. Left-set openers
+			// are the house standard for practical non-fiction, and a preset that
+			// genuinely wants a centred opener still overrides `--chapter-alignment`
+			// via its own tokens (appended after this base). Cover-adaptation only
+			// recolours — it never sets alignment — so it can no longer pull the
+			// opener off-left.
+			`--chapter-alignment: left`,
+			`--chapter-rule-width: 100%`,
+			`--chapter-rule-margin-left: 0`,
+			`--chapter-rule-margin-right: auto`,
+			`--header-flex-align: flex-start`,
+			`--r-diagram-bg: ${designDiagramFieldColor}`,
+			// Plate / diagram header bar and its accent rule, from the cover.
+			// The CSS reads these two vars (falling back to a hardcoded navy/gold)
+			// but nothing set them, so every plate header came out the default navy
+			// and gold regardless of the cover. Feed them the same cover-derived
+			// primary and accent the diagram SVG bodies already use, so the header
+			// bar (primary) and its rule and accents (accent) follow the cover too.
+			`--r-diagram-header-bg: ${designTitleColor}`,
+			`--r-accent: ${designAccentColor}`
 		];
 
 		if (activeBook?.interiorDesign) {
@@ -982,7 +982,7 @@
 										     when their containing block IS the rendered image box. -->
 										<div class="illust-frame">
 											<img src={chap.illustrationUrl} alt="Illustration – {chap.title}" />
-											{#each chap.illustrationLabels ?? [] as label}
+											{#each deconflictLabels(chap.illustrationLabels ?? []) as label}
 												<div
 													class="illust-callout illust-callout--{label.side}"
 													style="left: {label.x}%; top: {label.y}%;"

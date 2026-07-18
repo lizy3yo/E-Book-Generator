@@ -6,6 +6,8 @@
  * Supports rendering 45+ industry-standard diagram types (Pie, Bar, SWOT, Flowcharts, Hierarchies, Blueprints, Venns, and more).
  */
 
+import { deconflictLabels } from './illustrationLayout';
+
 /**
  * Editorial diagram palette — the house style for every rendered diagram.
  *
@@ -722,7 +724,8 @@ function renderPlateImage(image: string, title: string, calloutsRaw: unknown): s
 
 	if (!valid.length) return img;
 
-	const marks = valid
+	// Spread anchors vertically so boxes for clustered features don't stack.
+	const marks = deconflictLabels(valid.map(c => ({ ...c, x: Number(c.x), y: Number(c.y) })))
 		.map(c =>
 			`<span class="illust-callout illust-callout--${c.side === 'left' ? 'left' : 'right'}" ` +
 			`style="left:${Number(c.x)}%;top:${Number(c.y)}%;">` +

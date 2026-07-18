@@ -1,4 +1,5 @@
 import { parseMarkdown } from '$lib/diagrams';
+import { deconflictLabels } from '$lib/illustrationLayout';
 import type { Book } from '$lib/types';
 import { stripDuplicateChapterHeading, splitOversizedLists, splitOversizedTables } from './utils';
 import { tintWithWhite } from '$lib/coverPalette';
@@ -82,6 +83,13 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 		const accent        = cs.authorColor  || '#8E7453';
 		const titleColor    = cs.titleColor   || '#1A1612';
 		const alignment     = cs.alignment    || 'left';
+
+		// The plate / diagram header bar and its ink — the reader colours these
+		// from the cover (its primary for the dark bar, its accent for the rule
+		// and callouts); the export used to hardcode the house navy and gold, so
+		// exported plates ignored the cover. Match the reader: primary drives the
+		// dark elements, `diagramAccent` (below) the accent ones.
+		const headerNavy = activeBook.coverDesign?.primary || titleColor;
 
 		// A diagram's field/card colours read as a pale, neutral surface — using
 		// the accent at full saturation for a whole field would fight the
@@ -307,8 +315,8 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 					overflow: hidden;
 				}
 				.pdf-measurer-container .diagram-box__header {
-					background-color: #0F2231;
-					border-bottom: 5px solid #E07B20;
+					background-color: ${headerNavy};
+					border-bottom: 5px solid ${diagramAccent};
 					padding: 0.9rem 1.25rem;
 					text-align: left;
 				}
@@ -475,7 +483,7 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 				// full-width centred `.illustration` block. They are built only when
 				// `mappedIllust` is non-empty: if the image was dropped, its labels
 				// must go with it — a floating callout points at nothing.
-				const calloutHtml = (c.illustrationLabels ?? [])
+				const calloutHtml = deconflictLabels(c.illustrationLabels ?? [])
 					.map(l =>
 						`<div class="illust-callout illust-callout--${l.side === 'left' ? 'left' : 'right'}" ` +
 						`style="left:${l.x}%;top:${l.y}%;">` +
@@ -785,16 +793,16 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 	.illust-callout--left  { flex-direction: row-reverse; transform: translate(-100%, -50%); }
 	.illust-callout__dot {
 		width: 5pt; height: 5pt; border-radius: 50%;
-		background: #E07B20; border: 1pt solid #fff; flex-shrink: 0;
+		background: ${diagramAccent}; border: 1pt solid #fff; flex-shrink: 0;
 	}
-	.illust-callout__line { width: 18pt; height: 1pt; background: #E07B20; flex-shrink: 0; }
+	.illust-callout__line { width: 18pt; height: 1pt; background: ${diagramAccent}; flex-shrink: 0; }
 	.illust-callout__text {
 		font-family: Helvetica, Arial, sans-serif;
 		font-size: 6.5pt;
 		font-weight: 700;
-		color: #0F2231;
+		color: ${headerNavy};
 		background: rgba(255,255,255,0.96);
-		border: 1pt solid #0F2231;
+		border: 1pt solid ${headerNavy};
 		border-radius: 2pt;
 		padding: 1.5pt 3pt;
 		white-space: nowrap;
@@ -869,7 +877,7 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 	   the reader can set those per-image. */
 	.diagram-box--image figure img,
 	.diagram-box--plate figure img {
-		border: 2px solid #0F2231;
+		border: 2px solid ${headerNavy};
 		border-radius: 8px;
 		box-shadow: 0 2px 8px rgba(15, 34, 49, 0.14);
 		box-sizing: border-box;
@@ -882,7 +890,7 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 		padding: 8pt 10pt;
 		background-color: #FFFFFF;
 		border: 1px solid rgba(15, 34, 49, 0.15);
-		border-left: 4px solid #E07B20;
+		border-left: 4px solid ${diagramAccent};
 		border-radius: 5px;
 		text-align: left;
 	}
@@ -890,7 +898,7 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 		font-family: ${titleFontCss};
 		font-size: 10pt;
 		font-weight: 700;
-		color: #0F2231;
+		color: ${headerNavy};
 		margin-bottom: 2pt;
 	}
 	.plate-takeaway__body {
@@ -1074,8 +1082,8 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 		overflow: hidden;
 	}
 	.diagram-box__header {
-		background-color: #0F2231;
-		border-bottom: 5px solid #E07B20;
+		background-color: ${headerNavy};
+		border-bottom: 5px solid ${diagramAccent};
 		padding: 0.9rem 1.25rem;
 		text-align: left;
 	}
@@ -1118,7 +1126,7 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 	}
 	.diagram-box__footer-author {
 		font-family: ${titleFontCss};
-		color: #E07B20;
+		color: ${diagramAccent};
 		white-space: nowrap;
 	}
 	/* Scales a tall diagram down to fit its page instead of clipping it.
