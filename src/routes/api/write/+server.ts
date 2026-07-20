@@ -1659,9 +1659,22 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 };
 
 // ── Output budgeting ──────────────────────────────────────────────────────
-// Claude Sonnet 5 and Opus 4.8 both cap output at 128k tokens. We stay under
-// that so a single runaway request can never stall the whole book.
-const MODEL_OUTPUT_CAP = 64_000;
+// Claude Sonnet 5 and Opus 4.8 both cap output at 128k tokens — the true
+// per-response maximum. We size to that ceiling so a chapter is never cut off
+// mid-sentence. max_tokens is only a limit, not a target: the model stops at
+// end_turn once the chapter is complete and is billed only for what it emits,
+// so a high ceiling costs nothing extra on a normal chapter — it just removes
+// the truncation failure. Large max_tokens requires streaming (which every
+// chapter write already uses).
+const MODEL_OUTPUT_CAP = 128_000;
+
+// The highest ceiling a NON-streamed request can safely use. Anthropic requires
+// streaming once max_tokens grows past the point where a single buffered
+// response could exceed the request timeout, so the small JSON actions (outline,
+// distill, plate plan, cover design) — which are not streamed — must stay under
+// this. ~16k tokens is far more than any of them emits, so it removes any
+// truncation risk without tripping the streaming requirement.
+const NONSTREAM_OUTPUT_CAP = 16_000;
 
 /** Rough token estimate for English markdown prose (~3.5 chars per token). */
 /** The image types the Messages API accepts. SVG is not among them — which is
@@ -1736,16 +1749,22 @@ function budgetForOutline(chapterCount: number): number {
 	// A 30-chapter book therefore needs ~4.5k just for the array, which the
 	// old fixed 4k ceiling would have truncated mid-entry.
 	const needed = chapterCount * 160 + 800; // + framing/overhead
-	return Math.min(Math.max(needed, 1_500), MODEL_OUTPUT_CAP);
+	// Outline is a NON-streamed JSON call, so it clamps to the non-streaming
+	// ceiling rather than the full model cap — a very large book can't push it
+	// past the point where Anthropic would require streaming.
+	return Math.min(Math.max(needed, 1_500), NONSTREAM_OUTPUT_CAP);
 }
 
-function budgetForWrite(wordsPerChapter: number): number {
-	// ~1.4 tokens/word, plus generous headroom so a chapter that runs long is
-	// never cut mid-sentence. Sized from the chapter's own target rather than
-	// the book's total: the output cap is per-response, so what matters is how
-	// much THIS chapter has to emit.
-	const target = Math.ceil(wordsPerChapter * 1.4 * 1.6);
-	return Math.min(Math.max(target, 8_000), MODEL_OUTPUT_CAP);
+function budgetForWrite(_wordsPerChapter: number): number {
+	// Always give a chapter the model's full output ceiling. A per-word
+	// estimate (1.4 tokens/word × headroom) looked reasonable but truncated any
+	// chapter whose real output runs denser than prose — a "Master Shopping
+	// List by Budget", a step table, a big checklist — because those emit far
+	// more tokens per word than the estimate assumes. Since max_tokens is a
+	// ceiling and not a target (the model stops at end_turn and bills only for
+	// what it writes), handing every chapter the maximum removes the truncation
+	// failure at no extra cost on chapters that finish early.
+	return MODEL_OUTPUT_CAP;
 }
 
 /**

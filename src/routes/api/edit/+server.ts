@@ -416,7 +416,14 @@ COVER SETTINGS: ${JSON.stringify(coverSettings || {})}`;
 			},
 			body: JSON.stringify({
 				model: selectedModel,
-				max_tokens: (action === 'reconstruct-chapter') ? 8000 : (action === 'edit-chapter') ? 6000 : 2000,
+				// Size the output ceiling to what each action emits. The two
+				// full-chapter actions get the highest budget a NON-streamed
+				// request can safely use (~16k tokens ≈ 11k words) so a long or
+				// dense chapter is never cut off mid-sentence — larger than any
+				// single chapter, yet under the point where Anthropic requires
+				// streaming. add-page writes one page; the rest return a short
+				// HTML element or a small design/JSON object.
+				max_tokens: (action === 'reconstruct-chapter' || action === 'edit-chapter') ? 16000 : (action === 'add-page') ? 4000 : 2000,
 				system: systemPrompt,
 				messages: [{ role: 'user', content: userPrompt }]
 			})

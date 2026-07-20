@@ -82,7 +82,12 @@ Do not include any markdown formatting, code block markers (like \`\`\`json), or
 						},
 						body: JSON.stringify({
 							model: model,
-							max_tokens: 1500,
+							// Headroom so the fabricated JSON array is never cut off
+							// mid-object — a truncated response fails JSON.parse and
+							// silently degrades to the generic programmatic mock. This
+							// is a small non-streamed JSON call, so it stays well under
+							// the point where Anthropic would require streaming.
+							max_tokens: 4000,
 							system: systemPrompt,
 							messages: [
 								{ role: 'user', content: userPrompt }
@@ -167,7 +172,10 @@ Do not include any markdown formatting, code block markers (like \`\`\`json), or
 				useAutoprompt: true,
 				numResults: 5,
 				type: 'neural',
-				contents: { text: { maxCharacters: 800 } }
+				// Fetch the same amount of source text we keep below (~1200 chars)
+				// so richer grounding reaches the chapter writer without fetching
+				// more than we use.
+				contents: { text: { maxCharacters: 1200 } }
 			})
 		});
 	} finally {
@@ -185,7 +193,7 @@ Do not include any markdown formatting, code block markers (like \`\`\`json), or
 			title: item.title || 'Untitled Source',
 			url: item.url || '#',
 			snippet: (item.text || item.extract || item.summary || '')
-				? (item.text || item.extract || item.summary).substring(0, 400)
+				? (item.text || item.extract || item.summary).substring(0, 1200)
 				: 'No snippet available.'
 		}));
 
