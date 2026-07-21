@@ -3,6 +3,7 @@ import { deconflictLabels } from '$lib/illustrationLayout';
 import type { Book } from '$lib/types';
 import { stripDuplicateChapterHeading, splitOversizedLists, splitOversizedTables } from './utils';
 import { tintWithWhite } from '$lib/coverPalette';
+import { paginateChapters } from './pagination';
 
 /**
  * Escape text destined for the export's HTML.
@@ -58,7 +59,7 @@ export async function getAsDataUrl(url: string): Promise<string> {
 }
 
 // ── Build HTML for export (self-contained — does not depend on $state pagination) ──
-export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:string;order:number}, idx:number) => string, dataUrls: Record<string,string> = {}): string {
+export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:string;order:number}, idx:number) => string, dataUrls: Record<string,string> = {}, fontSizePx = 16): string {
 		if (!activeBook) return '';
 		const cs = activeBook.coverSettings;
 
@@ -192,250 +193,18 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 			let chapHtml = '';
 			let pageCounter = 1;
 
-			// Inject the ebook styles into the parent document temporarily during pagination
-			const styleEl = document.createElement('style');
-			styleEl.id = 'pdf-measurer-styles';
-			styleEl.innerHTML = `
-				.pdf-measurer-container {
-					font-family: ${activeBook.interiorDesign?.['--r-body-font'] ?? bodyFontCss};
-					font-size: 12pt;
-					line-height: 1.85;
-					color: #1A1612;
-				}
-				.pdf-measurer-container p { margin: 0 0 10pt; text-indent: 1.4em; }
-				.pdf-measurer-container p:first-of-type { text-indent: 0; }
-				.pdf-measurer-container h2 { font-size: 15pt; font-weight: 600; margin: 18pt 0 8pt; font-family: ${titleFontCss}; }
-				.pdf-measurer-container h3 { font-size: 12pt; font-weight: 600; margin: 14pt 0 6pt; font-family: ${titleFontCss}; }
-				.pdf-measurer-container blockquote {
-					border-left: ${activeBook.interiorDesign?.['--r-blockquote-border'] ?? `3pt solid ${accent}`};
-					background: ${activeBook.interiorDesign?.['--r-blockquote-bg'] ?? 'transparent'};
-					margin: 14pt 0;
-					padding: ${activeBook.interiorDesign?.['--r-blockquote-padding'] ?? '0 0 0 14pt'};
-					border-radius: ${activeBook.interiorDesign?.['--r-blockquote-border-radius'] ?? '0'};
-					font-style: italic;
-					color: ${activeBook.interiorDesign?.['--r-blockquote-color'] ?? '#6A6055'};
-				}
-				.pdf-measurer-container ul, .pdf-measurer-container ol { margin: 10pt 0; padding-left: 20pt; }
-				.pdf-measurer-container li { margin-bottom: 5pt; }
-
-				.pdf-measurer-container table {
-					width: 100%;
-					/* Must match the exported document's table-layout: fixed — a
-					   measurement taken under auto layout wraps less and comes out
-					   shorter than the fixed layout the PDF actually renders, which
-					   under-reserves page space and clips the extra rows it grows. */
-					table-layout: fixed;
-					border-collapse: collapse;
-					margin: 2rem 0;
-					font-size: 0.95rem;
-					text-align: left;
-					line-height: 1.5;
-				}
-				.pdf-measurer-container th {
-					background-color: ${activeBook.interiorDesign?.['--r-table-header-bg'] ?? '#0F172A'};
-					color: #ffffff;
-					font-weight: 600;
-					padding: 0.75rem 1rem;
-					border: 1px solid ${activeBook.interiorDesign?.['--r-border'] ?? '#e2e8f0'};
-					overflow-wrap: break-word;
-				}
-				.pdf-measurer-container td {
-					padding: 0.75rem 1rem;
-					border: 1px solid ${activeBook.interiorDesign?.['--r-border'] ?? '#e2e8f0'};
-					overflow-wrap: break-word;
-				}
-				.pdf-measurer-container tr:nth-child(even) {
-					background-color: #f8fafc;
-				}
-				.pdf-measurer-container .callout-box,
-				.pdf-measurer-container .tip-box,
-				.pdf-measurer-container .warning-box,
-				.pdf-measurer-container .key-rule-box {
-					border-radius: ${calloutRadius};
-					padding: 1.25rem 1.5rem;
-					margin: 2rem 0;
-					box-sizing: border-box;
-				}
-				.pdf-measurer-container .callout-box {
-					background-color: ${calloutBg};
-					border-left: ${calloutBdW} solid ${calloutBdC};
-				}
-				.pdf-measurer-container .tip-box {
-					background-color: #ecfdf5;
-					border-left: 3.5px solid #10b981;
-				}
-				.pdf-measurer-container .warning-box {
-					background-color: #fef2f2;
-					border-left: 3.5px solid #ef4444;
-				}
-				.pdf-measurer-container .key-rule-box {
-					background-color: #fffbeb;
-					border-left: 3.5px solid #f59e0b;
-				}
-				.pdf-measurer-container .callout-box__title {
-					font-family: 'Inter',sans-serif;
-					font-weight: 700;
-					font-size: 0.85rem;
-					text-transform: uppercase;
-					letter-spacing: 1.5px;
-					margin-bottom: 0.5rem;
-					display: block;
-				}
-				.pdf-measurer-container .callout-box {
-					color: ${accent};
-				}
-				.pdf-measurer-container .callout-box .callout-box__title {
-					color: ${calloutTitleC};
-				}
-				.pdf-measurer-container .tip-box .callout-box__title {
-					color: #047857;
-				}
-				.pdf-measurer-container .warning-box .callout-box__title {
-					color: #b91c1c;
-				}
-				.pdf-measurer-container .key-rule-box .callout-box__title {
-					color: #b45309;
-				}
-				.pdf-measurer-container .callout-box__content {
-					font-family: ${calloutFont};
-					font-size: 0.95rem;
-					line-height: 1.6;
-					color: #1a1612;
-				}
-				/* Must stay identical to the .diagram-box rules in the export
-				   stylesheet below, or measured height diverges from rendered
-				   height and pagination drifts. */
-				.pdf-measurer-container .diagram-box {
-					background-color: ${diagramFieldColor};
-					border: 1px solid rgba(15, 34, 49, 0.15);
-					border-radius: 8px;
-					padding: 0;
-					margin: 2.5rem 0;
-					text-align: center;
-					overflow: hidden;
-				}
-				.pdf-measurer-container .diagram-box__header {
-					background-color: ${headerNavy};
-					border-bottom: 5px solid ${diagramAccent};
-					padding: 0.9rem 1.25rem;
-					text-align: left;
-				}
-				.pdf-measurer-container .diagram-box__title {
-					font-family: ${titleFontCss};
-					font-size: 2rem;
-					font-weight: 700;
-					color: #FFFFFF;
-					line-height: 1.25;
-					margin: 0;
-				}
-				.pdf-measurer-container .diagram-box__subtitle {
-					font-size: 1.1rem;
-					font-weight: 400;
-					color: rgba(255, 255, 255, 0.72);
-					letter-spacing: 0.2px;
-					margin: 0.2rem 0 0;
-				}
-				.pdf-measurer-container .diagram-box__footer {
-					display: flex;
-					justify-content: space-between;
-					align-items: baseline;
-					gap: 1rem;
-					padding: 8pt 1.25rem 10pt;
-					border-top: 1px solid rgba(15, 34, 49, 0.18);
-					font-size: 8.5pt;
-				}
-				.pdf-measurer-container .diagram-box__body {
-					display: flex;
-					justify-content: center;
-					width: 100%;
-					box-sizing: border-box;
-					padding: 1.5rem 1.25rem;
-				}
-				/* Tables reset the plate look — must match the export stylesheet
-				   or the measurer reserves height for a cream band that the PDF
-				   no longer renders. */
-				.pdf-measurer-container .diagram-box.diagram-box--table {
-					background: transparent;
-					border: none;
-					border-radius: 0;
-					box-shadow: none;
-					padding: 0;
-					overflow: visible;
-				}
-				/* The measurer MUST carry this clamp too — without it the block
-				   measures at its unclamped height and pagination reserves a page
-				   budget the rendered plate never uses. */
-				.pdf-measurer-container .diagram-svg {
-					width: 100%;
-					height: auto;
-					max-height: ${DIAGRAM_SVG_MAX_H}px;
-				}
-				.pdf-measurer-container .diagram-flow {
-					display: flex;
-					flex-wrap: wrap;
-					justify-content: center;
-					align-items: center;
-					gap: 1rem;
-					margin: 1rem 0;
-				}
-				.pdf-measurer-container .diagram-step {
-					background-color: #ffffff;
-					border: 1px solid #cbd5e1;
-					border-radius: 4px;
-					padding: 0.75rem 1rem;
-					min-width: 140px;
-					max-width: 200px;
-					font-size: 0.85rem;
-					text-align: left;
-				}
-				.pdf-measurer-container .diagram-step__num {
-					font-weight: 700;
-					color: ${accent};
-					margin-bottom: 0.25rem;
-					font-size: 0.8rem;
-				}
-				.pdf-measurer-container .diagram-step__text {
-					font-weight: 500;
-					color: #1e293b;
-				}
-				.pdf-measurer-container .diagram-arrow {
-					font-size: 1.2rem;
-					color: #cbd5e1;
-				}
-				.pdf-measurer-container .diagram-takeaway {
-					margin-top: 1.5rem;
-					padding-top: 1rem;
-					border-top: 1px solid #e2e8f0;
-					font-size: 0.85rem;
-					font-style: italic;
-					color: #475569;
-				}
-			`;
-			document.head.appendChild(styleEl);
-
-			activeBook.chapters.forEach((c, idx) => {
-				if (c.status !== 'completed' || !c.content) return;
-
-				// Replace inline markdown image URLs with their base64 equivalents
-				// before parsing so html2canvas captures them without CORS issues.
+			// 1. Process all chapters (swap remote images with base64 data URLs)
+			const processedChapters = activeBook.chapters.map((c) => {
+				if (c.status !== 'completed' || !c.content) return c;
 				let contentForPdf = c.content;
 				if (Object.keys(dataUrls).length > 0) {
 					contentForPdf = contentForPdf.replace(
 						/!\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g,
 						(_m, alt, url) => {
 							const b64 = dataUrls[url];
-							// If no data URL available, strip the image entirely rather than
-							// embedding a cross-origin URL that will cause html2canvas to hang.
 							return b64 ? `![${alt}](${b64})` : '';
 						}
 					);
-
-					// Same swap for raw <img> tags. Chapter content holds these too —
-					// the edit drawer splices rendered HTML rather than markdown — and
-					// the markdown pattern above never sees them. Missing this leaves a
-					// live cross-origin src in the iframe, which html2canvas requests
-					// with CORS and which fails on a host that sends no
-					// Access-Control-Allow-Origin.
 					contentForPdf = contentForPdf.replace(
 						/<img\b[^>]*\bsrc="(https?:\/\/[^"]+)"[^>]*>/gi,
 						(tag, url) => {
@@ -443,46 +212,57 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 							return b64 ? tag.replace(url, b64) : '';
 						}
 					);
-
-					// Same swap for the image carried inside a ```plate / ```diagram
-					// fence — the form the generator uses for extra visual-density
-					// plates. The URL lives on an `image:`/`url:` line, so neither
-					// pattern above sees it; left alone it renders to a live
-					// cross-origin <img> that stalls html2canvas. When the image could
-					// not be inlined, drop the whole fence rather than emit a plate
-					// with a missing image.
 					contentForPdf = contentForPdf.replace(
 						/```(?:plate|diagram)\r?\n[\s\S]*?```/g,
 						(block) => {
 							const urlMatch = block.match(/^[ \t]*(?:image|url):[ \t]*(https?:\/\/[^\s)]+)/im);
-							if (!urlMatch) return block; // no remote image (e.g. a data-only diagram)
+							if (!urlMatch) return block;
 							const b64 = dataUrls[urlMatch[1]];
 							return b64 ? block.replace(urlMatch[1], b64) : '';
 						}
 					);
 				}
-				const fullMd   = parseMarkdown(contentForPdf, c.id, {
-					title:  activeBook.title,
+				return { ...c, content: contentForPdf };
+			});
+
+			// 2. Paginate all chapters using the shared paginateChapters logic
+			const d = activeBook.interiorDesign ?? {};
+			const customStyles = {
+				'--r-body-font': bodyFontCss,
+				'--r-title-font': titleFontCss,
+				'--r-diagram-header-bg': headerNavy,
+				'--r-accent': diagramAccent,
+				...(activeBook.interiorDesign ?? {})
+			};
+			const paginatedChapters = paginateChapters(
+				processedChapters,
+				fontSizePx,
+				bodyFontCss,
+				{
+					title: activeBook.title,
 					author: activeBook.author ?? '',
-					navyColor: activeBook.coverDesign?.primary || titleColor,
+					navyColor: headerNavy,
 					amberColor: diagramAccent,
 					cardColor: diagramCardColor
-				});
+				},
+				{
+					titleFont:   d['--r-title-font']      ?? titleFontCss,
+					titleSize:   d['--r-chap-title-size'] ?? '2rem',
+					titleWeight: d['--r-title-weight']    ?? '700',
+					showLabel:   d['--r-label-display']   !== 'none'
+				},
+				customStyles
+			);
+
+			// 3. Render each paginated chapter page into HTML
+			activeBook.chapters.forEach((c, idx) => {
+				if (c.status !== 'completed' || !c.content) return;
+
 				const rawIllust = c.illustrationUrl || '';
-				// Use base64 only — never embed a raw HTTP URL in the iframe HTML.
-				// A cross-origin <img> causes html2canvas to stall indefinitely.
 				const mappedIllust = rawIllust && Object.prototype.hasOwnProperty.call(dataUrls, rawIllust)
-					? dataUrls[rawIllust]  // base64 or '' if fetch failed
-					: '';                  // not attempted — omit rather than risk CORS hang
-				// Deliberately NOT framed as a plate: the chapter opener sits under
-				// the chapter header, which already names the chapter. Plate chrome
-				// is for images inside the chapter content.
-				//
-				// Callouts ride inside `.illust-frame`, which shrink-wraps the image
-				// so their percentages resolve against the picture rather than the
-				// full-width centred `.illustration` block. They are built only when
-				// `mappedIllust` is non-empty: if the image was dropped, its labels
-				// must go with it — a floating callout points at nothing.
+					? dataUrls[rawIllust]
+					: '';
+
 				const calloutHtml = deconflictLabels(c.illustrationLabels ?? [])
 					.map(l =>
 						`<div class="illust-callout illust-callout--${l.side === 'left' ? 'left' : 'right'}" ` +
@@ -499,116 +279,10 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 					  `</div></div>`
 					: '';
 
-				const tmp = document.createElement('div');
-				tmp.innerHTML = fullMd;
-				let blocks = stripDuplicateChapterHeading(
-					Array.from(tmp.children).map((el) => el.outerHTML),
-					c.title
-				);
-
-				type Page = { blocks: string[]; isFirst: boolean };
-				const pages: Page[] = [];
-				let cur: string[] = [];
-				let curH = 0;
-				const measurer = document.createElement('div');
-				measurer.className = 'pdf-measurer-container';
-				measurer.style.cssText =
-					`position:absolute;visibility:hidden;width:${BODY_W}px;` +
-					`font-size:12pt;line-height:1.85;font-family:${bodyFontCss};`;
-				document.body.appendChild(measurer);
-				// A list or table block taller than a full page cannot fit as one
-				// atom — the loop below places or defers a whole block at a time,
-				// so it was simply clipped by the page's overflow:hidden. Split it
-				// into page-sized chunks before pagination runs. Minus the 24px
-				// block margin the loop adds to every non-fullpage block, so a
-				// chunk sized to fit here still fits once that margin lands on it.
-				const splitBudget = BODY_H - 24;
-				blocks = splitOversizedTables(splitOversizedLists(blocks, measurer, splitBudget), measurer, splitBudget);
-
-				// ── What the opener costs before a block is placed ──────────────
-				//
-				// The header and illustration are emitted by the template above,
-				// not as blocks, so this loop never measures them — their height
-				// has to be reserved or prose gets packed into space already
-				// spoken for and the page clips it mid-word at the foot.
-				//
-				// This was a flat `160 + (illust ? 280 : 0)`. The illustration
-				// alone is 240pt of image plus 16pt margins top and bottom —
-				// about 363px, not 280 — and the header's height depends entirely
-				// on how many lines the title wraps to. A three-line title is
-				// triple a one-line one, which is precisely what a constant
-				// cannot say. So the title is measured, in its own type.
-				const titleMeasurer = document.createElement('div');
-				titleMeasurer.style.cssText =
-					`position:absolute;visibility:hidden;width:${BODY_W}px;` +
-					`font-family:${titleFontCss};` +
-					`font-size:${activeBook.interiorDesign?.['--r-chap-title-size'] ?? '20pt'};` +
-					`font-weight:${activeBook.interiorDesign?.['--r-title-weight'] ?? '700'};` +
-					`line-height:1.25;`;
-				document.body.appendChild(titleMeasurer);
-
-				const showsLabel = activeBook.interiorDesign?.['--r-label-display'] !== 'none';
-				// .chapter-label 8pt + 6pt margin ≈ 21px · .chapter-title 12pt
-				// bottom margin ≈ 16px · .chapter-rule ≈ 2px
-				const OPENER_CHROME  = (showsLabel ? 21 : 0) + 16 + 2;
-				// .illustration img max-height 240pt (320px) + 16pt margins (43px)
-				const OPENER_ILLUST  = 363;
-
-				titleMeasurer.textContent = c.title ?? '';
-				const firstPageReserve =
-					OPENER_CHROME + titleMeasurer.offsetHeight + (mappedIllust ? OPENER_ILLUST : 0);
-				document.body.removeChild(titleMeasurer);
-
-				let budget = BODY_H - firstPageReserve;
-
-				for (const blk of blocks) {
-					measurer.innerHTML = blk;
-					// Images inside <figure> tags report 0px height until loaded.
-					// Substitute a realistic fixed height so the page-budget math
-					// reserves enough space and doesn't overflow the page.
-					const hasFigure = measurer.querySelector('figure') !== null;
-					// Any plate carrying a --fullpage class takes a whole page:
-					// diagram-box--fullpage (diagrams, whose body is an <svg>) and
-					// diagram-box--image--fullpage (image plates, a <figure>).
-					// This must NOT be gated on hasFigure — a diagram has no
-					// <figure>, so that gate silently denied diagrams a full page.
-					const isFullPage = blk.includes('--fullpage');
-					const h = isFullPage
-						? BODY_H          // full-page plates consume the entire page budget
-						: hasFigure
-						? 260 + 24        // 220pt max-height + caption + margins
-						: measurer.offsetHeight + 24;
-					// Full-page plates always start on their own page
-					if (isFullPage && cur.length > 0) {
-						pages.push({ blocks: cur, isFirst: pages.length === 0 });
-						cur = []; curH = 0; budget = BODY_H;
-					}
-					// `cur.length > 0` alone is not the right guard on the FIRST
-					// page: the header and illustration have already claimed it
-					// without contributing a block, so the sheet can be full while
-					// `cur` is still empty. `budget < BODY_H` is true only on that
-					// first page, and is what lets the opening paragraph move to
-					// page 2 instead of being clipped under the illustration.
-					const pageIsOccupied = cur.length > 0 || budget < BODY_H;
-					if (curH + h > budget && pageIsOccupied) {
-						pages.push({ blocks: cur, isFirst: pages.length === 0 });
-						cur = []; curH = 0; budget = BODY_H;
-					}
-					cur.push(blk); curH += h;
-					// After a full-page image, flush immediately so nothing shares the page
-					if (isFullPage && cur.length > 0) {
-						pages.push({ blocks: cur, isFirst: pages.length === 0 });
-						cur = []; curH = 0; budget = BODY_H;
-					}
-				}
-				if (cur.length) pages.push({ blocks: cur, isFirst: pages.length === 0 });
-				document.body.removeChild(measurer);
-
-				pages.forEach(({ blocks: pBlocks, isFirst }) => {
-					// A page holding nothing but a full-page plate bleeds to the sheet
-					// edge: no printed margins, no running header or footer — the plate
-					// is the page. Never on a chapter's first page, which still has to
-					// carry the chapter title and illustration.
+				const pages = paginatedChapters[c.id] || [];
+				pages.forEach((pageSlice, pageIdx) => {
+					const isFirst = pageIdx === 0;
+					const pBlocks = pageSlice.blocks;
 					const isPlatePage = !isFirst
 						&& pBlocks.length === 1
 						&& pBlocks[0].includes('--fullpage');
@@ -644,7 +318,6 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 						</section>`;
 				});
 			});
-			document.head.removeChild(styleEl);
 
 			return `<!doctype html>
 	<html lang="en">
@@ -659,7 +332,7 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 	*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
 	body, .chapter-section, .cover-page, .toc-page {
 	font-family: ${activeBook.interiorDesign?.['--r-body-font'] ?? bodyFontCss};
-	font-size: 12pt;
+	font-size: ${fontSizePx}px;
 	line-height: 1.85;
 	color: #1A1612;
 	background: #fff;
@@ -792,10 +465,14 @@ export function buildFullHtml(activeBook: Book, getChapterLabel: (chap: {title:s
 	.illust-callout--right { flex-direction: row; }
 	.illust-callout--left  { flex-direction: row-reverse; transform: translate(-100%, -50%); }
 	.illust-callout__dot {
+		display: inline-block;
 		width: 5pt; height: 5pt; border-radius: 50%;
 		background: ${diagramAccent}; border: 1pt solid #fff; flex-shrink: 0;
 	}
-	.illust-callout__line { width: 18pt; height: 1pt; background: ${diagramAccent}; flex-shrink: 0; }
+	.illust-callout__line {
+		display: inline-block;
+		width: 18pt; height: 1.5pt; background: ${diagramAccent}; flex-shrink: 0;
+	}
 	.illust-callout__text {
 		font-family: Helvetica, Arial, sans-serif;
 		font-size: 6.5pt;

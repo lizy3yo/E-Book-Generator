@@ -40,7 +40,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		console.log(`[image] action=${action} provider=${activeProvider} hasKey=${!!activeApiKey} mock=${useMockMode}`);
 
 		// ── Mock mode ──────────────────────────────────────────────────────────
-		if (useMockMode && !activeApiKey) {
+		if (useMockMode || !activeApiKey) {
 			if (action === 'poll') return json({ done: true, imageUrl: '' });
 			await sleep(1500);
 			return json({

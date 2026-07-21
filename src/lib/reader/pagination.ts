@@ -88,7 +88,8 @@ export function paginateChapters(
 	fontSize: number,
 	bodyFont: string,
 	bookMeta: BookMeta = {},
-	opener?: Partial<OpenerMetrics>
+	opener?: Partial<OpenerMetrics>,
+	customStyles: Record<string, string> = {}
 ): Record<string, PageSlice[]> {
 	const measureDiv = document.createElement('div');
 	measureDiv.style.position = 'absolute';
@@ -98,6 +99,14 @@ export function paginateChapters(
 	measureDiv.style.lineHeight = '1.85';
 	measureDiv.style.fontFamily = bodyFont;
 	measureDiv.className = 'chapter-body';
+	
+	// Apply custom interior design variables so the measurer matches layout specs
+	for (const [key, val] of Object.entries(customStyles)) {
+		if (key.startsWith('--r-')) {
+			measureDiv.style.setProperty(key, val);
+		}
+	}
+	
 	document.body.appendChild(measureDiv);
 
 	// A second measurer set in the TITLE's type rather than the body's. Styled

@@ -35,6 +35,8 @@ import { COVER_TEMPLATES, AI_CONCEPT_COUNT, buildCoverDirection, buildBriefCover
 import { batched, BATCH_SIZE, planForBook } from './bookPlan';
 import { mergeBible, bibleTokens } from './bookBible';
 
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
 /**
  * Turn a generated image and its callout labels into a ```plate block.
  *
@@ -1118,32 +1120,61 @@ class GenerationRunner {
 		// the time a resume matters the plan is already saved.
 		let openerSubject = '';
 		if (!illustUrl) {
-			try {
-				// Brief it from what the chapter actually SAYS and the research
-				// actually FOUND — then draw it, then label the picture that came back.
-				const made = await createIllustration(
-					book,
-					{
-						chapterTitle:   chap.title,
-						chapterOrder:   chap.order,
-						chapterSummary: chap.summary,
-						chapterContent: finalContent,
-						researchNotes:  factsSummary
-					},
-					keys,
-					useMock
-				);
-				illustUrl    = made.url;
-				illustLabels = made.labels;
-				if (made.subject) openerSubject = made.subject;
-				made.claudeUsage.forEach(u => globalState.addBookUsage(bookId, { claude: u }));
-				if (made.imageBilled) globalState.addBookUsage(bookId, { images: 1 });
-				this.patchChapter(bookId, chapIndex, {
-					illustrationUrl: illustUrl,
-					illustrationLabels: illustLabels,
-					elapsedMs: Date.now() - sessionStartedAt
-				});
-			} catch { /* non-fatal */ }
+			const brief = {
+				chapterTitle:   chap.title,
+				chapterOrder:   chap.order,
+				chapterSummary: chap.summary,
+				chapterContent: finalContent,
+				researchNotes:  factsSummary
+			};
+
+			const MAX_IMAGE_RETRIES = 3;
+			let succeeded = false;
+
+			// Try live generation up to 3 times on transient errors before falling back to mock mode
+			for (let attempt = 1; attempt <= MAX_IMAGE_RETRIES && !succeeded; attempt++) {
+				try {
+					if (attempt > 1) {
+						globalState.addLog(bookId, {
+							step: 'illustrate', status: 'running',
+							message: `Retrying image generation for Chapter ${chap.order} (attempt ${attempt}/${MAX_IMAGE_RETRIES})…`
+						});
+						await sleep(2000 * (attempt - 1));
+					}
+					const made = await createIllustration(book, brief, keys, useMock);
+					illustUrl    = made.url;
+					illustLabels = made.labels;
+					if (made.subject) openerSubject = made.subject;
+					made.claudeUsage.forEach(u => globalState.addBookUsage(bookId, { claude: u }));
+					if (made.imageBilled) globalState.addBookUsage(bookId, { images: 1 });
+					this.patchChapter(bookId, chapIndex, {
+						illustrationUrl: illustUrl,
+						illustrationLabels: illustLabels,
+						elapsedMs: Date.now() - sessionStartedAt
+					});
+					succeeded = true;
+				} catch (err) {
+					console.warn(`[generationRunner] Illustration attempt ${attempt}/${MAX_IMAGE_RETRIES} failed for Chapter ${chap.order}:`, err);
+				}
+			}
+
+			// Final safety net: if all live attempts failed, generate a mock SVG so the chapter never stays empty
+			if (!succeeded && !useMock) {
+				try {
+					console.warn(`[generationRunner] All ${MAX_IMAGE_RETRIES} live image attempts failed for Chapter ${chap.order}. Generating mock fallback.`);
+					const fallbackMade = await createIllustration(book, brief, keys, true);
+					illustUrl    = fallbackMade.url;
+					illustLabels = fallbackMade.labels;
+					this.patchChapter(bookId, chapIndex, {
+						illustrationUrl: illustUrl,
+						illustrationLabels: illustLabels,
+						elapsedMs: Date.now() - sessionStartedAt
+					});
+				} catch (fallbackErr) {
+					console.error(`[generationRunner] Fallback illustration also failed for Chapter ${chap.order}:`, fallbackErr);
+				}
+			}
+
 			// Only bump to 62% when the opener actually ran — on a resume the bar is
 			// already further along and must not jump backward.
 			this.patchChapter(bookId, chapIndex, { progress: 62 });

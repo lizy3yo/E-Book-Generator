@@ -21,7 +21,7 @@
 	import { buildFullHtml, getAsDataUrl } from '$lib/reader/exportHtml';
 	import EditDrawer from '$lib/components/reader/EditDrawer.svelte';
 
-	let fontSize = $state(18);
+	let fontSize = $state(16);
 	let readerTheme = $state<'white'>('white');
 	// Incrementing this forces all section style attributes to re-evaluate,
 	// snapping header/footer design tokens back to the current cover settings.
@@ -355,7 +355,7 @@
 			dataUrls[url] = await getAsDataUrl(url);
 		}));
 
-		const html = buildFullHtml(activeBook, _getChapterLabel, dataUrls);
+		const html = buildFullHtml(activeBook, _getChapterLabel, dataUrls, fontSize);
 		const blob = new Blob([html], { type: 'text/html' });
 		const blobUrl = URL.createObjectURL(blob);
 		const a = document.createElement('a');
@@ -408,7 +408,7 @@
 
 			// ── Step 2: Build the self-contained HTML document ─────────────────
 			pdfProgress = { phase: 'Preparing layout', current: 0, total: 0 };
-			const fullHtml = buildFullHtml(activeBook, _getChapterLabel, dataUrls).replace(/\sloading="lazy"/g, '');
+			const fullHtml = buildFullHtml(activeBook, _getChapterLabel, dataUrls, fontSize).replace(/\sloading="lazy"/g, '');
 
 			// ── Step 3: Mount a hidden iframe ───────────────────────────────────
 			iframe = document.createElement('iframe');
@@ -489,13 +489,17 @@
 			// ── Step 8: Capture each page and add to PDF ───────────────────────
 			const CAPTURE_TIMEOUT_MS = 25_000;
 
-			const captureWithTimeout = (el: HTMLElement, scale: number): Promise<HTMLCanvasElement> =>
-				Promise.race([
+			const captureWithTimeout = (el: HTMLElement, scale: number): Promise<HTMLCanvasElement> => {
+				iWin.scrollTo(0, el.offsetTop);
+				el.scrollIntoView();
+				return Promise.race([
 					html2canvas(el, {
 						scale,
 						useCORS:         true,
 						allowTaint:      false,
 						logging:         false,
+						scrollX:         0,
+						scrollY:         0,
 						windowWidth:     iWin.innerWidth,
 						windowHeight:    iWin.innerHeight,
 						width:           576,  // 6in @ 96dpi
@@ -507,6 +511,7 @@
 						setTimeout(() => reject(new Error(`timed out`)), CAPTURE_TIMEOUT_MS)
 					),
 				]);
+			};
 
 			for (let i = 0; i < pageEls.length; i++) {
 				if (pdfCancelRequested) break;
@@ -841,6 +846,13 @@
 		// paginator assumed a flat 160/440px and the overflow was clipped
 		// mid-word at the foot of the page.
 		const d = activeBook.interiorDesign ?? {};
+		const customStyles = {
+			'--r-body-font': designBodyFont,
+			'--r-title-font': designFontFamily,
+			'--r-diagram-header-bg': designTitleColor,
+			'--r-accent': designAccentColor,
+			...d
+		};
 		paginatedChapters = paginateChapters(
 			activeBook.chapters,
 			fontSize,
@@ -857,7 +869,8 @@
 				titleSize:   d['--r-chap-title-size'] ?? '2rem',
 				titleWeight: d['--r-title-weight']    ?? '700',
 				showLabel:   d['--r-label-display']   !== 'none'
-			}
+			},
+			customStyles
 		);
 	}
 
@@ -1899,6 +1912,7 @@
 	.illust-callout--left  { flex-direction: row-reverse; transform: translate(-100%, -50%); }
 
 	.illust-callout__dot {
+		display: inline-block;
 		width: 7px;
 		height: 7px;
 		border-radius: 50%;
@@ -1909,6 +1923,7 @@
 	}
 
 	.illust-callout__line {
+		display: inline-block;
 		width: 26px;
 		height: 1.5px;
 		background: #E07B20;
@@ -2512,6 +2527,7 @@
 	}
 
 	.chapter-body :global(.illust-callout__dot) {
+		display: inline-block;
 		width: 7px;
 		height: 7px;
 		border-radius: 50%;
@@ -2522,6 +2538,7 @@
 	}
 
 	.chapter-body :global(.illust-callout__line) {
+		display: inline-block;
 		width: 26px;
 		height: 1.5px;
 		background: #E07B20;

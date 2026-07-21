@@ -1162,26 +1162,20 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 		const maxTokens =
 			action === 'write-chapter'  ? budgetForWrite(plan.wordsPerChapter) :
 			action === 'verify-chapter' ? budgetForVerify(chapterContent) :
-			action === 'analyze-cover-reference' ? 1_500 :
-			/* art direction — a subject line plus a 140-word brief. Reads a long
-			   chapter, writes very little. */
-			action === 'art-direct-illustration' ? 1_200 :
-			/* format decision — a small object: the unit, up to 6 fields, a
-			   sentence of reasoning. */
-			action === 'decide-format' ? 1_500 :
+			action === 'analyze-cover-reference' ? 4_000 :
+			/* art direction — a subject line plus a 140-word brief. */
+			action === 'art-direct-illustration' ? 4_000 :
+			/* format decision — a small object: the unit, up to 6 fields, a sentence of reasoning. */
+			action === 'decide-format' ? 4_000 :
 			/* cover design — two hexes, a font name, one sentence. */
-			action === 'read-cover-design' ? 600 :
+			action === 'read-cover-design' ? 2_000 :
 			/* labelling — at most 5 short labels with coordinates. */
-			action === 'place-illustration-labels' ? 1_500 :
-			/* plate plan — scales with the chapter's own section count (see
-			   platePlanSections above) so it fits any chapter and truncation is
-			   also salvaged gracefully below rather than throwing. */
-			isPlatePlan ? Math.min(8_000, 1_200 + platePlanSections * 200) :
-			/* distill — at most 8 short entries; the cap is deliberate, an
-			   overlong distillation is a bug, not a feature. */
-			action === 'distill-chapter' ? 1_500 :
-			/* outline — scales with CHAPTER COUNT: a 600-page book plans ~30
-			   chapters, and a fixed ceiling truncates the JSON mid-array. */
+			action === 'place-illustration-labels' ? 4_000 :
+			/* plate plan — scales with the chapter's own section count so it fits any chapter. */
+			isPlatePlan ? Math.min(16_000, 2_000 + platePlanSections * 400) :
+			/* distill — key takeaways, mistakes to skip, and what happens next. Give ample headroom. */
+			action === 'distill-chapter' ? 8_000 :
+			/* outline — scales with CHAPTER COUNT. */
 			budgetForOutline(plan.chapterCount);
 
 		const controller = new AbortController();
