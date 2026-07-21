@@ -93,7 +93,16 @@ export const POST: RequestHandler = async ({ request }) => {
 			authorBrief,
 			coverDirection,
 			conceptCount,
-			referenceImage
+			referenceImage,
+			// ── Streaming draft ────────────────────────────────────────────────
+			// When true, a write-chapter call streams its text to the client as it
+			// is generated (NDJSON) instead of buffering the whole chapter. Lets the
+			// client show live word-by-word progress and save the partial draft, so
+			// a mid-draft reload keeps what was written.
+			streamToClient,
+			// A partial draft to CONTINUE from — prefilled as the assistant turn so
+			// Claude seamlessly resumes writing where it stopped, no seam.
+			draftSoFar
 		} = await request.json();
 
 		const activeApiKey = (apiKey?.trim()) || ANTHROPIC_API_KEY;
@@ -1246,8 +1255,17 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 					max_tokens: maxTokens,
 					stream: useStream,
 					system: systemPrompt,
+					// Continue a partial draft by handing Claude what's written and asking
+					// it to pick up mid-flow. (Assistant-prefill would be cleaner but the
+					// writing models reject it — "the conversation must end with a user
+					// message" — so the continuation rides in the user turn instead.)
 					messages: [
-						{ role: 'user', content: userContent }
+						{
+							role: 'user',
+							content: (action === 'write-chapter' && typeof draftSoFar === 'string' && draftSoFar.trim())
+								? `${userContent}\n\n---\n\nCONTINUATION TASK: You have already written the opening of this chapter, shown below. Continue writing from exactly where it stops. Do NOT repeat, restate, or summarize any of it. Do NOT add a heading, title, or any preamble or transition phrase — pick up mid-flow, as if you never paused, and write through to the natural end of the chapter.\n\n=== DRAFT SO FAR (continue after this; do not repeat it) ===\n${draftSoFar}`
+								: userContent
+						}
 					]
 				})
 			});
@@ -1255,6 +1273,68 @@ The plate is the attached image. Label it: the chapter decides what is worth poi
 			if (!response.ok) {
 				const errText = await response.text();
 				throw new Error(`Anthropic API error (${response.status}): ${errText}`);
+			}
+
+			// Stream the chapter straight to the client (NDJSON) when asked, so it can
+			// render live word-by-word progress and persist the partial as it arrives —
+			// then a mid-draft reload keeps what was written. Each line is a small JSON
+			// object: {t: "<text delta>"} while writing, then a final {done, stopReason,
+			// usage}. Only write-chapter streams to the client; everything else buffers.
+			if (streamToClient && action === 'write-chapter') {
+				const upstream = response.body!.getReader();
+				const encoder = new TextEncoder();
+				const decoder = new TextDecoder();
+				// The outer finally clears `timer` on return; re-arm a per-stream timeout
+				// so a hung upstream still aborts.
+				const out = new ReadableStream({
+					async start(ctrl) {
+						const streamTimer = setTimeout(() => controller.abort(), timeoutMs);
+						let buf = '';
+						let sr: string | null = null;
+						let inTok = 0, outTok = 0;
+						try {
+							while (true) {
+								const { done, value } = await upstream.read();
+								if (done) break;
+								buf += decoder.decode(value, { stream: true });
+								const events = buf.split('\n\n');
+								buf = events.pop() ?? '';
+								for (const ev of events) {
+									const dl = ev.split('\n').find((l) => l.startsWith('data:'));
+									if (!dl) continue;
+									let p: any;
+									try { p = JSON.parse(dl.slice(5).trim()); } catch { continue; }
+									if (p.type === 'content_block_delta' && p.delta?.type === 'text_delta') {
+										ctrl.enqueue(encoder.encode(JSON.stringify({ t: p.delta.text }) + '\n'));
+									} else if (p.type === 'message_start') {
+										inTok = p.message?.usage?.input_tokens ?? 0;
+									} else if (p.type === 'message_delta') {
+										if (p.delta?.stop_reason) sr = p.delta.stop_reason;
+										if (p.usage?.output_tokens != null) outTok = p.usage.output_tokens;
+									} else if (p.type === 'error') {
+										ctrl.enqueue(encoder.encode(JSON.stringify({ error: p.error?.message || 'stream error' }) + '\n'));
+									}
+								}
+							}
+							ctrl.enqueue(encoder.encode(JSON.stringify({
+								done: true,
+								stopReason: sr,
+								usage: { model: requestModel, inputTokens: inTok, outputTokens: outTok }
+							}) + '\n'));
+						} catch (e: any) {
+							ctrl.enqueue(encoder.encode(JSON.stringify({ error: e?.message || 'stream failed' }) + '\n'));
+						} finally {
+							clearTimeout(streamTimer);
+							ctrl.close();
+						}
+					}
+				});
+				return new Response(out, {
+					headers: {
+						'Content-Type': 'application/x-ndjson; charset=utf-8',
+						'Cache-Control': 'no-cache'
+					}
+				});
 			}
 
 			({ text: responseText, stopReason, usage: claudeUsage } = useStream

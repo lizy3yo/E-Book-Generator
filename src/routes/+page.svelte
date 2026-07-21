@@ -168,12 +168,14 @@
 		return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 	}
 
-	/** How long a chapter has taken: frozen once it finishes/fails, live while it
-	 *  runs, zero before it starts. */
+	/** How long a chapter has taken. Frozen once it finishes/fails; live while it
+	 *  runs (startedAt is offset by any banked time, so a resume keeps counting up);
+	 *  and for a paused/interrupted chapter it shows the time already banked rather
+	 *  than resetting to zero. */
 	function chapterElapsed(chap: Chapter): number {
-		if (!chap.startedAt) return 0;
-		const end = chap.completedAt ?? (isGenerating ? now : chap.startedAt);
-		return end - chap.startedAt;
+		if (chap.completedAt && chap.startedAt) return Math.max(0, chap.completedAt - chap.startedAt);
+		if (chap.startedAt && isGenerating) return Math.max(0, now - chap.startedAt);
+		return chap.elapsedMs ?? 0;
 	}
 
 	/** 0–100 bar value; a completed chapter always reads full. */

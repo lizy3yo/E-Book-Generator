@@ -32,7 +32,7 @@ import type { Book, Chapter, CoverOption, CoverOrigin, BibleEntry, IllustrationL
 import { generateImage } from './generateImage';
 import { createIllustration, planChapterPlates } from './illustration';
 import { COVER_TEMPLATES, AI_CONCEPT_COUNT, buildCoverDirection, buildBriefCoverPrompt, hasCoverBrief, type CoverTemplate } from './coverStyles';
-import { batched, BATCH_SIZE } from './bookPlan';
+import { batched, BATCH_SIZE, planForBook } from './bookPlan';
 import { mergeBible, bibleTokens } from './bookBible';
 
 /**
@@ -827,91 +827,163 @@ class GenerationRunner {
 		return (data.entries ?? []) as BibleEntry[];
 	}
 
-	/** Write + illustrate exactly one chapter. Shared between pipeline and per-chapter regen. */
-	private async writeSingleChapter(
+	/** Draft one chapter, STREAMING the text so the row shows live word-by-word
+	 *  progress and the partial is saved as it arrives — a mid-draft reload keeps
+	 *  what was written. Pass `resumeDraft` to continue a saved partial (prefilled
+	 *  server-side so Claude picks up seamlessly). Returns the finished raw draft. */
+	private async draftChapter(
 		bookId: string,
 		chapIndex: number,
 		chaptersSnapshot: Chapter[],
 		factsSummary: string,
 		keys: typeof globalState.apiKeys,
 		useMock: boolean,
-		bookBible: BibleEntry[] = []
-	) {
+		bookBible: BibleEntry[],
+		resumeDraft?: string
+	): Promise<string> {
 		const chap = chaptersSnapshot[chapIndex];
 		const book = globalState.books.find(b => b.id === bookId)!;
+		// Target length, so streamed words-so-far map onto the 1–30% the draft owns.
+		const expectedWords = Math.max(400, planForBook(book).wordsPerChapter || 1200);
 
-		// Mark writing — stamp a fresh start time and reset progress so a redo
-		// begins from zero rather than showing the previous run's finished state.
-		const live = [...globalState.books.find(b => b.id === bookId)!.chapters];
-		live[chapIndex] = {
-			...live[chapIndex],
-			status: 'writing',
-			startedAt: Date.now(),
-			completedAt: undefined,
-			progress: 8
-		};
-		globalState.updateBookChapters(bookId, live);
+		if (resumeDraft === undefined) {
+			// Fresh draft — stamp a clean start and clear any prior run's artifacts.
+			const live = [...globalState.books.find(b => b.id === bookId)!.chapters];
+			live[chapIndex] = {
+				...live[chapIndex],
+				status: 'writing',
+				startedAt: Date.now(),
+				completedAt: undefined,
+				progress: 1,
+				content: '',
+				illustrationUrl: null,
+				illustrationLabels: [],
+				plateSuggestions: [],
+				platesDone: 0
+			};
+			globalState.updateBookChapters(bookId, live);
+		}
 		globalState.addLog(bookId, {
 			step: 'drafting', status: 'running',
-			message: `Writing Chapter ${chap.order}: "${chap.title}"…`
+			message: resumeDraft !== undefined
+				? `Resuming Chapter ${chap.order} draft…`
+				: `Writing Chapter ${chap.order}: "${chap.title}"…`
 		});
 
-		// Draft — include all book context fields so Claude can write unique, informed content
-		const draftRes = await fetch('/api/write', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				action: 'write-chapter',
-				apiKey: keys.anthropicKey,
-				useMockMode: useMock,
-				bookTitle: book.title,
-				genre: book.genre,
-				structure: book.structure,
-				// Sizes the per-chapter output budget on the server.
-				length: book.length,
-				pageCount: book.pageCount,
-				chapterTitle: chap.title,
-				chapterOrder: chap.order,
-				chapterSummary: chap.summary,
-				tone: book.tone,
-				// Drives how hard the writing prompt reaches for diagrams and
-				// structured visuals. The paid image plates scale separately, below.
-				visualDensity: book.visualDensity,
-				researchNotes: factsSummary,
-				// The whole plan, so a chapter knows its place in the book.
-				// Chapters are written concurrently and never see each other's
-				// output, so without this each one is blind to the rest and
-				// re-explains the same foundations. ~40 tokens per chapter
-				// against a 200k window — it is what makes long books cohere.
-				bookOutline: chaptersSnapshot.map(c => ({
-					order:   c.order,
-					title:   c.title,
-					summary: c.summary
-				})),
-				// What the already-written chapters SAID, as opposed to what the
-				// outline planned for them. Bounded to ~2.5k tokens however long
-				// the book is — that bound is the whole reason this scales.
-				bookBible,
+		// startedAt is offset by any banked time (writeSingleChapter set it up for a
+		// resume), so `Date.now() - startedAt` is always the running total.
+		const startedAt = globalState.books.find(b => b.id === bookId)!.chapters[chapIndex].startedAt ?? Date.now();
 
-				// The book's shape, decided once before the outline, plus the span
-				// of units THIS chapter owns. Both are needed: the format says what
-				// a unit looks like; the range says which ones are this chapter's.
-				// Chapters run concurrently, so that range is the only thing
-				// stopping two of them both writing number 47.
-				bookFormat:       book.format,
-				chapterUnitStart: chap.unitStart,
-				chapterUnitEnd:   chap.unitEnd
-			})
-		});
-		const draftData = await draftRes.json();
-		if (!draftData.success) throw new Error(draftData.error || `Chapter ${chap.order} draft failed.`);
-		if (draftData.usage) globalState.addBookUsage(bookId, { claude: draftData.usage });
-		this.patchChapter(bookId, chapIndex, { progress: 30 });
+		const baseBody = {
+			action:         'write-chapter',
+			streamToClient: true,
+			apiKey:         keys.anthropicKey,
+			useMockMode:    useMock,
+			bookTitle:      book.title,
+			genre:          book.genre,
+			structure:      book.structure,
+			length:         book.length,
+			pageCount:      book.pageCount,
+			chapterTitle:   chap.title,
+			chapterOrder:   chap.order,
+			chapterSummary: chap.summary,
+			tone:           book.tone,
+			visualDensity:  book.visualDensity,
+			researchNotes:  factsSummary,
+			bookOutline:    chaptersSnapshot.map(c => ({ order: c.order, title: c.title, summary: c.summary })),
+			bookBible,
+			bookFormat:       book.format,
+			chapterUnitStart: chap.unitStart,
+			chapterUnitEnd:   chap.unitEnd
+		};
 
-		// Verify
-		const current = [...globalState.books.find(b => b.id === bookId)!.chapters];
-		current[chapIndex] = { ...current[chapIndex], status: 'verifying', progress: 40 };
-		globalState.updateBookChapters(bookId, current);
+		let content = resumeDraft ?? '';
+		let lastSave = 0;
+		const save = () => {
+			const words = content.trim() ? content.trim().split(/\s+/).length : 0;
+			const pct = Math.min(30, 1 + Math.round((words / expectedWords) * 29));
+			this.patchChapter(bookId, chapIndex, { content, progress: pct, elapsedMs: Date.now() - startedAt });
+		};
+
+		// Stream the draft; if the model runs out of output room mid-chapter,
+		// continue it from what we have (a prefill) until it reaches a natural end.
+		const MAX_CONTINUES = 6;
+		for (let round = 0; round <= MAX_CONTINUES; round++) {
+			const res = await fetch('/api/write', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ ...baseBody, draftSoFar: content || undefined })
+			});
+			if (!res.ok) throw new Error(`Chapter ${chap.order} draft failed (HTTP ${res.status}).`);
+
+			// Mock mode (and any non-streaming fallback) returns plain JSON.
+			if (!(res.headers.get('Content-Type') || '').includes('ndjson')) {
+				const data = await res.json();
+				if (!data.success) throw new Error(data.error || `Chapter ${chap.order} draft failed.`);
+				if (data.usage) globalState.addBookUsage(bookId, { claude: data.usage });
+				content += data.content ?? '';
+				break;
+			}
+
+			const reader = res.body!.getReader();
+			const decoder = new TextDecoder();
+			let buf = '';
+			let stopReason: string | null = null;
+			let streamErr: string | null = null;
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				buf += decoder.decode(value, { stream: true });
+				const lines = buf.split('\n');
+				buf = lines.pop() ?? '';
+				for (const line of lines) {
+					if (!line.trim()) continue;
+					let msg: any;
+					try { msg = JSON.parse(line); } catch { continue; }
+					if (typeof msg.t === 'string') {
+						content += msg.t;
+						// Throttle persistence to ~1/sec — the bar still moves smoothly.
+						const nowMs = Date.now();
+						if (nowMs - lastSave > 1000) { lastSave = nowMs; save(); }
+					} else if (msg.error) {
+						streamErr = msg.error;
+					} else if (msg.done) {
+						stopReason = msg.stopReason ?? null;
+						if (msg.usage) globalState.addBookUsage(bookId, { claude: msg.usage });
+					}
+				}
+			}
+			save();
+			if (streamErr) throw new Error(`Chapter ${chap.order} draft: ${streamErr}`);
+			if (stopReason !== 'max_tokens') break; // natural end; otherwise continue it
+		}
+
+		// Draft complete — persist the finished raw draft and advance to 30%.
+		const done = [...globalState.books.find(b => b.id === bookId)!.chapters];
+		done[chapIndex] = {
+			...done[chapIndex],
+			progress: 30,
+			content,
+			researchNotes: factsSummary,
+			elapsedMs: Date.now() - (done[chapIndex].startedAt ?? Date.now())
+		};
+		globalState.updateBookChapters(bookId, done);
+		return content;
+	}
+
+	/** Verify one chapter's draft — the fact-check + readability pass. Split from
+	 *  the draft so a resume can re-verify a saved draft without redrafting. */
+	private async verifyChapter(
+		bookId: string,
+		chapIndex: number,
+		draftContent: string,
+		factsSummary: string,
+		keys: typeof globalState.apiKeys,
+		useMock: boolean
+	): Promise<string> {
+		const book = globalState.books.find(b => b.id === bookId)!;
+		const chap = book.chapters[chapIndex];
+		this.patchChapter(bookId, chapIndex, { status: 'verifying', progress: 40 });
 
 		const verifyRes = await fetch('/api/write', {
 			method: 'POST',
@@ -924,7 +996,7 @@ class GenerationRunner {
 				genre: book.genre,
 				tone: book.tone,
 				chapterTitle: chap.title,
-				chapterContent: draftData.content,
+				chapterContent: draftContent,
 				researchNotes: factsSummary,
 				// Without this the editor treats the repeating structure as a
 				// weakness and edits it out — see the guard in the verify prompt.
@@ -933,50 +1005,149 @@ class GenerationRunner {
 		});
 		const verifyData = await verifyRes.json();
 		if (verifyData.usage) globalState.addBookUsage(bookId, { claude: verifyData.usage });
-		let finalContent = verifyData.success ? verifyData.verifiedContent : draftData.content;
-		// The opener + plate phase is the longest part of a chapter, and it used to
-		// run under the 'verifying' label — so the row sat on "Verifying…" for
-		// minutes while it was really drawing. Give it its own status so the UI can
-		// say what is actually happening.
-		this.patchChapter(bookId, chapIndex, { status: 'illustrating', progress: 52 });
+		return verifyData.success ? verifyData.verifiedContent : draftContent;
+	}
 
-		// Illustration — art-directed from the finished chapter and its research
+	/** Write + illustrate exactly one chapter. Shared between pipeline and per-chapter regen. */
+	private async writeSingleChapter(
+		bookId: string,
+		chapIndex: number,
+		chaptersSnapshot: Chapter[],
+		factsSummary: string,
+		keys: typeof globalState.apiKeys,
+		useMock: boolean,
+		bookBible: BibleEntry[] = [],
+		resume: boolean = false
+	) {
+		const chap = chaptersSnapshot[chapIndex];
+		const book = globalState.books.find(b => b.id === bookId)!;
+
+		// A chapter interrupted DURING illustration already had its verified draft
+		// persisted (see the handoff at the end of the else branch), so resuming it
+		// skips the costly draft + verify passes and picks up at the illustration
+		// phase it left off in — the ~52% the user last saw — instead of restarting
+		// from a blank draft. Chapters interrupted earlier (writing/verifying) have
+		// no saved draft, so they correctly fall through to a full rewrite.
+		// What survives an interruption decides how far back a resume rewinds:
+		//   • 'illustrating' + content → draft AND verify are done; skip to plates.
+		//   • 'verifying'    + content → the raw draft is saved; skip drafting, just
+		//     re-verify (one cheap call) then illustrate.
+		//   • 'writing'      + content → a partial streamed draft is saved; CONTINUE
+		//     it from where it stopped rather than starting the draft over.
+		//   • anything else → nothing saved yet, so start clean.
+		const hasContent         = !!chap.content?.trim();
+		const resumeIllustration = resume && chap.status === 'illustrating' && hasContent;
+		const resumeVerify       = resume && chap.status === 'verifying'    && hasContent;
+		const resumeDraft        = resume && chap.status === 'writing'      && hasContent;
+
+		let finalContent: string;
+		// The reference start for this chapter's elapsed timer. It is pushed back by
+		// any time already banked (chap.elapsedMs), so `Date.now() - sessionStartedAt`
+		// is always the running total — a resume continues the clock instead of
+		// restarting it at zero.
+		let sessionStartedAt: number;
+		if (resumeIllustration) {
+			finalContent = chap.content;
+			// Continue the timer from the time already accumulated, not from zero.
+			sessionStartedAt = Date.now() - (chap.elapsedMs ?? 0);
+			this.patchChapter(bookId, chapIndex, {
+				status: 'illustrating',
+				startedAt: sessionStartedAt,
+				completedAt: undefined
+			});
+		} else {
+			if (resumeVerify) {
+				// The raw draft is already saved — skip the expensive write pass and
+				// just re-run verification on it, continuing the banked timer.
+				sessionStartedAt = Date.now() - (chap.elapsedMs ?? 0);
+				this.patchChapter(bookId, chapIndex, { startedAt: sessionStartedAt, completedAt: undefined });
+				finalContent = await this.verifyChapter(bookId, chapIndex, chap.content, factsSummary, keys, useMock);
+			} else {
+				let rawDraft: string;
+				if (resumeDraft) {
+					// A partial streamed draft is saved — continue it from where it
+					// stopped, keeping the banked timer running.
+					sessionStartedAt = Date.now() - (chap.elapsedMs ?? 0);
+					this.patchChapter(bookId, chapIndex, { startedAt: sessionStartedAt, completedAt: undefined });
+					rawDraft = await this.draftChapter(bookId, chapIndex, chaptersSnapshot, factsSummary, keys, useMock, bookBible, chap.content);
+				} else {
+					rawDraft = await this.draftChapter(bookId, chapIndex, chaptersSnapshot, factsSummary, keys, useMock, bookBible);
+					// draftChapter stamped startedAt at the draft; keep counting from
+					// there so the timer spans the whole chapter, not just illustration.
+					sessionStartedAt = globalState.books.find(b => b.id === bookId)!.chapters[chapIndex].startedAt ?? Date.now();
+				}
+				finalContent = await this.verifyChapter(bookId, chapIndex, rawDraft, factsSummary, keys, useMock);
+			}
+			// Persist the verified draft NOW — before the long opener + plate phase —
+			// so an interruption during illustration resumes from it. This is also
+			// where 'verifying' hands off to the 'illustrating' status (the row used
+			// to sit on "Verifying…" for minutes while it was really drawing). The
+			// illustration checkpoint is reset to a clean slate so a stale
+			// opener/plan/counter can never make a resume skip plates it never made.
+			this.patchChapter(bookId, chapIndex, {
+				status: 'illustrating',
+				progress: 52,
+				content: finalContent,
+				researchNotes: factsSummary,
+				elapsedMs: Date.now() - sessionStartedAt,
+				illustrationUrl: null,
+				illustrationLabels: [],
+				plateSuggestions: [],
+				platesDone: 0
+			});
+		}
+
+		// ── Illustration ──────────────────────────────────────────────────────
+		// Every step below persists the moment it finishes — the opener, the plate
+		// plan, and each plate spliced into the content — so a chapter interrupted
+		// mid-illustration and resumed picks up at the exact next plate, keeping the
+		// images it already made instead of redrawing them.
 		globalState.addLog(bookId, {
 			step: 'illustrate', status: 'running',
-			message: `Generating illustration for Chapter ${chap.order}…`
+			message: resumeIllustration
+				? `Resuming illustration for Chapter ${chap.order}…`
+				: `Generating illustration for Chapter ${chap.order}…`
 		});
 
-		let illustUrl: string | null = null;
-		let illustLabels: IllustrationLabel[] = [];
-		// The opener's subject, handed to the plate planner below so it does not
-		// recommend the same picture the opener already covers.
+		// Opener — reuse the saved one when resuming mid-illustration; otherwise draw
+		// it and save it immediately so a later interruption never redraws it.
+		let illustUrl:    string | null       = resumeIllustration ? (chap.illustrationUrl ?? null) : null;
+		let illustLabels: IllustrationLabel[] = resumeIllustration ? (chap.illustrationLabels ?? []) : [];
+		// The opener's subject feeds the plate planner so it won't propose the same
+		// picture. Not persisted — it is only needed before the plan exists, and by
+		// the time a resume matters the plan is already saved.
 		let openerSubject = '';
-		try {
-			// Brief it from what the chapter actually SAYS and what the research
-			// actually FOUND — both already in hand here — then draw it, then label
-			// the picture that came back. The plate is the only part of the page an
-			// image model draws unsupervised, so the brief it gets is the whole
-			// difference between a plate that teaches this chapter and stock art
-			// that could sit in any book.
-			const made = await createIllustration(
-				book,
-				{
-					chapterTitle:   chap.title,
-					chapterOrder:   chap.order,
-					chapterSummary: chap.summary,
-					chapterContent: finalContent,
-					researchNotes:  factsSummary
-				},
-				keys,
-				useMock
-			);
-			illustUrl    = made.url;
-			illustLabels = made.labels;
-			if (made.subject) openerSubject = made.subject;
-			made.claudeUsage.forEach(u => globalState.addBookUsage(bookId, { claude: u }));
-			if (made.imageBilled) globalState.addBookUsage(bookId, { images: 1 });
-		} catch { /* non-fatal */ }
-		this.patchChapter(bookId, chapIndex, { progress: 62 });
+		if (!illustUrl) {
+			try {
+				// Brief it from what the chapter actually SAYS and the research
+				// actually FOUND — then draw it, then label the picture that came back.
+				const made = await createIllustration(
+					book,
+					{
+						chapterTitle:   chap.title,
+						chapterOrder:   chap.order,
+						chapterSummary: chap.summary,
+						chapterContent: finalContent,
+						researchNotes:  factsSummary
+					},
+					keys,
+					useMock
+				);
+				illustUrl    = made.url;
+				illustLabels = made.labels;
+				if (made.subject) openerSubject = made.subject;
+				made.claudeUsage.forEach(u => globalState.addBookUsage(bookId, { claude: u }));
+				if (made.imageBilled) globalState.addBookUsage(bookId, { images: 1 });
+				this.patchChapter(bookId, chapIndex, {
+					illustrationUrl: illustUrl,
+					illustrationLabels: illustLabels,
+					elapsedMs: Date.now() - sessionStartedAt
+				});
+			} catch { /* non-fatal */ }
+			// Only bump to 62% when the opener actually ran — on a resume the bar is
+			// already further along and must not jump backward.
+			this.patchChapter(bookId, chapIndex, { progress: 62 });
+		}
 
 		// ── Extra plates for the richer visual-density tiers ──────────────────
 		// 'standard' books stop at the one opener above. 'rich' and 'maximum' both
@@ -998,40 +1169,45 @@ class GenerationRunner {
 		// on.
 		const density = book.visualDensity ?? 'standard';
 		const RICH_PLATE_CAP = 2;
-		let extraPlatesAdded = 0;
-		// The planner's approved sections, stored on the chapter so the reader can
-		// offer a manual "add illustration" button on any approved section that the
-		// tier did not auto-fill. Runs for EVERY tier — 'standard' auto-generates
-		// none but still records where a plate could go.
-		let plateSuggestions: { section: string; subject: string }[] = [];
+		// The full ranked plan — persisted once so a resume fills the SAME sections
+		// in the same order. On a resume it is already saved; otherwise plan it now.
+		let plateSuggestions: { section: string; subject: string }[] = resumeIllustration ? (chap.plateSuggestions ?? []) : [];
+		// How many chosen plates are already generated and spliced into the content.
+		let platesDone = resumeIllustration ? (chap.platesDone ?? 0) : 0;
 
 		if (illustUrl) {
 			try {
-				const plan = await planChapterPlates(
-					book,
-					{
-						chapterTitle:   chap.title,
-						chapterOrder:   chap.order,
-						chapterSummary: chap.summary,
-						chapterContent: finalContent,
-						researchNotes:  factsSummary
-					},
-					// The opener's subject, so the plan does not propose it again.
-					openerSubject,
-					keys,
-					useMock
-				);
-				if (plan.usage) globalState.addBookUsage(bookId, { claude: plan.usage });
-				plateSuggestions = plan.plates;
+				if (!plateSuggestions.length) {
+					const plan = await planChapterPlates(
+						book,
+						{
+							chapterTitle:   chap.title,
+							chapterOrder:   chap.order,
+							chapterSummary: chap.summary,
+							chapterContent: finalContent,
+							researchNotes:  factsSummary
+						},
+						// The opener's subject, so the plan does not propose it again.
+						openerSubject,
+						keys,
+						useMock
+					);
+					if (plan.usage) globalState.addBookUsage(bookId, { claude: plan.usage });
+					plateSuggestions = plan.plates;
+					// Persist the plan (and a fresh counter) so a resume reuses it.
+					this.patchChapter(bookId, chapIndex, { plateSuggestions, platesDone: 0 });
+				}
 
 				// 'standard' records the suggestions but auto-generates none; 'rich'
 				// fills the strongest few; 'maximum' fills every approved section.
 				const chosen = density === 'standard' ? []
-					: density === 'rich' ? plan.plates.slice(0, RICH_PLATE_CAP)
-					: plan.plates;
+					: density === 'rich' ? plateSuggestions.slice(0, RICH_PLATE_CAP)
+					: plateSuggestions;
 
-				const items: { section: string; block: string }[] = [];
-				for (const [pi, spec] of chosen.entries()) {
+				// Resume from the first plate not yet done — everything before
+				// `platesDone` is already spliced into the persisted content.
+				for (let pi = platesDone; pi < chosen.length; pi++) {
+					const spec = chosen[pi];
 					// Advance the bar across the plate span (62 → 95) as each section
 					// is processed, so the row keeps moving through the slowest phase
 					// instead of sitting frozen while ~24 images render one by one.
@@ -1041,47 +1217,61 @@ class GenerationRunner {
 
 					const subject = spec?.subject?.trim();
 					const section = spec?.section?.trim();
-					if (!subject || !section) { bumpProgress(); continue; }
+					if (subject && section) {
+						const brief = {
+							chapterTitle:   chap.title,
+							chapterOrder:   chap.order,
+							chapterSummary: chap.summary,
+							chapterContent: finalContent,
+							researchNotes:  factsSummary,
+							// The plan chose this subject; mandate it so the art-director
+							// depicts exactly that, not its own pick.
+							authorNote:     `Depict this specific subject from the chapter, and nothing else: ${subject}.`
+						};
 
-					const brief = {
-						chapterTitle:   chap.title,
-						chapterOrder:   chap.order,
-						chapterSummary: chap.summary,
-						chapterContent: finalContent,
-						researchNotes:  factsSummary,
-						// The plan chose this subject; mandate it so the art-director
-						// depicts exactly that, not its own pick.
-						authorNote:     `Depict this specific subject from the chapter, and nothing else: ${subject}.`
-					};
-
-					// A plate is one image plus two Claude calls, and a transient
-					// failure in any of them would drop this section's photo entirely.
-					// The plan already judged this section worth illustrating, so try
-					// twice before giving up rather than skipping it on a one-off hiccup.
-					let placed = false;
-					for (let attempt = 1; attempt <= 2 && !placed; attempt++) {
-						try {
-							const extra = await createIllustration(book, brief, keys, useMock);
-							extra.claudeUsage.forEach(u => globalState.addBookUsage(bookId, { claude: u }));
-							if (extra.imageBilled) globalState.addBookUsage(bookId, { images: 1 });
-							// Title the plate with its section heading — it becomes the
-							// plate's header bar, replacing the standalone heading.
-							if (extra.url) {
-								items.push({ section, block: buildPlateBlock(extra.url, extra.labels, section) });
-								placed = true;
-							}
-						} catch { /* retry once, then leave this one section unillustrated */ }
+						// A plate is one image plus two Claude calls, and a transient
+						// failure in any of them would drop this section's photo entirely.
+						// The plan already judged this section worth illustrating, so try
+						// twice before giving up rather than skipping it on a one-off hiccup.
+						let placed = false;
+						for (let attempt = 1; attempt <= 2 && !placed; attempt++) {
+							try {
+								const extra = await createIllustration(book, brief, keys, useMock);
+								extra.claudeUsage.forEach(u => globalState.addBookUsage(bookId, { claude: u }));
+								if (extra.imageBilled) globalState.addBookUsage(bookId, { images: 1 });
+								// Splice THIS plate in immediately — titled with its section
+								// heading, which becomes the plate's header bar — so an
+								// interruption here keeps it and resumes at the next one.
+								if (extra.url) {
+									finalContent = splicePlatesAtSections(finalContent, [
+										{ section, block: buildPlateBlock(extra.url, extra.labels, section) }
+									]);
+									placed = true;
+								}
+							} catch { /* retry once, then leave this one section unillustrated */ }
+						}
 					}
+
+					// Mark this plate handled (placed or skipped) and persist the WIP
+					// content + banked time, so a reload never repeats it and resumes
+					// at pi + 1 with the timer continuing from here.
+					platesDone = pi + 1;
+					this.patchChapter(bookId, chapIndex, {
+						content: finalContent,
+						platesDone,
+						elapsedMs: Date.now() - sessionStartedAt
+					});
 					bumpProgress();
 				}
-				finalContent = splicePlatesAtSections(finalContent, items);
-				extraPlatesAdded = items.length;
 			} catch { /* planning failed — the chapter keeps its opener */ }
 		}
 
 		// Surface what the density tier actually did, so "why only one image?" is
 		// answerable from the run log instead of a guess. Only the richer tiers
-		// add plates, so only they report — 'standard' has nothing to say here.
+		// add plates, so only they report — 'standard' has nothing to say here. The
+		// count is read back from the content so a resumed chapter reports its true
+		// total, not just this session's additions.
+		const extraPlatesAdded = (finalContent.match(/```plate/g) ?? []).length;
 		if (density !== 'standard') {
 			globalState.addLog(bookId, {
 				step: 'illustrate', status: 'success',
@@ -1099,6 +1289,7 @@ class GenerationRunner {
 		final[chapIndex].status             = 'completed';
 		final[chapIndex].progress           = 100;
 		final[chapIndex].completedAt        = Date.now();
+		final[chapIndex].elapsedMs          = Date.now() - sessionStartedAt;
 		globalState.updateBookChapters(bookId, final);
 
 		globalState.addLog(bookId, {
@@ -1119,9 +1310,16 @@ class GenerationRunner {
 		const useMock = keys.useMockMode;
 		const chap    = book.chapters[chapIndex];
 
+		// A chapter interrupted with saved content — a partial streamed draft
+		// ('writing'), a finished draft ('verifying'), or a verified draft mid-
+		// illustration ('illustrating') — is a RESUME: skip re-research (the saved
+		// content already carries it) and hand writeSingleChapter the resume flag so
+		// it picks up where it left off instead of rewriting from scratch.
+		const resuming = (chap.status === 'illustrating' || chap.status === 'verifying' || chap.status === 'writing') && !!chap.content?.trim();
+
 		// ── Book-level background research ──────────────────────────────────
 		let bookLevelFacts = '';
-		try {
+		if (!resuming) try {
 			const r = await fetch('/api/research', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -1141,7 +1339,7 @@ class GenerationRunner {
 
 		// ── Chapter-specific targeted research ────────────────────────────
 		let chapterFacts = '';
-		try {
+		if (!resuming) try {
 			const cr = await fetch('/api/research', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -1159,11 +1357,13 @@ class GenerationRunner {
 				: '';
 		} catch { /* non-fatal */ }
 
-		const factsSummary = [
-			book.userContext?.trim() ? `[Author Brief]\n${book.userContext.trim()}` : '',
-			bookLevelFacts ? `[Book-Level Research]\n${bookLevelFacts}` : '',
-			chapterFacts   ? `[Chapter-Specific Research for "${chap.title}"]\n${chapterFacts}` : ''
-		].filter(Boolean).join('\n\n');
+		const factsSummary = resuming
+			? (chap.researchNotes ?? '')
+			: [
+				book.userContext?.trim() ? `[Author Brief]\n${book.userContext.trim()}` : '',
+				bookLevelFacts ? `[Book-Level Research]\n${bookLevelFacts}` : '',
+				chapterFacts   ? `[Chapter-Specific Research for "${chap.title}"]\n${chapterFacts}` : ''
+			].filter(Boolean).join('\n\n');
 
 		try {
 			const snapshot = [...book.chapters];
@@ -1171,7 +1371,7 @@ class GenerationRunner {
 			// rest of the book already established — minus this chapter's own
 			// entries, which describe the draft we are about to throw away.
 			const bible = (book.bible ?? []).filter(e => e.chapter !== snapshot[chapIndex].order);
-			await this.writeSingleChapter(bookId, chapIndex, snapshot, factsSummary, keys, useMock, bible);
+			await this.writeSingleChapter(bookId, chapIndex, snapshot, factsSummary, keys, useMock, bible, resuming);
 		} catch (err: any) {
 			const current = [...globalState.books.find(b => b.id === bookId)!.chapters];
 			current[chapIndex] = { ...current[chapIndex], status: 'failed', completedAt: Date.now() };

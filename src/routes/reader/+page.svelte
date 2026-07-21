@@ -61,6 +61,16 @@
 
 	let copySuccess = $state(false);
 	let isPdfExporting = $state(false);
+	// Drives the export progress modal. null while idle; total === 0 means the
+	// phase is indeterminate (no page count to show yet).
+	let pdfProgress = $state<{ phase: string; current: number; total: number } | null>(null);
+	// Set by the modal's Cancel button; the export checks it at each phase and
+	// page boundary and bails out without downloading.
+	let pdfCancelRequested = $state(false);
+
+	function cancelPdfExport() {
+		pdfCancelRequested = true;
+	}
 	let readerScrollArea = $state<HTMLElement | null>(null);
 
 	let activeBook = $derived(globalState.activeBook);
@@ -361,6 +371,7 @@
 	async function handleExportPdf() {
 		if (!activeBook || isPdfExporting) return;
 		isPdfExporting = true;
+		pdfCancelRequested = false;
 
 		let iframe: HTMLIFrameElement | null = null;
 
@@ -382,14 +393,21 @@
 				}
 			});
 
+			pdfProgress = { phase: 'Preparing images', current: 0, total: imageUrls.length };
 			const dataUrls: Record<string, string> = {};
+			let resolvedCount = 0;
 			await Promise.all(
 				imageUrls.map(async (url) => {
 					dataUrls[url] = await getAsDataUrl(url);
+					resolvedCount++;
+					pdfProgress = { phase: 'Preparing images', current: resolvedCount, total: imageUrls.length };
 				})
 			);
 
+			if (pdfCancelRequested) return; // user cancelled during image prep
+
 			// ── Step 2: Build the self-contained HTML document ─────────────────
+			pdfProgress = { phase: 'Preparing layout', current: 0, total: 0 };
 			const fullHtml = buildFullHtml(activeBook, _getChapterLabel, dataUrls).replace(/\sloading="lazy"/g, '');
 
 			// ── Step 3: Mount a hidden iframe ───────────────────────────────────
@@ -424,7 +442,10 @@
 				)
 			);
 
-			await new Promise((resolve) => setTimeout(resolve, 800));
+			// Fonts and every <img> are already awaited above, so this is only a
+			// small settle margin for the browser to finish layout — not the old
+			// conservative 800ms buffer, which added up across a long export.
+			await new Promise((resolve) => setTimeout(resolve, 150));
 
 			// ── Step 5: Collect page elements ─────────────────────────────────
 			const pageEls = Array.from(
@@ -453,7 +474,10 @@
 			// subtly stretched.
 			const PDF_W_IN = 6;
 			const PDF_H_IN = 9;
-			const SCALE     = 2;
+			// 1.25× (~120 DPI at 6×9) — the fastest tier: ~60% less pixel area than
+			// 2×, so each page rasterises much quicker. Text is a touch softer, fine
+			// for on-screen/draft use. A failed page still retries at scale 1 below.
+			const SCALE     = 1.25;
 
 			const pdf = new jsPDF({
 				orientation: 'portrait',
@@ -485,6 +509,15 @@
 				]);
 
 			for (let i = 0; i < pageEls.length; i++) {
+				if (pdfCancelRequested) break;
+				pdfProgress = { phase: 'Rendering pages', current: i + 1, total: pageEls.length };
+				// html2canvas seizes the main thread for each page, so without handing
+				// the browser a frame first the modal never repaints and the counter
+				// appears frozen. Yield once so this page's number is painted before
+				// the capture blocks everything again — this yield is also when a
+				// pending Cancel click gets processed.
+				await new Promise(requestAnimationFrame);
+				if (pdfCancelRequested) break; // click landed during the yield
 				const el = pageEls[i];
 				let canvas: HTMLCanvasElement;
 
@@ -517,7 +550,10 @@
 				console.log(`[PDF] Page ${i + 1}/${pageEls.length} captured`);
 			}
 
+			if (pdfCancelRequested) return; // aborted mid-render — no partial download
+
 			// ── Step 9: Download ───────────────────────────────────────────────
+			pdfProgress = { phase: 'Building PDF file', current: 0, total: 0 };
 			const filename = `${activeBook.title.toLowerCase().replace(/\s+/g, '_')}_ebook.pdf`;
 			const blob = pdf.output('blob');
 			const blobUrl = URL.createObjectURL(blob);
@@ -535,6 +571,7 @@
 		} finally {
 			iframe?.remove();
 			isPdfExporting = false;
+			pdfProgress = null;
 		}
 	}
 
@@ -1169,6 +1206,38 @@
 		</div>
 	{/if}
 </div>
+
+<!-- PDF export progress — a blocking modal so the long rasterisation is visible -->
+{#if pdfProgress}
+	<div class="pdf-progress-backdrop" aria-hidden="true"></div>
+	<div class="pdf-progress" role="dialog" aria-modal="true" aria-labelledby="pdf-progress-title" aria-describedby="pdf-progress-phase">
+		<h3 id="pdf-progress-title" class="font-serif">Exporting PDF</h3>
+		<p id="pdf-progress-phase" class="pdf-progress__phase">
+			{pdfProgress.phase}{#if pdfProgress.total > 0} · {pdfProgress.current} of {pdfProgress.total}{/if}
+		</p>
+		<div
+			class="pdf-progress__bar"
+			class:pdf-progress__bar--indeterminate={pdfProgress.total === 0}
+			role="progressbar"
+			aria-valuemin="0"
+			aria-valuemax={pdfProgress.total || undefined}
+			aria-valuenow={pdfProgress.total > 0 ? pdfProgress.current : undefined}
+		>
+			<div
+				class="pdf-progress__fill"
+				style={pdfProgress.total > 0 ? `width:${Math.round((pdfProgress.current / pdfProgress.total) * 100)}%` : ''}
+			></div>
+		</div>
+		<p class="pdf-progress__hint">Keep this tab open until the download starts.</p>
+		<button
+			class="pdf-progress__cancel"
+			onclick={cancelPdfExport}
+			disabled={pdfCancelRequested}
+		>
+			{pdfCancelRequested ? 'Cancelling…' : 'Cancel export'}
+		</button>
+	</div>
+{/if}
 
 <style>
 	.reader-workspace {
@@ -2632,4 +2701,55 @@
 		.chapter-body :global(.edit-trigger--diagram) { display: none !important; }
 		.chapter-body :global(.add-illust-row) { display: none !important; }
 	}
+
+	/* ── PDF export progress modal ── */
+	.pdf-progress-backdrop {
+		position: fixed; inset: 0; z-index: 300;
+		background: rgba(26, 21, 16, 0.5);
+		backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+		animation: pdfFade 0.15s ease;
+	}
+	.pdf-progress {
+		position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+		z-index: 301; width: 100%; max-width: 380px;
+		background: #fff; border-radius: 10px;
+		box-shadow: 0 10px 30px rgba(0,0,0,0.18), 0 20px 60px rgba(0,0,0,0.12);
+		padding: 1.6rem 1.6rem 1.4rem;
+		display: flex; flex-direction: column; gap: 0.7rem;
+		animation: pdfFade 0.18s ease;
+	}
+	@keyframes pdfFade { from { opacity: 0; } to { opacity: 1; } }
+	.pdf-progress h3 { margin: 0; font-size: 1.05rem; font-weight: 700; color: #1a1510; }
+	.pdf-progress__phase {
+		margin: 0; font-size: 0.85rem; color: #6B7280;
+		font-variant-numeric: tabular-nums;
+	}
+	.pdf-progress__bar {
+		height: 7px; border-radius: 999px; overflow: hidden;
+		background: var(--accent-light, #f0e9df);
+	}
+	.pdf-progress__fill {
+		height: 100%; border-radius: 999px;
+		background: var(--accent, #8E7453);
+		width: 0; transition: width 0.25s ease;
+	}
+	/* Indeterminate phases (no page count yet) slide a partial bar back and forth. */
+	.pdf-progress__bar--indeterminate .pdf-progress__fill {
+		width: 40%; transition: none;
+		animation: pdfIndeterminate 1.1s ease-in-out infinite;
+	}
+	@keyframes pdfIndeterminate {
+		0%   { margin-left: -40%; }
+		100% { margin-left: 100%; }
+	}
+	.pdf-progress__hint { margin: 0; font-size: 0.75rem; color: #9CA3AF; }
+	.pdf-progress__cancel {
+		align-self: flex-end; margin-top: 0.3rem;
+		font-size: 0.8rem; font-weight: 600;
+		padding: 0.45rem 1rem; border-radius: 6px;
+		border: 1px solid #E5E7EB; background: transparent; color: #374151;
+		cursor: pointer; transition: background 0.15s, opacity 0.15s;
+	}
+	.pdf-progress__cancel:hover { background: #F9FAFB; }
+	.pdf-progress__cancel:disabled { opacity: 0.6; cursor: default; }
 </style>

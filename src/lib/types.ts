@@ -157,6 +157,13 @@ export interface Chapter {
 	 */
 	plateSuggestions?: { section: string; subject: string }[];
 	/**
+	 * How many of the plates chosen from `plateSuggestions` have already been
+	 * generated and spliced into `content`. Lets a chapter interrupted partway
+	 * through the illustration phase resume at the exact next plate instead of
+	 * redrawing the ones it already made. Absent → none done yet.
+	 */
+	platesDone?: number;
+	/**
 	 * The span of the book's repeating units this chapter owns, inclusive —
 	 * e.g. 7..12. Set by the outline when `Book.format.mode === 'form'`.
 	 *
@@ -176,6 +183,13 @@ export interface Chapter {
 	 */
 	startedAt?: number;
 	completedAt?: number;
+	/**
+	 * Accumulated active generation time in ms, persisted through the run. Lets a
+	 * resumed chapter continue its elapsed timer from where it left off instead of
+	 * restarting at zero, and lets an interrupted (paused) chapter still show the
+	 * time it had banked. Absent → none accumulated yet.
+	 */
+	elapsedMs?: number;
 	/**
 	 * Coarse 0–100 progress through draft → verify → illustrate → plates, so the
 	 * row's bar keeps moving even through the long plate-generation phase (which
