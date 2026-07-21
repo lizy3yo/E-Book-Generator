@@ -4,7 +4,7 @@
 	import {
 		BookMarked, Zap, Paintbrush, BookOpen, Trash2,
 		Loader, RefreshCw, CheckCircle, ChevronRight,
-		ArrowLeft, Info, RotateCcw, Sparkles, Maximize2, Upload, X
+		ArrowLeft, Info, RotateCcw, Sparkles, Maximize2, Upload, X, Play
 	} from '@lucide/svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import ChapterPlanError from '$lib/components/ChapterPlanError.svelte';
@@ -135,6 +135,65 @@
 	const allChaptersComplete = $derived(
 		!!active && active.chapters.length > 0 && active.chapters.every(c => c.status === 'completed')
 	);
+
+	// ── Generation timers ──────────────────────────────────────────────────────
+	// A 1-second heartbeat that only ticks while something is actively generating,
+	// so the per-chapter and overall elapsed timers advance live without a timer
+	// running when the book is idle.
+	let now = $state(Date.now());
+	$effect(() => {
+		if (!isGenerating) return;
+		const id = setInterval(() => { now = Date.now(); }, 1000);
+		return () => clearInterval(id);
+	});
+
+	// Generation runs in THIS tab — closing or reloading it kills the in-flight
+	// run and there is no resume, so warn before the page unloads while work is
+	// active. The guard is only attached while generating, so it never nags on an
+	// idle book. The prompt text itself is fixed by the browser and cannot be set.
+	$effect(() => {
+		if (!isGenerating) return;
+		const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+		window.addEventListener('beforeunload', warn);
+		return () => window.removeEventListener('beforeunload', warn);
+	});
+
+	/** mm:ss (or h:mm:ss past an hour) for an elapsed span in ms. */
+	function formatDuration(ms: number): string {
+		const total = Math.max(0, Math.floor(ms / 1000));
+		const h = Math.floor(total / 3600);
+		const m = Math.floor((total % 3600) / 60);
+		const s = total % 60;
+		const pad = (n: number) => String(n).padStart(2, '0');
+		return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+	}
+
+	/** How long a chapter has taken: frozen once it finishes/fails, live while it
+	 *  runs, zero before it starts. */
+	function chapterElapsed(chap: Chapter): number {
+		if (!chap.startedAt) return 0;
+		const end = chap.completedAt ?? (isGenerating ? now : chap.startedAt);
+		return end - chap.startedAt;
+	}
+
+	/** 0–100 bar value; a completed chapter always reads full. */
+	function chapterProgress(chap: Chapter): number {
+		if (chap.status === 'completed') return 100;
+		return Math.max(0, Math.min(100, chap.progress ?? 0));
+	}
+
+	/** Wall-clock length of the current run. Falls back to the chapters' own
+	 *  timestamps for a finished book whose run state reset with the session. */
+	const overallElapsed = $derived.by(() => {
+		if (run.runStartedAt) {
+			const end = run.runEndedAt ?? (isGenerating ? now : run.runStartedAt);
+			return end - run.runStartedAt;
+		}
+		const starts = (active?.chapters ?? []).map(c => c.startedAt).filter((n): n is number => !!n);
+		const ends   = (active?.chapters ?? []).map(c => c.completedAt).filter((n): n is number => !!n);
+		if (!starts.length || !ends.length) return 0;
+		return Math.max(...ends) - Math.min(...starts);
+	});
 	const hasAiConcepts = $derived((active?.coverOptions ?? []).some(o => o.origin === 'ai'));
 	/** The author's own direction — written brief, uploaded reference, or both —
 	 *  fixes the design language, so Stage 2 renders exactly one cover from it:
@@ -297,8 +356,38 @@
 		generationRunner.startWriting(active);
 	}
 
-	function handleRegenerateChapter(chapIndex: number) {
+	// ── Chapter redo / continue ────────────────────────────────────────────────
+	// A chapter left mid-pipeline by a reload (a transient status with no active
+	// run) is RESUMED with "Continue" — nothing finished is being thrown away, so
+	// it proceeds straight to generation. A completed or failed chapter is instead
+	// REGENERATED with "Redo", which discards a finished result and spends a live
+	// run — so that one asks for confirmation first.
+	let regenConfirmOpen = $state(false);
+	let regenTargetIdx   = $state<number | null>(null);
+
+	function isResumable(chap: Chapter): boolean {
+		return (chap.status === 'writing' || chap.status === 'verifying' || chap.status === 'illustrating')
+			&& !run.isWriting && run.regeneratingChapterIdx === null;
+	}
+
+	/** Resume an interrupted chapter — no confirmation, there is no finished work to lose. */
+	function continueChapter(chapIndex: number) {
 		if (active) generationRunner.regenerateChapter(active.id, chapIndex);
+	}
+
+	/** Ask before redoing a finished/failed chapter — it overwrites the result and bills a live run. */
+	function requestRegenerateChapter(chapIndex: number) {
+		regenTargetIdx   = chapIndex;
+		regenConfirmOpen = true;
+	}
+	function confirmRegenerateChapter() {
+		if (regenTargetIdx !== null && active) generationRunner.regenerateChapter(active.id, regenTargetIdx);
+		regenConfirmOpen = false;
+		regenTargetIdx   = null;
+	}
+	function cancelRegenerateChapter() {
+		regenConfirmOpen = false;
+		regenTargetIdx   = null;
 	}
 </script>
 
@@ -971,6 +1060,12 @@
 					<div class="stage-badge">Step 3 of 3</div>
 					<h2 class="font-serif">Writing Your Ebook</h2>
 					<p>Chapters are being written and verified one by one. You can regenerate any chapter individually if the result isn't right.</p>
+					{#if overallElapsed > 0}
+						<div class="overall-time">
+							<span class="ot-label">Overall time</span>
+							<span class="ot-value font-serif">{formatDuration(overallElapsed)}</span>
+						</div>
+					{/if}
 				</div>
 
 				<div class="writing-layout">
@@ -981,20 +1076,49 @@
 								<div class="wc-badge">{getChapterOrderLabel(chap, idx, active.chapters)}</div>
 								<div class="wc-info">
 									<span class="wc-title font-serif">{chap.title}</span>
-									<span class="wc-status-label">
-										{#if chap.status === 'completed'} ✓ Complete
-										{:else if chap.status === 'writing'} Drafting…
-										{:else if chap.status === 'verifying'} Verifying…
-										{:else if chap.status === 'failed'} ✕ Failed
-										{:else} Pending
+									<div
+										class="wc-bar"
+										role="progressbar"
+										aria-valuenow={chapterProgress(chap)}
+										aria-valuemin="0"
+										aria-valuemax="100"
+									>
+										<div class="wc-bar-fill" style="width: {chapterProgress(chap)}%"></div>
+									</div>
+									<div class="wc-meta">
+										<span class="wc-status-label">
+											{#if chap.status === 'completed'} ✓ Complete
+											{:else if chap.status === 'writing'} Drafting…
+											{:else if chap.status === 'verifying'} Verifying…
+											{:else if chap.status === 'illustrating'} Illustrating…
+											{:else if chap.status === 'failed'} ✕ Failed
+											{:else} Pending
+											{/if}
+										</span>
+										{#if chapterElapsed(chap) > 0}
+											<span class="wc-elapsed">{formatDuration(chapterElapsed(chap))}</span>
 										{/if}
-									</span>
+									</div>
 								</div>
 								<div class="wc-actions">
-									{#if chap.status === 'completed' || chap.status === 'failed' || ((chap.status === 'writing' || chap.status === 'verifying') && !run.isWriting && run.regeneratingChapterIdx === null)}
+									{#if isResumable(chap)}
+										<!-- Interrupted by a reload — resume it rather than start over. -->
 										<button
 											class="btn btn-ghost btn-xs"
-											onclick={() => handleRegenerateChapter(idx)}
+											onclick={() => continueChapter(idx)}
+											disabled={run.isWriting || run.regeneratingChapterIdx !== null}
+											title="Continue generating this chapter"
+										>
+											{#if run.regeneratingChapterIdx === idx}
+												<Loader size={13} class="spin-icon" />
+											{:else}
+												<Play size={13} /> Continue
+											{/if}
+										</button>
+									{:else if chap.status === 'completed' || chap.status === 'failed'}
+										<button
+											class="btn btn-ghost btn-xs"
+											onclick={() => requestRegenerateChapter(idx)}
 											disabled={run.isWriting || run.regeneratingChapterIdx !== null}
 											title="Regenerate this chapter"
 										>
@@ -1099,7 +1223,7 @@
 								<div class="summary-actions">
 									<button
 										class="btn btn-ghost btn-xs"
-										onclick={() => handleRegenerateChapter(idx)}
+										onclick={() => requestRegenerateChapter(idx)}
 										disabled={run.regeneratingChapterIdx !== null}
 										title="Regenerate chapter"
 									>
@@ -1137,6 +1261,19 @@
 	intent="danger"
 	onConfirm={confirmDeleteBook}
 	onCancel={cancelDeleteBook}
+/>
+
+<!-- Redo-chapter confirmation — a redo discards the finished chapter and bills a live run -->
+<ConfirmDialog
+	open={regenConfirmOpen}
+	title="Redo this chapter?"
+	message={regenTargetIdx !== null && active
+		? `"${active.chapters[regenTargetIdx].title}" will be regenerated from scratch — its current text and illustrations are replaced. This runs a live generation and uses API credits.`
+		: ''}
+	confirmLabel="Redo chapter"
+	intent="warning"
+	onConfirm={confirmRegenerateChapter}
+	onCancel={cancelRegenerateChapter}
 />
 
 <CoverPreviewDialog
@@ -2078,6 +2215,7 @@
 	.writing-chapter-row.completed { border-left: 3px solid var(--success); }
 	.writing-chapter-row.writing,
 	.writing-chapter-row.verifying { border-left: 3px solid var(--warning); }
+	.writing-chapter-row.illustrating { border-left: 3px solid var(--accent); }
 	.writing-chapter-row.failed { border-left: 3px solid var(--error); }
 
 	.wc-badge {
@@ -2086,15 +2224,46 @@
 		display: flex; align-items: center; justify-content: center;
 		font-size: 0.82rem; font-weight: 700; flex-shrink: 0;
 	}
-	.wc-info { flex: 1; display: flex; flex-direction: column; gap: 0.1rem; }
+	.wc-info { flex: 1; display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; }
 	.wc-title { font-weight: 600; font-size: 0.9rem; }
+
+	/* Per-chapter progress bar */
+	.wc-bar {
+		height: 5px; border-radius: 999px; overflow: hidden;
+		background: var(--accent-light);
+	}
+	.wc-bar-fill {
+		height: 100%; border-radius: 999px;
+		background: var(--warning);
+		transition: width 0.4s ease;
+	}
+	.writing-chapter-row.completed .wc-bar-fill { background: var(--success); }
+	.writing-chapter-row.illustrating .wc-bar-fill { background: var(--accent); }
+	.writing-chapter-row.failed .wc-bar-fill { background: var(--error); }
+
+	.wc-meta { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
 	.wc-status-label { font-size: 0.75rem; color: var(--text-muted); }
+	.wc-elapsed {
+		font-size: 0.72rem; color: var(--text-muted);
+		font-variant-numeric: tabular-nums; flex-shrink: 0;
+	}
 	.writing-chapter-row.completed .wc-status-label { color: var(--success); }
 	.writing-chapter-row.failed .wc-status-label { color: var(--error); }
 	.writing-chapter-row.writing .wc-status-label,
 	.writing-chapter-row.verifying .wc-status-label { color: var(--warning); }
+	.writing-chapter-row.illustrating .wc-status-label { color: var(--accent); }
 
-	.wc-actions { display: flex; gap: 0.4rem; }
+	.wc-actions { display: flex; gap: 0.4rem; align-self: flex-start; }
+
+	/* Overall generation timer in the workspace header */
+	.overall-time {
+		display: inline-flex; align-items: baseline; gap: 0.5rem;
+		margin-top: 0.9rem; padding: 0.35rem 0.8rem;
+		border: 1px solid var(--border-color); border-radius: 999px;
+		background: var(--bg-inset);
+	}
+	.ot-label { font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+	.ot-value { font-size: 1rem; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
 
 	/* Log terminal */
 	.logs-panel { display: flex; flex-direction: column; }

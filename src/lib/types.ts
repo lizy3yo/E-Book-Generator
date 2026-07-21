@@ -167,7 +167,21 @@ export interface Chapter {
 	 */
 	unitStart?: number;
 	unitEnd?: number;
-	status: 'pending' | 'writing' | 'verifying' | 'completed' | 'failed';
+	status: 'pending' | 'writing' | 'verifying' | 'illustrating' | 'completed' | 'failed';
+	/**
+	 * Wall-clock timing for the generation progress UI (epoch ms). `startedAt`
+	 * is stamped when drafting begins and reset on a redo; `completedAt` is
+	 * stamped when the chapter finishes or fails, which freezes the row's
+	 * elapsed timer. Absent on chapters generated before this existed.
+	 */
+	startedAt?: number;
+	completedAt?: number;
+	/**
+	 * Coarse 0–100 progress through draft → verify → illustrate → plates, so the
+	 * row's bar keeps moving even through the long plate-generation phase (which
+	 * shares the `verifying` status). Absent → treat as 0.
+	 */
+	progress?: number;
 }
 
 /**

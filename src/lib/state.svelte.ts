@@ -358,7 +358,7 @@ class GlobalState {
 		if (book.status !== 'writing' && book.status !== 'failed' && book.status !== 'completed') return;
 
 		const inFlight = book.chapters.some(
-			(c) => c.status === 'writing' || c.status === 'verifying' || c.status === 'pending'
+			(c) => c.status === 'writing' || c.status === 'verifying' || c.status === 'illustrating' || c.status === 'pending'
 		);
 		if (inFlight) return;
 

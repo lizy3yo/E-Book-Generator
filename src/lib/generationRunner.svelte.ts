@@ -127,6 +127,11 @@ export interface BookRunState {
 	// Step 3 — writing
 	isWriting: boolean;
 	regeneratingChapterIdx: number | null;
+	/** Wall-clock bounds of the CURRENT generation run (epoch ms), driving the
+	 *  overall timer. Ephemeral per session: reset when a run starts, `runEndedAt`
+	 *  stamped when it finishes. Null before the first run of the session. */
+	runStartedAt: number | null;
+	runEndedAt: number | null;
 }
 
 const IDLE: BookRunState = {
@@ -140,7 +145,9 @@ const IDLE: BookRunState = {
 	isGeneratingPlan: false,
 	planError: null,
 	isWriting: false,
-	regeneratingChapterIdx: null
+	regeneratingChapterIdx: null,
+	runStartedAt: null,
+	runEndedAt: null
 };
 
 class GenerationRunner {
@@ -155,6 +162,14 @@ class GenerationRunner {
 
 	private patch(bookId: string, changes: Partial<BookRunState>) {
 		this.runs[bookId] = { ...(this.runs[bookId] ?? IDLE), ...changes };
+	}
+
+	/** Merge fields into one chapter and persist — used for the progress-bar and
+	 *  timing ticks so the UI reflects work as it happens, not only at the end. */
+	private patchChapter(bookId: string, chapIndex: number, fields: Partial<Chapter>) {
+		const arr = [...globalState.books.find(b => b.id === bookId)!.chapters];
+		arr[chapIndex] = { ...arr[chapIndex], ...fields };
+		globalState.updateBookChapters(bookId, arr);
 	}
 
 	// ── Cover art direction ──────────────────────────────────────────────────
@@ -596,14 +611,14 @@ class GenerationRunner {
 
 	async startWriting(book: Book) {
 		if (this.for(book.id).isWriting) return;
-		this.patch(book.id, { isWriting: true });
+		this.patch(book.id, { isWriting: true, runStartedAt: Date.now(), runEndedAt: null });
 		// try/finally so isWriting always clears. It used to be reset only on
 		// the success path, so any throw left it stuck true and the pipeline
 		// refused to start again (the guard above) until a full page reload.
 		try {
 			await this.writeAllChapters(book);
 		} finally {
-			this.patch(book.id, { isWriting: false });
+			this.patch(book.id, { isWriting: false, runEndedAt: Date.now() });
 		}
 	}
 
@@ -708,7 +723,7 @@ class GenerationRunner {
 				} catch (err: any) {
 					failedChapters.push(chap.order);
 					const live = [...globalState.books.find(b => b.id === book.id)!.chapters];
-					live[i].status = 'failed';
+					live[i] = { ...live[i], status: 'failed', completedAt: Date.now() };
 					globalState.updateBookChapters(book.id, live);
 					globalState.addLog(book.id, {
 						step: 'drafting', status: 'error',
@@ -825,9 +840,16 @@ class GenerationRunner {
 		const chap = chaptersSnapshot[chapIndex];
 		const book = globalState.books.find(b => b.id === bookId)!;
 
-		// Mark writing
+		// Mark writing — stamp a fresh start time and reset progress so a redo
+		// begins from zero rather than showing the previous run's finished state.
 		const live = [...globalState.books.find(b => b.id === bookId)!.chapters];
-		live[chapIndex].status = 'writing';
+		live[chapIndex] = {
+			...live[chapIndex],
+			status: 'writing',
+			startedAt: Date.now(),
+			completedAt: undefined,
+			progress: 8
+		};
 		globalState.updateBookChapters(bookId, live);
 		globalState.addLog(bookId, {
 			step: 'drafting', status: 'running',
@@ -884,10 +906,11 @@ class GenerationRunner {
 		const draftData = await draftRes.json();
 		if (!draftData.success) throw new Error(draftData.error || `Chapter ${chap.order} draft failed.`);
 		if (draftData.usage) globalState.addBookUsage(bookId, { claude: draftData.usage });
+		this.patchChapter(bookId, chapIndex, { progress: 30 });
 
 		// Verify
 		const current = [...globalState.books.find(b => b.id === bookId)!.chapters];
-		current[chapIndex].status = 'verifying';
+		current[chapIndex] = { ...current[chapIndex], status: 'verifying', progress: 40 };
 		globalState.updateBookChapters(bookId, current);
 
 		const verifyRes = await fetch('/api/write', {
@@ -911,6 +934,11 @@ class GenerationRunner {
 		const verifyData = await verifyRes.json();
 		if (verifyData.usage) globalState.addBookUsage(bookId, { claude: verifyData.usage });
 		let finalContent = verifyData.success ? verifyData.verifiedContent : draftData.content;
+		// The opener + plate phase is the longest part of a chapter, and it used to
+		// run under the 'verifying' label — so the row sat on "Verifying…" for
+		// minutes while it was really drawing. Give it its own status so the UI can
+		// say what is actually happening.
+		this.patchChapter(bookId, chapIndex, { status: 'illustrating', progress: 52 });
 
 		// Illustration — art-directed from the finished chapter and its research
 		globalState.addLog(bookId, {
@@ -948,6 +976,7 @@ class GenerationRunner {
 			made.claudeUsage.forEach(u => globalState.addBookUsage(bookId, { claude: u }));
 			if (made.imageBilled) globalState.addBookUsage(bookId, { images: 1 });
 		} catch { /* non-fatal */ }
+		this.patchChapter(bookId, chapIndex, { progress: 62 });
 
 		// ── Extra plates for the richer visual-density tiers ──────────────────
 		// 'standard' books stop at the one opener above. 'rich' and 'maximum' both
@@ -1002,10 +1031,17 @@ class GenerationRunner {
 					: plan.plates;
 
 				const items: { section: string; block: string }[] = [];
-				for (const spec of chosen) {
+				for (const [pi, spec] of chosen.entries()) {
+					// Advance the bar across the plate span (62 → 95) as each section
+					// is processed, so the row keeps moving through the slowest phase
+					// instead of sitting frozen while ~24 images render one by one.
+					const bumpProgress = () => this.patchChapter(bookId, chapIndex, {
+						progress: 62 + Math.round(33 * (pi + 1) / chosen.length)
+					});
+
 					const subject = spec?.subject?.trim();
 					const section = spec?.section?.trim();
-					if (!subject || !section) continue;
+					if (!subject || !section) { bumpProgress(); continue; }
 
 					const brief = {
 						chapterTitle:   chap.title,
@@ -1036,6 +1072,7 @@ class GenerationRunner {
 							}
 						} catch { /* retry once, then leave this one section unillustrated */ }
 					}
+					bumpProgress();
 				}
 				finalContent = splicePlatesAtSections(finalContent, items);
 				extraPlatesAdded = items.length;
@@ -1060,6 +1097,8 @@ class GenerationRunner {
 		final[chapIndex].illustrationLabels = illustLabels;
 			final[chapIndex].plateSuggestions   = plateSuggestions;
 		final[chapIndex].status             = 'completed';
+		final[chapIndex].progress           = 100;
+		final[chapIndex].completedAt        = Date.now();
 		globalState.updateBookChapters(bookId, final);
 
 		globalState.addLog(bookId, {
@@ -1074,7 +1113,7 @@ class GenerationRunner {
 		const run  = this.for(bookId);
 		if (!book || run.isWriting || run.regeneratingChapterIdx !== null) return;
 
-		this.patch(bookId, { regeneratingChapterIdx: chapIndex });
+		this.patch(bookId, { regeneratingChapterIdx: chapIndex, runStartedAt: Date.now(), runEndedAt: null });
 
 		const keys    = globalState.apiKeys;
 		const useMock = keys.useMockMode;
@@ -1135,14 +1174,14 @@ class GenerationRunner {
 			await this.writeSingleChapter(bookId, chapIndex, snapshot, factsSummary, keys, useMock, bible);
 		} catch (err: any) {
 			const current = [...globalState.books.find(b => b.id === bookId)!.chapters];
-			current[chapIndex].status = 'failed';
+			current[chapIndex] = { ...current[chapIndex], status: 'failed', completedAt: Date.now() };
 			globalState.updateBookChapters(bookId, current);
 			globalState.addLog(bookId, {
 				step: 'drafting', status: 'error',
 				message: `Regeneration failed for Chapter ${chapIndex + 1}: ${err.message}`
 			});
 		} finally {
-			this.patch(bookId, { regeneratingChapterIdx: null });
+			this.patch(bookId, { regeneratingChapterIdx: null, runEndedAt: Date.now() });
 			// Redoing the one chapter that failed the run makes the whole book
 			// complete again — re-derive the top-level status so the library stops
 			// showing "Failed" over a book that is now finished.
