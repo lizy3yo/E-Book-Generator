@@ -991,7 +991,7 @@
 									</span>
 								</div>
 								<div class="wc-actions">
-									{#if chap.status === 'completed' || chap.status === 'failed'}
+									{#if chap.status === 'completed' || chap.status === 'failed' || ((chap.status === 'writing' || chap.status === 'verifying') && !run.isWriting && run.regeneratingChapterIdx === null)}
 										<button
 											class="btn btn-ghost btn-xs"
 											onclick={() => handleRegenerateChapter(idx)}

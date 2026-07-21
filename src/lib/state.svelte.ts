@@ -24,10 +24,15 @@ class GlobalState {
 
 	async init() {
 		// Load API keys from localStorage (never stored in Supabase)
+		let neverConfigured = false;
 		try {
 			const savedKeys = localStorage.getItem('ebook_api_keys');
 			if (savedKeys) {
 				this.apiKeys = { ...this.apiKeys, ...JSON.parse(savedKeys) };
+			} else {
+				// No saved settings yet — mock mode is still the default. If the
+				// server has real credentials, auto-detect below switches to live.
+				neverConfigured = true;
 			}
 
 			const savedActiveBookId = localStorage.getItem('ebook_active_book_id');
@@ -38,10 +43,43 @@ class GlobalState {
 			console.error('Failed to load settings from localStorage:', e);
 		}
 
+		// Auto-detect live mode on EVERY entry point, not just the Settings page.
+		// useMockMode defaults to true, and the switch to live used to live only
+		// in the Settings page's onMount — so a user who went straight to
+		// generating a book (never opening Settings) had the whole run silently
+		// fall back to mock even though .env holds real keys. Running it here
+		// fixes that regardless of which page loaded first. Gated on
+		// neverConfigured so an intentional mock-mode choice is still respected.
+		if (neverConfigured) {
+			await this.autoDetectLiveMode();
+		}
+
 		// Load books from Supabase; fall back to localStorage cache on error
 		await this.loadBooksFromSupabase();
 
 		this.initialized = true;
+	}
+
+	/**
+	 * Ask the server which keys are configured in .env; if it is live-ready,
+	 * turn off the mock-mode default and persist so every page picks it up.
+	 * Non-fatal: on any failure the app simply stays in mock mode.
+	 */
+	private async autoDetectLiveMode() {
+		try {
+			const res = await fetch('/api/config');
+			if (!res.ok) return;
+			const cfg = await res.json();
+			if (cfg.liveReady) {
+				this.saveKeys({
+					...this.apiKeys,
+					useMockMode: false,
+					imageProvider: cfg.server?.imageProvider || this.apiKeys.imageProvider
+				});
+			}
+		} catch {
+			/* non-fatal — mock mode remains the default */
+		}
 	}
 
 	private async loadBooksFromSupabase() {
