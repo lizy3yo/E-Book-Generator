@@ -515,11 +515,64 @@
 	function downloadCover() {
 		if (!canvas) return;
 		
-		// Create downscale temporary high quality anchor link
-		const link = document.createElement('a');
-		link.download = `${settings.title.toLowerCase().replace(/\s+/g, '_')}_cover.png`;
-		link.href = canvas.toDataURL('image/png');
-		link.click();
+		const cvs = canvas;
+		const canvasW = cvs.width;
+		const canvasH = cvs.height;
+
+		// Industry standard ebook cover export resolution: 1200 x 1800 px (2:3 aspect ratio, 300 DPI ready)
+		const targetW = 1200;
+		const targetH = 1800;
+		const scale = targetW / canvasW; // 3x scaling from 400x600 preview
+
+		const exportCanvas = document.createElement('canvas');
+		exportCanvas.width = targetW;
+		exportCanvas.height = targetH;
+		const exportCtx = exportCanvas.getContext('2d');
+		if (!exportCtx) return;
+
+		exportCtx.imageSmoothingEnabled = true;
+		exportCtx.imageSmoothingQuality = 'high';
+		exportCtx.scale(scale, scale);
+
+		const executeDownload = () => {
+			if (!settings.bgImageUrl) {
+				exportCtx.fillStyle = '#FAF7F2';
+				exportCtx.fillRect(0, 0, canvasW, canvasH);
+				exportCtx.strokeStyle = '#E6DDD0';
+				exportCtx.lineWidth = 1;
+				exportCtx.strokeRect(15, 15, canvasW - 30, canvasH - 30);
+				exportCtx.fillStyle = '#EAE5D9';
+				exportCtx.beginPath();
+				exportCtx.arc(canvasW / 2, canvasH / 2.5, canvasW / 5, 0, Math.PI * 2);
+				exportCtx.fill();
+			}
+
+			drawLayers(exportCtx, canvasW, canvasH);
+
+			const link = document.createElement('a');
+			link.download = `${settings.title.toLowerCase().replace(/\s+/g, '_')}_cover.png`;
+			link.href = exportCanvas.toDataURL('image/png');
+			link.click();
+		};
+
+		if (settings.bgImageUrl) {
+			const src = canvasUrl(settings.bgImageUrl);
+			if (!bgImage || bgImageSrc !== src) {
+				const img = new Image();
+				img.onload = () => {
+					bgImage = img;
+					bgImageSrc = src;
+					executeDownload();
+				};
+				img.onerror = () => {
+					executeDownload();
+				};
+				img.src = src;
+				return;
+			}
+		}
+
+		executeDownload();
 	}
 
 	onMount(() => {
